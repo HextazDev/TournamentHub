@@ -132,7 +132,7 @@ WEB_IMAGE=ghcr.io/hextazdev/tournamenthub-web:sha-XXXXXXXXXXXX \
 
 #### Optional pull-based staging auto-deployment on a Proxmox VM
 
-No inbound SSH/webhook from GitHub Actions into the private VM is needed. On the staging VM, configure a `systemd` timer running `deploy/rollout.sh` with `SKIP_IF_UNCHANGED=1` against the `:staging` tag published after CI passes on the `staging` branch:
+No inbound SSH/webhook from GitHub Actions into the private VM is needed. On the staging VM, install both the `.service` and `.timer` units provided in [`deploy/systemd/`](../deploy/systemd/) so `systemd` checks the `:staging` tag every 2 minutes:
 
 ```ini
 # /etc/systemd/system/tournamenthub-staging-rollout.service
@@ -140,6 +140,7 @@ No inbound SSH/webhook from GitHub Actions into the private VM is needed. On the
 Description=TournamentHub staging pull rollout with automatic rollback
 After=docker.service network-online.target
 Requires=docker.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
@@ -152,7 +153,34 @@ Environment=SKIP_IF_UNCHANGED=1
 ExecStart=/opt/tournamenthub/deploy/rollout.sh
 ```
 
-When `SKIP_IF_UNCHANGED=1`, `deploy/rollout.sh` compares the pulled `:staging` digest against the currently running container's `.Image` digest and exits immediately without restarting if the digest is unchanged and `/ready` is healthy. If a new `:staging` image was published, it updates the container, waits up to 90s for `/ready`, and rolls back automatically to the previous digest if `/ready` fails.
+```ini
+# /etc/systemd/system/tournamenthub-staging-rollout.timer
+[Unit]
+Description=Periodic pull check for TournamentHub staging container updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=tournamenthub-staging-rollout.service
+
+[Install]
+WantedBy=timers.target
+```
+
+Install, enable and inspect the timer on the VM:
+
+```sh
+sudo cp deploy/systemd/tournamenthub-staging-rollout.service /etc/systemd/system/
+sudo cp deploy/systemd/tournamenthub-staging-rollout.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tournamenthub-staging-rollout.timer
+sudo systemctl list-timers tournamenthub-staging-rollout.timer
+sudo journalctl -u tournamenthub-staging-rollout.service -n 50 --no-pager
+```
+
+When `SKIP_IF_UNCHANGED=1`, `deploy/rollout.sh` compares the pulled `:staging` digest(s) against the currently running container `.Image` digest(s) and exits immediately without restarting if unchanged and healthy. If a new `:staging` image was published, it updates the service(s), verifies both `bot` and `web` running digests, waits up to 90s for `/ready` (and `/api/health`), and rolls back automatically (re-verifying readiness on the restored digest) if `docker compose up` or the readiness probe fails.
 
 Both images run on Node 22 as non-root users (`node` for bot, `nextjs` for web), directly start Node (no PM2), and use a read-only root filesystem with `tmpfs` mounts, `cap_drop: ALL`, `no-new-privileges: true` and a bridge network. All durable state lives in Supabase.
 

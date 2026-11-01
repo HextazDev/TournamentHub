@@ -62,54 +62,88 @@ describe("health endpoints", () => {
 describe("OPS-08: deploy/rollout.sh readiness wait, digest check and automatic rollback", () => {
   const rolloutScript = path.resolve(__dirname, "../../../../deploy/rollout.sh");
 
-  function createFakeBins(opts: { readySucceedsForImage: string; initialRunningImage: string; targetPulledImage: string }) {
+  function createFakeBins(opts: {
+    readySucceedsForImage: string;
+    initialRunningImage: string;
+    targetPulledImage: string;
+    upExitCodeForTarget?: number;
+    initialRunningWebImage?: string;
+    targetPulledWebImage?: string;
+    actualStartedWebImage?: string;
+  }) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "hub-rollout-test-"));
     const stateFile = path.join(tmpDir, "running-image.txt");
+    const webStateFile = path.join(tmpDir, "running-web-image.txt");
     const logFile = path.join(tmpDir, "commands.log");
     fs.writeFileSync(stateFile, opts.initialRunningImage, "utf8");
+    fs.writeFileSync(webStateFile, opts.initialRunningWebImage ?? "sha256:old-web-111", "utf8");
     fs.writeFileSync(logFile, "", "utf8");
+
+    const upExitCode = opts.upExitCodeForTarget ?? 0;
+    const targetWeb = opts.targetPulledWebImage ?? "sha256:new-web-222";
+    const startedWeb = opts.actualStartedWebImage ?? targetWeb;
 
     const fakeDocker = `#!/usr/bin/env bash
 set -euo pipefail
-echo "docker $* (BOT_IMAGE=\${BOT_IMAGE:-})" >> "${logFile}"
+echo "docker $* (BOT_IMAGE=\${BOT_IMAGE:-} WEB_IMAGE=\${WEB_IMAGE:-})" >> "${logFile}"
 if [[ "\${1:-}" == "compose" ]]; then
   for arg in "$@"; do
     if [[ "$arg" == "ps" ]]; then
-      echo "container-bot-1"
+      last_arg="\${!#}"
+      if [[ "$last_arg" == "web" ]]; then
+        echo "container-web-1"
+      else
+        echo "container-bot-1"
+      fi
       exit 0
     fi
     if [[ "$arg" == "up" ]]; then
       if [[ "\${BOT_IMAGE:-}" == sha256:* ]]; then
         echo -n "\${BOT_IMAGE}" > "${stateFile}"
+        if [[ -n "\${WEB_IMAGE:-}" ]]; then
+          echo -n "\${WEB_IMAGE}" > "${webStateFile}"
+        fi
+        exit 0
       else
         echo -n "${opts.targetPulledImage}" > "${stateFile}"
+        echo -n "${startedWeb}" > "${webStateFile}"
+        exit ${upExitCode}
       fi
-      exit 0
     fi
   done
   exit 0
 fi
 if [[ "\${1:-}" == "inspect" ]]; then
-  cat "${stateFile}"
+  cid="\${!#}"
+  if [[ "$cid" == "container-web-1" ]]; then
+    cat "${webStateFile}"
+  else
+    cat "${stateFile}"
+  fi
   echo ""
   exit 0
 fi
 if [[ "\${1:-}" == "image" && "\${2:-}" == "inspect" ]]; then
-  echo "${opts.targetPulledImage}"
+  img="\${!#}"
+  if [[ "$img" == *web* ]]; then
+    echo "${targetWeb}"
+  else
+    echo "${opts.targetPulledImage}"
+  fi
   exit 0
 fi
 exit 0
 `;
     const fakeCurl = `#!/usr/bin/env bash
 current="$(cat "${stateFile}")"
-if [[ "$current" == "${opts.readySucceedsForImage}" ]]; then
+if [[ "${opts.readySucceedsForImage}" == *"$current"* ]]; then
   exit 0
 fi
 exit 22
 `;
     fs.writeFileSync(path.join(tmpDir, "docker"), fakeDocker, { mode: 0o755 });
     fs.writeFileSync(path.join(tmpDir, "curl"), fakeCurl, { mode: 0o755 });
-    return { tmpDir, stateFile, logFile };
+    return { tmpDir, stateFile, webStateFile, logFile };
   }
 
   it("pulls target image, verifies digest and succeeds when /ready returns 200", () => {
@@ -154,9 +188,74 @@ exit 22
           stdio: "pipe",
         }),
       ).toThrow();
-      // Must have restored the previous working image digest!
       expect(fs.readFileSync(stateFile, "utf8")).toBe("sha256:old-digest-111");
       expect(fs.readFileSync(logFile, "utf8")).toContain("BOT_IMAGE=sha256:old-digest-111");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("catches docker compose up failure (exit 42) under set -e, rolls back and verifies restored readiness", () => {
+    const { tmpDir, stateFile, logFile } = createFakeBins({
+      initialRunningImage: "sha256:old-digest-111",
+      targetPulledImage: "sha256:broken-up-42",
+      readySucceedsForImage: "sha256:old-digest-111",
+      upExitCodeForTarget: 42,
+    });
+    try {
+      let stderrOutput = "";
+      try {
+        execFileSync("bash", [rolloutScript], {
+          env: {
+            ...process.env,
+            PATH: `${tmpDir}:${process.env.PATH ?? ""}`,
+            BOT_IMAGE: "ghcr.io/hextazdev/tournamenthub-bot:sha-broken",
+            READY_TIMEOUT_SECONDS: "2",
+            POLL_INTERVAL_SECONDS: "1",
+          },
+          stdio: "pipe",
+        });
+        expect.unreachable("rollout.sh should have exited non-zero after rollback");
+      } catch (err: unknown) {
+        stderrOutput = String((err as { stderr?: Buffer }).stderr ?? "");
+      }
+      expect(fs.readFileSync(stateFile, "utf8")).toBe("sha256:old-digest-111");
+      expect(fs.readFileSync(logFile, "utf8")).toContain("BOT_IMAGE=sha256:old-digest-111");
+      expect(stderrOutput).toContain("Rolled back and verified ready on previous image digest");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("verifies web image digest in DEPLOY_PROFILE=full and rolls back both bot and web on mismatch", () => {
+    const { tmpDir, stateFile, webStateFile, logFile } = createFakeBins({
+      initialRunningImage: "sha256:old-bot-111",
+      targetPulledImage: "sha256:new-bot-222",
+      readySucceedsForImage: "sha256:new-bot-222,sha256:old-bot-111",
+      initialRunningWebImage: "sha256:old-web-111",
+      targetPulledWebImage: "sha256:new-web-222",
+      actualStartedWebImage: "sha256:wrong-web-999",
+    });
+    try {
+      expect(() =>
+        execFileSync("bash", [rolloutScript], {
+          env: {
+            ...process.env,
+            PATH: `${tmpDir}:${process.env.PATH ?? ""}`,
+            DEPLOY_PROFILE: "full",
+            BOT_IMAGE: "ghcr.io/hextazdev/tournamenthub-bot:sha-new",
+            WEB_IMAGE: "ghcr.io/hextazdev/tournamenthub-web:sha-new",
+            READY_TIMEOUT_SECONDS: "2",
+            POLL_INTERVAL_SECONDS: "1",
+          },
+          stdio: "pipe",
+        }),
+      ).toThrow();
+      expect(fs.readFileSync(stateFile, "utf8")).toBe("sha256:old-bot-111");
+      expect(fs.readFileSync(webStateFile, "utf8")).toBe("sha256:old-web-111");
+      expect(fs.readFileSync(logFile, "utf8")).toContain(
+        "BOT_IMAGE=sha256:old-bot-111 WEB_IMAGE=sha256:old-web-111",
+      );
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

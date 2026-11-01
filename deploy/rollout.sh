@@ -63,6 +63,26 @@ wait_for_readiness() {
   return 1
 }
 
+verify_running_digests() {
+  local expected_bot="$1"
+  local expected_web="$2"
+  local current_bot
+  current_bot="$(get_running_image_id bot)"
+  if [[ -n "$expected_bot" && "$current_bot" != "$expected_bot" ]]; then
+    echo "[ROLLOUT] Error: running bot image ($current_bot) does not match expected ($expected_bot)" >&2
+    return 1
+  fi
+  if [[ "$PROFILE" == "full" && -n "$expected_web" ]]; then
+    local current_web
+    current_web="$(get_running_image_id web)"
+    if [[ "$current_web" != "$expected_web" ]]; then
+      echo "[ROLLOUT] Error: running web image ($current_web) does not match expected ($expected_web)" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
 PREV_BOT_IMAGE_ID="$(get_running_image_id bot)"
 PREV_WEB_IMAGE_ID=""
 if [[ "$PROFILE" == "full" ]]; then
@@ -88,31 +108,35 @@ if [[ "$SKIP_IF_UNCHANGED" == "1" && -n "$PREV_BOT_IMAGE_ID" && "$PREV_BOT_IMAGE
 fi
 
 echo "[ROLLOUT] Applying update (target bot digest: $TARGET_BOT_IMAGE_ID)..."
-docker compose "${COMPOSE_ARGS[@]}" up -d --no-build "${SERVICES[@]}"
-
-CURRENT_BOT_IMAGE_ID="$(get_running_image_id bot)"
-if [[ -n "$TARGET_BOT_IMAGE_ID" && "$CURRENT_BOT_IMAGE_ID" != "$TARGET_BOT_IMAGE_ID" ]]; then
-  echo "[ROLLOUT] Error: running bot image ($CURRENT_BOT_IMAGE_ID) does not match target ($TARGET_BOT_IMAGE_ID)" >&2
-  ROLLOUT_OK=0
+ROLLOUT_OK=0
+if ! docker compose "${COMPOSE_ARGS[@]}" up -d --no-build "${SERVICES[@]}"; then
+  echo "[ROLLOUT] Error: docker compose up failed for target update." >&2
+elif ! verify_running_digests "$TARGET_BOT_IMAGE_ID" "$TARGET_WEB_IMAGE_ID"; then
+  echo "[ROLLOUT] Error: post-start image digest verification failed." >&2
 elif wait_for_readiness; then
   ROLLOUT_OK=1
 else
-  ROLLOUT_OK=0
+  echo "[ROLLOUT] Error: readiness check timed out after ${READY_TIMEOUT_SECONDS}s." >&2
 fi
 
 if [[ "$ROLLOUT_OK" == "1" ]]; then
-  echo "[ROLLOUT] Success: services are ready and verified on digest $CURRENT_BOT_IMAGE_ID."
+  echo "[ROLLOUT] Success: services are ready and verified on digest $TARGET_BOT_IMAGE_ID."
   exit 0
 fi
 
-echo "[ROLLOUT] Readiness check failed within ${READY_TIMEOUT_SECONDS}s! Initiating automatic rollback..." >&2
+echo "[ROLLOUT] Update failed! Initiating automatic rollback..." >&2
 if [[ -n "$PREV_BOT_IMAGE_ID" ]]; then
   export BOT_IMAGE="$PREV_BOT_IMAGE_ID"
   if [[ "$PROFILE" == "full" && -n "$PREV_WEB_IMAGE_ID" ]]; then
     export WEB_IMAGE="$PREV_WEB_IMAGE_ID"
   fi
-  docker compose "${COMPOSE_ARGS[@]}" up -d --no-build "${SERVICES[@]}"
-  echo "[ROLLOUT] Rolled back to previous image digest ($PREV_BOT_IMAGE_ID)." >&2
+  if docker compose "${COMPOSE_ARGS[@]}" up -d --no-build "${SERVICES[@]}" \
+    && verify_running_digests "$PREV_BOT_IMAGE_ID" "$PREV_WEB_IMAGE_ID" \
+    && wait_for_readiness; then
+    echo "[ROLLOUT] Rolled back and verified ready on previous image digest ($PREV_BOT_IMAGE_ID)." >&2
+  else
+    echo "[ROLLOUT] CRITICAL: Rollback to previous image digest ($PREV_BOT_IMAGE_ID) failed or did not become ready!" >&2
+  fi
 else
   echo "[ROLLOUT] No previous running image recorded; stopping failed containers." >&2
   docker compose "${COMPOSE_ARGS[@]}" stop "${SERVICES[@]}" || true
