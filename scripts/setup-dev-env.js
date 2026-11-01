@@ -88,7 +88,6 @@ const botEnvPath = path.join(__dirname, '../apps/bot/.env');
 const botExamplePath = path.join(__dirname, '../apps/bot/.env.example');
 updateEnvFile(botEnvPath, botExamplePath, {
   SUPABASE_URL: status.API_URL,
-  SUPABASE_KEY: status.ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: status.SERVICE_ROLE_KEY,
   BOT_API_SECRET: process.env.BOT_API_SECRET || "dev-bot-secret-key-123"
 });

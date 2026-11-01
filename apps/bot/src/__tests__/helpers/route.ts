@@ -11,6 +11,7 @@ interface CallOptions {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   path: string;
   body?: unknown;
+  headers?: Record<string, string>;
   adminCheck?: AdminCheck;
   locals?: Record<string, unknown>;
 }
@@ -34,7 +35,7 @@ export async function callRoute(router: Router, opts: CallOptions): Promise<Rout
     const { port } = server.address() as AddressInfo;
     const res = await fetch(`http://127.0.0.1:${port}${opts.path}`, {
       method: opts.method,
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
       ...(opts.body === undefined ? {} : { body: JSON.stringify(opts.body) }),
     });
     const text = await res.text();

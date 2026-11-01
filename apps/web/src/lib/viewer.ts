@@ -5,6 +5,7 @@ import type { GuildAdminReason, ServerSettings, Tournament } from "@hub/shared";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { canViewTournament } from "@/lib/accessRules";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 // Accès serveur uniquement : ce module lit la session NextAuth et utilise la clé service_role.
 // Toute lecture via supabaseAdmin DOIT passer par une des vérifications ci-dessous (SEC-10 / SEC-11).
@@ -85,7 +86,7 @@ export const getGuildAdminAccess = cache(async (guildId: string): Promise<GuildA
     console.error("[access] BOT_API_SECRET is missing");
     return { allowed: false, reason: "CHECK_FAILED" };
   }
-  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
+  const botApiUrl = resolveServerBotApiUrl();
   const params = new URLSearchParams({ guildId, userId: discordId });
   const res = await fetch(`${botApiUrl}/api/discord/permissions?${params}`, {
     headers: { Authorization: `Bearer ${botApiSecret}` },

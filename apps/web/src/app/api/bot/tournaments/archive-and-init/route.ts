@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Missing body parameters" }, { status: 400 });
   }
 
-  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
+  const botApiUrl = resolveServerBotApiUrl();
   const botApiSecret = process.env.BOT_API_SECRET;
 
   if (!botApiSecret) {
