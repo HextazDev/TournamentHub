@@ -15,7 +15,7 @@ The project aims to offer two ways to use the same software:
 
 Essential TournamentHub features are not intended to be locked behind a subscription. Self-hosting does not require a TournamentHub subscription; hosting, domain names and external services may have their own costs or quotas.
 
-**Production self-hosting is being made reproducible.** The application components and Dockerfiles exist, but the current Compose file is for development. Follow [#54 — production Docker installation and homelab validation](https://github.com/Hextaz/TournamentHub/issues/54) for the remaining work. Do not treat `make dev` as a production installation.
+**Bot/API production packaging:** see the [Docker self-hosting guide](docs/SELF_HOSTING.md) and `compose.production.yml`, including the Vercel frontend mode, private runtime configuration, staging isolation and remaining acceptance checks. The default Compose file is still for development. Full-stack self-hosting and real homelab validation remain tracked in [#54](https://github.com/HextazDev/TournamentHub/issues/54). Do not treat `make dev` as a production installation.
 
 ## Architecture
 
@@ -39,7 +39,7 @@ Use a separate Discord development application and test server. Never connect a 
 - Node.js 22.12 or a newer version compatible with the lockfile. The current CI uses Node.js 22.
 - npm and Make.
 
-The application Dockerfiles still use Node.js 20, which is inconsistent with dependencies in the current lockfile. Until #54 resolves this, the native workspace commands below avoid those application images.
+The bot Dockerfile uses Node.js 22 and the lockfile. The older web image remains outside the validated production path; use the native workspace commands below for local development.
 
 ### Initialize a new local environment
 
@@ -92,7 +92,7 @@ make build
 
 The current GitHub Actions CI runs unit tests and application builds for pushes and pull requests to `main`. Linting is available through `make lint`; it is not currently a separate CI step.
 
-Production packaging still needs a dedicated Compose configuration, consistent Node versions, explicit environment injection, a verified Supabase webhook setup, image publication, healthchecks and documented upgrade/backup/restore procedures. These are tracked in #54 rather than presented as completed installation features.
+The bot/API now has a separate production Compose configuration, private runtime environment injection, healthchecks and documented operations. The Docker CI workflow builds and inspects the final bot image without deployment. Full web packaging, verified Supabase webhook provisioning, image publication and real upgrade/backup/restore/homelab acceptance remain tracked in #54.
 
 The repository also retains an older Fly.io workflow whose paths predate the monorepo layout. It is not the documented self-hosting path. Changing an existing deployment requires the maintainer's approval.
 

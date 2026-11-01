@@ -3,3 +3,8 @@
 **/.env*
 !**/.env.example
 .git
+**/*.env
+**/*.pem
+**/dist
+**/*.log
+**/*.tsbuildinfo

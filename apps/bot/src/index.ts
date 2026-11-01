@@ -7,7 +7,8 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import express from "express";
-import dotenv from "dotenv";
+import { botEnvironment } from "./config/runtime";
+import { createHealthRouter } from "./routes/HealthRouter";
 import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
@@ -32,10 +33,8 @@ import * as adminTransferCommand from "./commands/admin-transfer";
 import * as adminSetupCheckinCommand from "./commands/admin-setup-checkin";
 import * as scoreCommand from "./commands/score";
 
-dotenv.config();
-
-const PORT = process.env.PORT || 8080;
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN || "";
+const PORT = botEnvironment.PORT;
+const DISCORD_TOKEN = botEnvironment.DISCORD_TOKEN;
 
 // Collections pour stocker nos commandes
 const commands = new Collection<string, any>();
@@ -70,9 +69,11 @@ app.locals.discordClient = client;
 const guildAdminGuard = requireGuildAdmin(client);
 
 // Health check (no auth required — skipped in middleware)
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok", botConnected: !!client.user });
-});
+app.use(createHealthRouter(() => client.isReady(), async () => {
+  const { error } = await supabase.from("server_settings").select("guild_id").limit(1)
+    .abortSignal(AbortSignal.timeout(3000));
+  return !error;
+}));
 
 // Webhook endpoint for Supabase Database Webhooks (no auth required - secured by signature/secret)
 app.post("/api/webhook/team-update", async (req, res) => {

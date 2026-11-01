@@ -146,6 +146,14 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 
 ---
 
+## 9. Exploitation Docker
+
+| ID | Composant | Scénario | Comportement attendu | Couverture |
+| :--- | :--- | :--- | :--- | :--- |
+| **OPS-01** | Configuration bot | Configuration absente, URL/port invalide ou secret de développement en production. | Échec avant création du client Supabase/connexion Discord ; diagnostic limité aux noms des variables. Les valeurs par défaut restent réservées au développement/test. | ✅ `apps/bot/src/__tests__/deployment.test.ts` |
+| **OPS-02** | `/health`, `/ready` | Gateway déconnectée ou lecture Supabase indisponible. | `/health` conserve son HTTP 200 de liveness ; `/ready` répond 503 sans diagnostic sensible, 200 seulement si Gateway courante et lecture DB disponibles (délai DB 3 s). | ✅ `apps/bot/src/__tests__/deployment.test.ts` |
+| **OPS-03** | Compose production | Instance staging lancée à côté de la production. | Projet Compose, fichier privé, port hôte, application Discord et base distincts ; aucune inscription de commandes au démarrage. | 🛡️ `compose.production.yml`, `docs/SELF_HOSTING.md` ; recette opérateur requise |
+
 ## 📌 Dette de Couverture Prioritaire
 
 Les lignes ⚠️ ci-dessus sont des **bugs latents connus**. Ordre de traitement recommandé :
