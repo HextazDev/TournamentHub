@@ -158,6 +158,11 @@ proxy. API bearer/admin checks remain required behind TLS. Allow the necessary
 server-side Vercel and Supabase webhook callers through any additional access
 gateway. Cloudflare Tunnel is optional, never a dependency. A self-hosted Supabase
 proxy must also support Realtime WebSocket upgrades for browser subscribers.
+Tailscale on the VM alone does not make the API reachable from Vercel. Interactive
+Cloudflare Access blocks server-to-server calls unless an appropriate noninteractive
+authentication mechanism is configured; the current web proxy sends no Access
+credentials. If cloudflared runs in a container, its localhost is not the bot:
+attach it to the Compose network and target `bot:8080` instead.
 
 ### Existing teams webhook contract
 
@@ -169,7 +174,9 @@ to your HTTPS API endpoint, using the Supabase webhook payload. Do not put the
 secret in a query string even though the legacy handler accepts one. The webhook
 is still provisioned manually; this PR does not change its authentication contract.
 Verify unauthenticated requests fail and a real team update synchronizes roles
-on your test Discord server before promotion.
+on your test Discord server before promotion. A failed Discord update returns a
+failure response, but may leave a partial change; operations must be verified and
+retries handled by the webhook operator.
 
 ## Staging, production, logs and health
 

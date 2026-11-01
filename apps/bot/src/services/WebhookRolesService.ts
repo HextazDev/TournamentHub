@@ -18,7 +18,6 @@ export class WebhookRolesService {
       logger.info(`[WebhookRoles] Received team update webhook:`, {
         type: payload.type,
         table: payload.table,
-        record: payload.record
       });
 
       const record = payload.record;
@@ -41,7 +40,7 @@ export class WebhookRolesService {
       return { success: true };
     } catch (error) {
       logger.error(`[WebhookRoles] Error handling team update webhook:`, error);
-      return { success: false, error: (error as Error).message };
+      return { success: false, error: "Discord role synchronization failed" };
     }
   }
 
@@ -90,45 +89,31 @@ export class WebhookRolesService {
         .single();
 
       if (error || !tourney || !tourney.guild_id) {
-        logger.error(`[WebhookRoles] Tournament not found or missing guild_id: ${team.tournament_id}`);
-        return;
+        throw new Error("Tournament lookup failed");
       }
 
       logger.info(`[WebhookRoles] Tournament found: ${tourney.guild_id}, Captain Role: ${tourney.discord_captain_role_id}`);
 
       const guild = await this.client.guilds.fetch(tourney.guild_id).catch(() => null);
       if (!guild) {
-        logger.error(`[WebhookRoles] Failed to fetch guild: ${tourney.guild_id}`);
-        return;
+        throw new Error("Discord guild unavailable");
       }
 
       logger.info(`[WebhookRoles] Guild fetched successfully: ${guild.name}`);
 
       const member = await guild.members.fetch(team.captain_discord_id).catch(() => null);
       if (!member) {
-        logger.error(`[WebhookRoles] Failed to fetch member: ${team.captain_discord_id}`);
-        return;
+        throw new Error("Discord member unavailable");
       }
 
       logger.info(`[WebhookRoles] Member fetched successfully: ${member.user.tag}, Manageable: ${member.manageable}`);
 
       // Apply Nickname
-      if (member.manageable) {
-        let nickname = team.name;
-        if (nickname.length > 32) nickname = nickname.substring(0, 32);
-
-        logger.info(`[WebhookRoles] Current nickname: ${member.nickname}, Target nickname: ${nickname}`);
-
-        if (member.nickname !== nickname && member.user.displayName !== nickname) {
-          await member.setNickname(nickname, "Check-in au Tournoi").catch((err) => {
-            logger.error(`[WebhookRoles] Failed to set nickname:`, err);
-          });
-          logger.info(`[WebhookRoles] Nickname set successfully: ${nickname}`);
-        } else {
-          logger.info(`[WebhookRoles] Nickname already set to target value`);
-        }
-      } else {
-        logger.warn(`[WebhookRoles] Member is not manageable, skipping nickname update`);
+      const nickname = team.name.substring(0, 32);
+      if (member.nickname !== nickname && member.user.displayName !== nickname) {
+        if (!member.manageable) throw new Error("Discord member is not manageable");
+        await member.setNickname(nickname, "Check-in au Tournoi");
+        logger.info(`[WebhookRoles] Nickname set successfully`);
       }
 
       // Apply Role
@@ -138,15 +123,13 @@ export class WebhookRolesService {
           logger.info(`[WebhookRoles] Role found: ${role.name} (${role.id}), Has role: ${member.roles.cache.has(role.id)}`);
 
           if (!member.roles.cache.has(role.id)) {
-            await member.roles.add(role, "Check-in au Tournoi").catch((err) => {
-              logger.error(`[WebhookRoles] Failed to add role:`, err);
-            });
+            await member.roles.add(role, "Check-in au Tournoi");
             logger.info(`[WebhookRoles] Role added successfully: ${role.name}`);
           } else {
             logger.info(`[WebhookRoles] Member already has the role`);
           }
         } else {
-          logger.error(`[WebhookRoles] Role not found in cache: ${tourney.discord_captain_role_id}`);
+          throw new Error("Configured Discord role not found");
         }
       } else {
         logger.warn(`[WebhookRoles] No captain role configured for tournament`);
@@ -154,7 +137,7 @@ export class WebhookRolesService {
 
       logger.info(`[WebhookRoles] applyPresence completed for team: ${team.name}`);
     } catch (error) {
-      logger.error(`[WebhookRoles] Error in applyPresence:`, error);
+      throw error;
     }
   }
 
@@ -169,24 +152,21 @@ export class WebhookRolesService {
         .single();
 
       if (error || !tourney || !tourney.guild_id) {
-        logger.error(`[WebhookRoles] Tournament not found or missing guild_id: ${team.tournament_id}`);
-        return;
+        throw new Error("Tournament lookup failed");
       }
 
       logger.info(`[WebhookRoles] Tournament found: ${tourney.guild_id}, Captain Role: ${tourney.discord_captain_role_id}`);
 
       const guild = await this.client.guilds.fetch(tourney.guild_id).catch(() => null);
       if (!guild) {
-        logger.error(`[WebhookRoles] Failed to fetch guild: ${tourney.guild_id}`);
-        return;
+        throw new Error("Discord guild unavailable");
       }
 
       logger.info(`[WebhookRoles] Guild fetched successfully: ${guild.name}`);
 
       const member = await guild.members.fetch(team.captain_discord_id).catch(() => null);
       if (!member) {
-        logger.error(`[WebhookRoles] Failed to fetch member: ${team.captain_discord_id}`);
-        return;
+        throw new Error("Discord member unavailable");
       }
 
       logger.info(`[WebhookRoles] Member fetched successfully: ${member.user.tag}, Manageable: ${member.manageable}`);
@@ -194,12 +174,12 @@ export class WebhookRolesService {
       // Remove Nickname
       if (member.manageable && member.nickname === team.name.substring(0, 32)) {
         logger.info(`[WebhookRoles] Current nickname matches team name, removing`);
-        await member.setNickname(null, "Annulation du Check-in / Changement d'équipe").catch((err) => {
-          logger.error(`[WebhookRoles] Failed to remove nickname:`, err);
-        });
+        await member.setNickname(null, "Annulation du Check-in / Changement d'équipe");
         logger.info(`[WebhookRoles] Nickname removed successfully`);
+      } else if (member.nickname === team.name.substring(0, 32)) {
+        throw new Error("Discord member is not manageable");
       } else {
-        logger.info(`[WebhookRoles] Nickname does not match team name or member not manageable, skipping`);
+        logger.info(`[WebhookRoles] Nickname does not match team name, skipping`);
       }
 
       // Remove Role
@@ -209,15 +189,13 @@ export class WebhookRolesService {
           logger.info(`[WebhookRoles] Role found: ${role.name} (${role.id}), Has role: ${member.roles.cache.has(role.id)}`);
 
           if (member.roles.cache.has(role.id)) {
-            await member.roles.remove(role, "Annulation du Check-in / Changement d'équipe").catch((err) => {
-              logger.error(`[WebhookRoles] Failed to remove role:`, err);
-            });
+            await member.roles.remove(role, "Annulation du Check-in / Changement d'équipe");
             logger.info(`[WebhookRoles] Role removed successfully: ${role.name}`);
           } else {
             logger.info(`[WebhookRoles] Member does not have the role`);
           }
         } else {
-          logger.error(`[WebhookRoles] Role not found in cache: ${tourney.discord_captain_role_id}`);
+          throw new Error("Configured Discord role not found");
         }
       } else {
         logger.warn(`[WebhookRoles] No captain role configured for tournament`);
@@ -225,7 +203,7 @@ export class WebhookRolesService {
 
       logger.info(`[WebhookRoles] removePresence completed for team: ${team.name}`);
     } catch (error) {
-      logger.error(`[WebhookRoles] Error in removePresence:`, error);
+      throw error;
     }
   }
 
