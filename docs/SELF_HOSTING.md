@@ -66,6 +66,7 @@ Edit the private files; Git and the Docker build context exclude `*.env`. Never 
 
 | Variable | Meaning |
 | --- | --- |
+| `SUPABASE_URL` | Server-side HTTPS URL of your Supabase Data API (resolved dynamically at runtime); required |
 | `NEXT_PUBLIC_SUPABASE_URL` | Public HTTPS URL of your Supabase Data API / Realtime; required |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public `anon` key of your Supabase project (enforced by RLS); required |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only `service_role` key from the same Supabase project; required |
@@ -76,7 +77,7 @@ Edit the private files; Git and the Docker build context exclude `*.env`. Never 
 | `DISCORD_CLIENT_ID` | Numeric Discord application ID; required |
 | `DISCORD_CLIENT_SECRET` | Private Discord OAuth2 client secret; required |
 
-Generate `BOT_API_SECRET` and `NEXTAUTH_SECRET` with a cryptographic generator, e.g. `openssl rand -hex 32`. Both `bot` and `web` containers validate their environment before opening their listening port and fail closed if variables are missing or contain development placeholders, without printing secret values (`OPS-01`, `OPS-06`).
+Generate `BOT_API_SECRET` and `NEXTAUTH_SECRET` with a cryptographic generator, e.g. `openssl rand -hex 32`. Both `bot` and `web` containers validate their environment before opening their listening port and fail closed if variables are missing or contain development placeholders, without printing secret values (`OPS-01`, `OPS-06`). Both the browser Supabase client (`lib/supabase.ts`) and the server `service_role` client (`lib/supabase-admin.ts`) resolve their URL and key lazily at runtime via dynamic lookup, so an image built with configuration A and started with configuration B always connects to B.
 
 ## Build and start (operator action only)
 
@@ -103,16 +104,55 @@ curl --fail http://127.0.0.1:8080/ready
 curl --fail http://127.0.0.1:3000/api/health
 ```
 
-### Using published GHCR images instead of building locally
+### Using published GHCR images and `deploy/rollout.sh`
 
-GitHub Actions (`docker-bot.yml`) builds, verifies and publishes versioned images (`ghcr.io/<owner>/tournamenthub-bot` and `ghcr.io/<owner>/tournamenthub-web`) tagged by commit (`sha-<12chars>`) and release tag (`vX.Y.Z`) without embedding instance secrets:
+GitHub Actions (`docker-bot.yml`) runs unit tests, linting and monorepo builds (`validate-monorepo`), then builds and verifies `apps/bot/Dockerfile` and `apps/web/Dockerfile` once and pushes **those exact verified artefacts** (`ghcr.io/<owner>/tournamenthub-bot` and `ghcr.io/<owner>/tournamenthub-web`) tagged with `sha-<12chars>`, `staging` (on `staging` pushes) and `vX.Y.Z` (on release tags), recording their `@sha256:...` digests in the workflow summary.
+
+> [!NOTE]
+> **Initial GHCR package visibility**: GitHub Container Registry creates new packages as **private by default**. After the first workflow publish, the repository owner must open each package on GitHub (`tournamenthub-bot` and `tournamenthub-web` → **Package settings** → **Change visibility**) and set it to **Public** so community operators can pull anonymously without a GitHub account. If pulling from a private registry/fork, authenticate first on the host with a read-only token (`read:packages` scope only):
+> ```sh
+> echo "$GHCR_READ_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
+> ```
+
+Use [`deploy/rollout.sh`](../deploy/rollout.sh) (`OPS-08`) to pull, verify the running image digest, wait for `/ready` (and `/api/health` when `DEPLOY_PROFILE=full`) within a bounded timeout (`READY_TIMEOUT_SECONDS`, default `90s`), and **automatically roll back to the previous image digest** if readiness fails:
 
 ```sh
-export BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:sha-XXXXXXXXXXXX
-export WEB_IMAGE=ghcr.io/hextazdev/tournamenthub-web:sha-XXXXXXXXXXXX
-docker compose -p tournamenthub-staging --profile full -f compose.production.yml pull
-docker compose -p tournamenthub-staging --profile full -f compose.production.yml up -d --no-build
+# Bot/API only rollout:
+COMPOSE_PROJECT_NAME=tournamenthub-staging \
+BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:sha-XXXXXXXXXXXX \
+./deploy/rollout.sh
+
+# Full-stack rollout (bot + web):
+COMPOSE_PROJECT_NAME=tournamenthub-staging \
+DEPLOY_PROFILE=full \
+BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:sha-XXXXXXXXXXXX \
+WEB_IMAGE=ghcr.io/hextazdev/tournamenthub-web:sha-XXXXXXXXXXXX \
+./deploy/rollout.sh
 ```
+
+#### Optional pull-based staging auto-deployment on a Proxmox VM
+
+No inbound SSH/webhook from GitHub Actions into the private VM is needed. On the staging VM, configure a `systemd` timer running `deploy/rollout.sh` with `SKIP_IF_UNCHANGED=1` against the `:staging` tag published after CI passes on the `staging` branch:
+
+```ini
+# /etc/systemd/system/tournamenthub-staging-rollout.service
+[Unit]
+Description=TournamentHub staging pull rollout with automatic rollback
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tournamenthub
+Environment=COMPOSE_PROJECT_NAME=tournamenthub-staging
+Environment=BOT_ENV_FILE=/etc/tournamenthub/staging-bot.env
+Environment=BOT_HOST_PORT=8081
+Environment=BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:staging
+Environment=SKIP_IF_UNCHANGED=1
+ExecStart=/opt/tournamenthub/deploy/rollout.sh
+```
+
+When `SKIP_IF_UNCHANGED=1`, `deploy/rollout.sh` compares the pulled `:staging` digest against the currently running container's `.Image` digest and exits immediately without restarting if the digest is unchanged and `/ready` is healthy. If a new `:staging` image was published, it updates the container, waits up to 90s for `/ready`, and rolls back automatically to the previous digest if `/ready` fails.
 
 Both images run on Node 22 as non-root users (`node` for bot, `nextjs` for web), directly start Node (no PM2), and use a read-only root filesystem with `tmpfs` mounts, `cap_drop: ALL`, `no-new-privileges: true` and a bridge network. All durable state lives in Supabase.
 

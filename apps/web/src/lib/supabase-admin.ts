@@ -1,13 +1,28 @@
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { resolveServerSupabaseAdminConfig } from "./config";
 
-const supabaseUrl =
-  process.env.SUPABASE_URL ||
-  process.env.NEXT_PUBLIC_SUPABASE_URL ||
-  "https://placeholder.supabase.co";
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
+let cachedAdminClient: SupabaseClient | null = null;
+let cachedAdminKey = "";
+
+function getSupabaseAdminClient(): SupabaseClient {
+  const { supabaseUrl, supabaseServiceKey } = resolveServerSupabaseAdminConfig();
+  const nextKey = `${supabaseUrl}::${supabaseServiceKey}`;
+  if (!cachedAdminClient || cachedAdminKey !== nextKey) {
+    cachedAdminClient = createClient(supabaseUrl, supabaseServiceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+    cachedAdminKey = nextKey;
+  }
+  return cachedAdminClient;
+}
 
 // Attention: Ce client contourne TOUTES les règles RLS !
-// Il ne doit être utilisé QUE dans le backend (API Routes) après avoir vérifié les permissions manuellement.
-export const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
-  auth: { autoRefreshToken: false, persistSession: false }
+// Il ne doit être utilisé QUE côté serveur après avoir vérifié les permissions manuellement (lib/viewer.ts).
+// Résolu paresseusement au runtime (OPS-06) pour ne jamais rester figé sur une URL de build.
+export const supabaseAdmin: SupabaseClient = new Proxy({} as SupabaseClient, {
+  get(_target, prop, receiver) {
+    const client = getSupabaseAdminClient();
+    const value = Reflect.get(client, prop, receiver);
+    return typeof value === "function" ? value.bind(client) : value;
+  },
 });

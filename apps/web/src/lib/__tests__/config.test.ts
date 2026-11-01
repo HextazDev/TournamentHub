@@ -3,7 +3,9 @@ import {
   readWebServerEnvironment,
   resolvePublicSupabaseConfig,
   resolveServerBotApiUrl,
+  resolveServerSupabaseAdminConfig,
 } from "../config";
+import { supabaseAdmin } from "../supabase-admin";
 import { GET as getHealth } from "../../app/api/health/route";
 import { validateWebProductionEnv } from "../../../scripts/start-production.mjs";
 
@@ -119,6 +121,35 @@ describe("OPS-06: web server environment validation", () => {
       supabaseUrl: "https://runtime.supabase.co",
       supabaseAnonKey: "runtime-anon-key",
     });
+  });
+
+  it("re-resolves supabaseAdmin URL and key at runtime when built with instance A and started with instance B", () => {
+    process.env = {
+      ...validProdEnv,
+      NEXT_PUBLIC_SUPABASE_URL: "https://build-instance-a.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key-a",
+    };
+    expect(resolveServerSupabaseAdminConfig(process.env).supabaseUrl).toBe(
+      "https://build-instance-a.supabase.co",
+    );
+    expect((supabaseAdmin as unknown as { supabaseUrl: string }).supabaseUrl).toBe(
+      "https://build-instance-a.supabase.co",
+    );
+
+    // Runtime container starts against instance B (either via SUPABASE_URL or runtime NEXT_PUBLIC_SUPABASE_URL)
+    process.env = {
+      ...validProdEnv,
+      NEXT_PUBLIC_SUPABASE_URL: "https://build-instance-a.supabase.co",
+      SUPABASE_URL: "https://runtime-instance-b.supabase.co",
+      SUPABASE_SERVICE_ROLE_KEY: "service-role-key-b",
+    };
+    expect(resolveServerSupabaseAdminConfig(process.env)).toEqual({
+      supabaseUrl: "https://runtime-instance-b.supabase.co",
+      supabaseServiceKey: "service-role-key-b",
+    });
+    expect((supabaseAdmin as unknown as { supabaseUrl: string }).supabaseUrl).toBe(
+      "https://runtime-instance-b.supabase.co",
+    );
   });
 });
 

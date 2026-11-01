@@ -5,10 +5,24 @@ export interface PublicSupabaseConfig {
   supabaseAnonKey: string;
 }
 
+export interface ServerSupabaseAdminConfig {
+  supabaseUrl: string;
+  supabaseServiceKey: string;
+}
+
 declare global {
   interface Window {
     __HUB_PUBLIC_CONFIG__?: Partial<PublicSupabaseConfig>;
   }
+}
+
+/**
+ * Dynamic property lookup prevents Next.js/Turbopack from statically inlining
+ * build-time `NEXT_PUBLIC_*` values into server-side runtime helpers.
+ */
+function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
+  const val = Reflect.get(env, key);
+  return typeof val === "string" && val.length > 0 ? val : undefined;
 }
 
 const httpUrl = z
@@ -48,12 +62,29 @@ function trimTrailingSlash(url: string): string {
  * then `NEXT_PUBLIC_BOT_API_URL`, and falls back to `http://localhost:8080` outside production.
  */
 export function resolveServerBotApiUrl(env: NodeJS.ProcessEnv = process.env): string {
-  const production = env.NODE_ENV === "production";
+  const production = envValue(env, "NODE_ENV") === "production";
   const candidate =
-    env.BOT_API_URL ||
-    env.NEXT_PUBLIC_BOT_API_URL ||
+    envValue(env, "BOT_API_URL") ||
+    envValue(env, "NEXT_PUBLIC_BOT_API_URL") ||
     (production ? "" : "http://localhost:8080");
   return trimTrailingSlash(candidate);
+}
+
+/**
+ * Resolves the server-side Supabase URL and service_role key at runtime.
+ * Uses dynamic lookup (`SUPABASE_URL`, then `NEXT_PUBLIC_SUPABASE_URL`) so an image built
+ * with URL A and started with URL B always connects to URL B at runtime.
+ */
+export function resolveServerSupabaseAdminConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): ServerSupabaseAdminConfig {
+  const supabaseUrl =
+    envValue(env, "SUPABASE_URL") ||
+    envValue(env, "NEXT_PUBLIC_SUPABASE_URL") ||
+    "https://placeholder.supabase.co";
+  const supabaseServiceKey =
+    envValue(env, "SUPABASE_SERVICE_ROLE_KEY") || "placeholder-service-role-key";
+  return { supabaseUrl, supabaseServiceKey };
 }
 
 /**
@@ -69,8 +100,12 @@ export function resolvePublicSupabaseConfig(
     runtimeConfig ??
     (typeof window !== "undefined" ? window.__HUB_PUBLIC_CONFIG__ : undefined);
 
-  const envUrl = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const envAnonKey = env.SUPABASE_ANON_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+  const envUrl =
+    envValue(env, "SUPABASE_URL") || envValue(env, "NEXT_PUBLIC_SUPABASE_URL") || "";
+  const envAnonKey =
+    envValue(env, "SUPABASE_ANON_KEY") ||
+    envValue(env, "NEXT_PUBLIC_SUPABASE_ANON_KEY") ||
+    "";
 
   const isPlaceholderUrl = !envUrl || PLACEHOLDER_PATTERN.test(envUrl);
   const isPlaceholderKey = !envAnonKey || PLACEHOLDER_PATTERN.test(envAnonKey);
@@ -98,10 +133,12 @@ export function resolvePublicSupabaseConfig(
  * Reports only variable names on error so credentials never leak into logs or responses.
  */
 export function readWebServerEnvironment(env: NodeJS.ProcessEnv = process.env) {
-  const production = env.NODE_ENV === "production";
+  const production = envValue(env, "NODE_ENV") === "production";
   const rawBotApiUrl = resolveServerBotApiUrl(env);
-  const rawSupabaseUrl = env.SUPABASE_URL || env.NEXT_PUBLIC_SUPABASE_URL;
-  const rawSupabaseAnonKey = env.SUPABASE_ANON_KEY || env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const rawSupabaseUrl =
+    envValue(env, "SUPABASE_URL") || envValue(env, "NEXT_PUBLIC_SUPABASE_URL");
+  const rawSupabaseAnonKey =
+    envValue(env, "SUPABASE_ANON_KEY") || envValue(env, "NEXT_PUBLIC_SUPABASE_ANON_KEY");
 
   const parsed = webServerSchema.safeParse({
     NEXT_PUBLIC_SUPABASE_URL:
@@ -109,18 +146,21 @@ export function readWebServerEnvironment(env: NodeJS.ProcessEnv = process.env) {
     NEXT_PUBLIC_SUPABASE_ANON_KEY:
       rawSupabaseAnonKey || (production ? undefined : "dev-anon-key"),
     SUPABASE_SERVICE_ROLE_KEY:
-      env.SUPABASE_SERVICE_ROLE_KEY || (production ? undefined : "dev-service-role-key"),
+      envValue(env, "SUPABASE_SERVICE_ROLE_KEY") ||
+      (production ? undefined : "dev-service-role-key"),
     BOT_API_URL: rawBotApiUrl || undefined,
     BOT_API_SECRET:
-      env.BOT_API_SECRET || (production ? undefined : "dev-bot-secret-key-123"),
+      envValue(env, "BOT_API_SECRET") ||
+      (production ? undefined : "dev-bot-secret-key-123"),
     NEXTAUTH_URL:
-      env.NEXTAUTH_URL || (production ? undefined : "http://localhost:3000"),
+      envValue(env, "NEXTAUTH_URL") || (production ? undefined : "http://localhost:3000"),
     NEXTAUTH_SECRET:
-      env.NEXTAUTH_SECRET || (production ? undefined : "dev-nextauth-secret"),
+      envValue(env, "NEXTAUTH_SECRET") || (production ? undefined : "dev-nextauth-secret"),
     DISCORD_CLIENT_ID:
-      env.DISCORD_CLIENT_ID || (production ? undefined : "0"),
+      envValue(env, "DISCORD_CLIENT_ID") || (production ? undefined : "0"),
     DISCORD_CLIENT_SECRET:
-      env.DISCORD_CLIENT_SECRET || (production ? undefined : "dev-discord-secret"),
+      envValue(env, "DISCORD_CLIENT_SECRET") ||
+      (production ? undefined : "dev-discord-secret"),
   });
 
   if (!parsed.success) {
