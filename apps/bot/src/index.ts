@@ -7,7 +7,8 @@ import {
   PermissionFlagsBits,
 } from "discord.js";
 import express from "express";
-import dotenv from "dotenv";
+import { botEnvironment } from "./config/runtime";
+import { createHealthRouter } from "./routes/HealthRouter";
 import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
@@ -15,8 +16,8 @@ import { authMiddleware, requireGuildAdmin } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
+import { SchedulerRecovery } from "./services/SchedulerRecovery";
 import { ScoreService } from "./services/ScoreService";
-import { ArchiveService } from "./services/ArchiveService";
 import { RegistrationService } from "./services/RegistrationService";
 import { WebhookRolesService } from "./services/WebhookRolesService";
 import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
@@ -26,16 +27,15 @@ import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
 import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
+import { archiveAndInit, syncSchedule } from "./routes/LifecycleRouter";
 
 // Importer les commandes locales
 import * as adminTransferCommand from "./commands/admin-transfer";
 import * as adminSetupCheckinCommand from "./commands/admin-setup-checkin";
 import * as scoreCommand from "./commands/score";
 
-dotenv.config();
-
-const PORT = process.env.PORT || 8080;
-const DISCORD_TOKEN = process.env.DISCORD_TOKEN || "";
+const PORT = botEnvironment.PORT;
+const DISCORD_TOKEN = botEnvironment.DISCORD_TOKEN;
 
 // Collections pour stocker nos commandes
 const commands = new Collection<string, any>();
@@ -70,9 +70,16 @@ app.locals.discordClient = client;
 const guildAdminGuard = requireGuildAdmin(client);
 
 // Health check (no auth required — skipped in middleware)
-app.get("/health", (_req, res) => {
-  res.status(200).json({ status: "ok", botConnected: !!client.user });
-});
+const schedulerRecovery = new SchedulerRecovery(
+  () => SchedulerService.init(client),
+  (error) => logger.error("[Scheduler] Restoration failed; retrying", error),
+);
+app.use(createHealthRouter(() => client.isReady(), async () => {
+  if (!schedulerRecovery.isReady()) return false;
+  const { error } = await supabase.from("server_settings").select("guild_id").limit(1)
+    .abortSignal(AbortSignal.timeout(3000));
+  return !error;
+}));
 
 // Webhook endpoint for Supabase Database Webhooks (no auth required - secured by signature/secret)
 app.post("/api/webhook/team-update", async (req, res) => {
@@ -281,73 +288,9 @@ app.post("/api/discord/auto-setup", guildAdminGuard, async (req, res) => {
   }
 });
 
-// Endpoint: Mettre à jour le planning du bot après création d'un tournoi
-app.post("/api/discord/sync-schedule", guildAdminGuard, async (req, res) => {
-  try {
-    const { tournament_id } = req.body;
-    if (!tournament_id) {
-      return res.status(400).json({ error: "tournament_id manquant" });
-    }
-
-    const { data: tournament, error } = await supabase
-      .from("tournaments")
-      .select("*")
-      .eq("id", tournament_id)
-      .single();
-
-    if (error || !tournament) {
-      return res.status(404).json({ error: "Tournoi inconnu en DB" });
-    }
-
-    SchedulerService.scheduleTournament(tournament);
-
-    return res
-      .status(200)
-      .json({ message: "Schedule synchronisé avec succès." });
-  } catch (err) {
-    logger.error("Err in /api/discord/sync-schedule:", err);
-    return res.status(500).json({ error: "Erreur interne" });
-  }
-});
-
-// Endpoint: Archivage et Nettoyage Discord
-app.post('/api/tournaments/archive-and-init', guildAdminGuard, async (req, res) => {
-  const { guildId, newTournamentId } = req.body;
-
-  if (!guildId) return res.status(400).json({ error: 'Missing guildId parameter' });
-
-  try {
-    // Le front-end (Next.js) s'est déjà chargé d'insérer le nouveau tournoi en DB.
-    // Il faut juste :
-    // 1. Archiver les autres tournois de la DB (normalement le frontend ou le web le fait ou on le fait ici pour sécurité)
-    await supabase.from('tournaments')
-      .update({ status: 'ARCHIVED' })
-      .eq('guild_id', guildId)
-      .neq('id', newTournamentId)
-      .neq('status', 'ARCHIVED');
-
-    const { data: newTourney, error: fetchErr } = await supabase.from('tournaments')
-      .select('*')
-      .eq('id', newTournamentId)
-      .single();
-
-    const { data: settings } = await supabase.from('server_settings')
-      .select('captain_role_id')
-      .eq('guild_id', guildId)
-      .single();
-
-    // Lancer le nettoyage des salons & rôles discord en arrière-plan
-    ArchiveService.backgroundDiscordCleanup(client, guildId, settings?.captain_role_id).catch((e: any) => logger.error(e));
-
-    // Démarrer la synchro des plannings
-    if (newTourney && !fetchErr) SchedulerService.scheduleTournament(newTourney);
-
-    return res.status(202).json({ message: 'Cleanup and init done', tournament: newTourney });
-  } catch (err: any) {
-    logger.error('Error during archive-and-init:', err);
-    return res.status(500).json({ error: err.message });
-  }
-});
+// Lifecycle routes: authenticate the guild before loading or changing a tournament.
+app.post('/api/discord/sync-schedule', guildAdminGuard, syncSchedule);
+app.post('/api/tournaments/archive-and-init', guildAdminGuard, archiveAndInit);
 
 // Mutation routes: protected by authMiddleware + requireGuildAdmin (live Discord perm check)
 app.use('/api/phases', guildAdminGuard, phaseRouter);
@@ -423,7 +366,7 @@ const bootstrap = async () => {
 
 
     // Start Tournament Scheduler
-    await SchedulerService.init(client);
+    void schedulerRecovery.start();
 
     // Initialize Webhook Roles Service
     // This service handles team updates via Supabase Database Webhooks
@@ -573,6 +516,7 @@ const bootstrap = async () => {
     // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info(`[Process] Received ${signal}, shutting down gracefully...`);
+      schedulerRecovery.stop();
       SchedulerService.cancelAllJobs();
 
       if (server) {

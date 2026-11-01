@@ -16,6 +16,10 @@ out/
 .pnp.js
 
 # Env files
+.env.*
+!.env.example
+**/*.env
+!**/*.env.example
 .env
 .env.local
 .env.development.local

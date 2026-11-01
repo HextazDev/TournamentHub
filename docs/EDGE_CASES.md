@@ -104,6 +104,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **SEC-11** | `resolveAdminReason` (bot), `getGuildAdminAccess` (web) | Un TO sans permission Administrateur veut accéder au panel. | Une seule règle (propriétaire > Administrateur > Gérer le serveur > rôle TO) partagée par `requireGuildAdmin`, `/api/discord/permissions` et la synchro `guild_admins`. Le web applique la même décision au bouton « Panel », au layout admin, aux pages admin et à la suppression ; un refus affiche sa raison (non connecté, non-membre, droits insuffisants, bot absent, vérification impossible). | ✅ `__tests__/GuildRegistryService.test.ts`, `__tests__/auth.test.ts` |
 | **SEC-12** | Pages admin `/admin/[guildId]/tournaments/[id]/**` | Un admin du serveur A ouvre l'URL d'un tournoi ou d'une phase du serveur B. | `404` : `getManagedTournament` exige le droit sur le serveur **et** `tournaments.guild_id = guildId` ; les phases sont filtrées par `tournament_id`. | 🛡️ |
 | **SEC-13** | Proxy `/api/bot/[...path]` | Le navigateur appelle une route interne du bot (`discord/permissions`, `webhook/*`, `discord/sync-schedule`, `archive-and-init`) ou tente une traversée (`..`). | `404` avant tout appel au bot : liste blanche des routes de gestion. Aucun cookie ni en-tête du navigateur n'est relayé. | ✅ `lib/__tests__/botProxyAllowlist.test.ts` |
+| **SEC-14** | Routes bot d'archivage et synchronisation | Un administrateur cible un tournoi d'un autre serveur ou omet l'identifiant. | Refus avant écriture, nettoyage Discord ou planification ; le chargement du tournoi est filtré par serveur. | ✅ `apps/bot/src/__tests__/lifecycleTenant.test.ts` |
 | **SEC-09** | NextAuth Discord OAuth | Retour OAuth avec `iss` Discord, émetteur inattendu ou `state` divergent. | Émetteur attendu fixé à `https://discord.com` : connexion acceptée pour Discord, émetteur et état invalides refusés avant échange du code. | ✅ `apps/web/src/app/api/auth/__tests__/discordOAuth.test.ts` |
 
 ---
@@ -145,6 +146,16 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **DB-01** | Déploiement du schéma | Une modification de schéma est faite à la main dans l'éditeur SQL Supabase (cause des erreurs `PGRST204` sur `language` en production). | Interdit : tout changement passe par une migration versionnée, rejouée sur base vierge par `make db-test-rls`, puis appliquée par `make db-push` (`supabase db push --linked`). | 🛡️ |
 
 ---
+
+## 9. Exploitation Docker
+
+| ID | Composant | Scénario | Comportement attendu | Couverture |
+| :--- | :--- | :--- | :--- | :--- |
+| **OPS-01** | Configuration bot | Configuration absente, URL/port invalide ou secret de développement en production. | Échec avant création du client Supabase/connexion Discord ; diagnostic limité aux noms des variables. Les valeurs par défaut restent réservées au développement/test. | ✅ `apps/bot/src/__tests__/deployment.test.ts` |
+| **OPS-02** | `/health`, `/ready` | Gateway déconnectée, scheduler non restauré ou lecture Supabase indisponible. | `/health` conserve son HTTP 200 de liveness ; `/ready` répond 503 sans diagnostic sensible, 200 seulement si Gateway courante, scheduler restauré et lecture DB disponible (délai DB 3 s). | ✅ `apps/bot/src/__tests__/deployment.test.ts`, `apps/bot/src/__tests__/schedulerRecovery.test.ts` |
+| **OPS-03** | Compose production | Instance staging lancée à côté de la production. | Projet Compose, fichier privé, port hôte, application Discord et base distincts ; aucune inscription de commandes au démarrage. | 🛡️ `compose.production.yml`, `docs/SELF_HOSTING.md` ; recette opérateur requise |
+| **OPS-04** | Restauration scheduler | Supabase indisponible au démarrage puis disponible. | La restauration est retentée ; `/ready` reste indisponible jusqu'au succès. Arrêt annule la prochaine tentative. | ✅ `apps/bot/src/__tests__/schedulerRecovery.test.ts` |
+| **OPS-05** | Webhook des équipes | Discord refuse une modification de pseudo ou de rôle. | Échec du traitement ; aucun succès HTTP n'est annoncé pour l'opération ratée. La recette avec Discord réel reste à faire. | ✅ `apps/bot/src/__tests__/webhookFailures.test.ts` |
 
 ## 📌 Dette de Couverture Prioritaire
 
