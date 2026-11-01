@@ -19,7 +19,6 @@ import { SchedulerService } from "./services/SchedulerService";
 import { SchedulerRecovery } from "./services/SchedulerRecovery";
 import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
-import { WebhookRolesService } from "./services/WebhookRolesService";
 import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
 import { resolveAdminReason } from "./utils/adminAccess";
 import { phaseRouter } from "./routes/PhaseRouter";
@@ -28,6 +27,7 @@ import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
 import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
 import { archiveAndInit, syncSchedule } from "./routes/LifecycleRouter";
+import { createWebhookRouter } from "./routes/WebhookRouter";
 
 // Importer les commandes locales
 import * as adminTransferCommand from "./commands/admin-transfer";
@@ -81,36 +81,8 @@ app.use(createHealthRouter(() => client.isReady(), async () => {
   return !error;
 }));
 
-// Webhook endpoint for Supabase Database Webhooks (no auth required - secured by signature/secret)
-app.post("/api/webhook/team-update", async (req, res) => {
-  try {
-    const webhookSecret = process.env.WEBHOOK_SECRET || process.env.BOT_API_SECRET;
-    if (!webhookSecret) {
-      logger.error("[Webhook] Secret non configuré dans l'environnement");
-      return res.status(500).json({ error: "Server authentication misconfiguration" });
-    }
-
-    const receivedSecret = req.headers["x-webhook-secret"] || req.query.secret;
-    if (receivedSecret !== webhookSecret) {
-      return res.status(401).json({ error: "Unauthorized: Invalid webhook secret" });
-    }
-
-    const webhookService = new WebhookRolesService(client);
-    const result = await webhookService.handleTeamUpdate(req.body);
-
-    if (result.success) {
-      res.status(200).json({ received: true });
-    } else {
-      res.status(500).json({ received: false, error: result.error });
-    }
-  } catch (error: any) {
-    logger.error("Error handling team update webhook:", error);
-    res.status(500).json({
-      received: false,
-      error: error?.message || "Failed to handle webhook"
-    });
-  }
-});
+// Webhook endpoint for Supabase Database Webhooks (requires Authorization Bearer + x-webhook-secret)
+app.use("/api", createWebhookRouter(client));
 
 // Endpoint: Fetch Roles for the connected Discord Guild
 app.get("/api/discord/roles", guildAdminGuard, async (req, res) => {

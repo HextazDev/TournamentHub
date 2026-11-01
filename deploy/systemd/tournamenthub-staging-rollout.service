@@ -1,0 +1,21 @@
+[Unit]
+Description=TournamentHub staging pull rollout with automatic rollback
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tournamenthub
+Environment=COMPOSE_PROJECT_NAME=tournamenthub-staging
+Environment=BOT_ENV_FILE=/etc/tournamenthub/staging-bot.env
+Environment=BOT_HOST_PORT=8081
+Environment=BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:staging
+Environment=SKIP_IF_UNCHANGED=1
+Environment=REJECTED_STATE_FILE=/var/tmp/tournamenthub-staging-rejected-target.state
+# For full-stack staging (bot + web), uncomment:
+# Environment=DEPLOY_PROFILE=full
+# Environment=WEB_ENV_FILE=/etc/tournamenthub/staging-web.env
+# Environment=WEB_HOST_PORT=3001
+# Environment=WEB_IMAGE=ghcr.io/hextazdev/tournamenthub-web:staging
+ExecStart=/opt/tournamenthub/deploy/rollout.sh
