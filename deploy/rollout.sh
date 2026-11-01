@@ -17,6 +17,8 @@ WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://127.0.0.1:${WEB_HOST_PORT:-3000}/api/he
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-90}"
 POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-2}"
 SKIP_IF_UNCHANGED="${SKIP_IF_UNCHANGED:-0}"
+FORCE_ROLLOUT="${FORCE_ROLLOUT:-0}"
+REJECTED_STATE_FILE="${REJECTED_STATE_FILE:-/var/tmp/${PROJECT}-rejected-target.state}"
 
 if [[ -z "${BOT_IMAGE:-}" ]]; then
   echo "[ROLLOUT] Error: BOT_IMAGE must be set (e.g. ghcr.io/hextazdev/tournamenthub-bot:sha-...)" >&2
@@ -96,6 +98,20 @@ TARGET_BOT_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$BOT_IMAGE")"
 TARGET_WEB_IMAGE_ID=""
 if [[ "$PROFILE" == "full" ]]; then
   TARGET_WEB_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$WEB_IMAGE")"
+  BOT_REV="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$BOT_IMAGE" 2>/dev/null || true)"
+  WEB_REV="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$WEB_IMAGE" 2>/dev/null || true)"
+  if [[ -n "$BOT_REV" && -n "$WEB_REV" && "$BOT_REV" != "<no value>" && "$WEB_REV" != "<no value>" && "$BOT_REV" != "$WEB_REV" ]]; then
+    echo "[ROLLOUT] Error: bot image revision ($BOT_REV) does not match web image revision ($WEB_REV); refusing inconsistent full-stack rollout." >&2
+    exit 1
+  fi
+fi
+TARGET_KEY="${TARGET_BOT_IMAGE_ID}::${TARGET_WEB_IMAGE_ID}"
+
+if [[ "$SKIP_IF_UNCHANGED" == "1" && "$FORCE_ROLLOUT" != "1" && -f "$REJECTED_STATE_FILE" ]]; then
+  if [[ "$(cat "$REJECTED_STATE_FILE" 2>/dev/null || true)" == "$TARGET_KEY" ]]; then
+    echo "[ROLLOUT] Target digest ($TARGET_KEY) was previously rejected and rolled back; skipping until a new image is published or FORCE_ROLLOUT=1."
+    exit 0
+  fi
 fi
 
 if [[ "$SKIP_IF_UNCHANGED" == "1" && -n "$PREV_BOT_IMAGE_ID" && "$PREV_BOT_IMAGE_ID" == "$TARGET_BOT_IMAGE_ID" ]]; then
@@ -120,11 +136,14 @@ else
 fi
 
 if [[ "$ROLLOUT_OK" == "1" ]]; then
+  rm -f "$REJECTED_STATE_FILE"
   echo "[ROLLOUT] Success: services are ready and verified on digest $TARGET_BOT_IMAGE_ID."
   exit 0
 fi
 
-echo "[ROLLOUT] Update failed! Initiating automatic rollback..." >&2
+mkdir -p "$(dirname "$REJECTED_STATE_FILE")"
+printf '%s' "$TARGET_KEY" > "$REJECTED_STATE_FILE"
+echo "[ROLLOUT] Update failed! Recorded rejected target ($TARGET_KEY) in $REJECTED_STATE_FILE and initiating automatic rollback..." >&2
 if [[ -n "$PREV_BOT_IMAGE_ID" ]]; then
   export BOT_IMAGE="$PREV_BOT_IMAGE_ID"
   if [[ "$PROFILE" == "full" && -n "$PREV_WEB_IMAGE_ID" ]]; then

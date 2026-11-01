@@ -12,6 +12,7 @@ Environment=BOT_ENV_FILE=/etc/tournamenthub/staging-bot.env
 Environment=BOT_HOST_PORT=8081
 Environment=BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:staging
 Environment=SKIP_IF_UNCHANGED=1
+Environment=REJECTED_STATE_FILE=/var/tmp/tournamenthub-staging-rejected-target.state
 # For full-stack staging (bot + web), uncomment:
 # Environment=DEPLOY_PROFILE=full
 # Environment=WEB_ENV_FILE=/etc/tournamenthub/staging-web.env

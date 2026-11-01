@@ -106,7 +106,7 @@ curl --fail http://127.0.0.1:3000/api/health
 
 ### Using published GHCR images and `deploy/rollout.sh`
 
-GitHub Actions (`docker-bot.yml`) runs unit tests, linting and monorepo builds (`validate-monorepo`), then builds and verifies `apps/bot/Dockerfile` and `apps/web/Dockerfile` once and pushes **those exact verified artefacts** (`ghcr.io/<owner>/tournamenthub-bot` and `ghcr.io/<owner>/tournamenthub-web`) tagged with `sha-<12chars>`, `staging` (on `staging` pushes) and `vX.Y.Z` (on release tags), recording their `@sha256:...` digests in the workflow summary.
+GitHub Actions (`docker-bot.yml`) uses a per-ref concurrency group (`containers-${{ github.ref }}`), runs unit tests, linting and monorepo builds (`validate-monorepo`), then builds and verifies `apps/bot/Dockerfile` and `apps/web/Dockerfile` once (stamping `org.opencontainers.image.revision=${GITHUB_SHA}`) and pushes **those exact verified artefacts** (`ghcr.io/<owner>/tournamenthub-bot` and `ghcr.io/<owner>/tournamenthub-web`) tagged with immutable `sha-<12chars>` tags. Only after **both** `docker-bot` and `docker-web` succeed and the branch/tag ref still points to `${GITHUB_SHA}` does the `promote-tags` job atomically promote both digests to `:staging` (on `staging` pushes) or `:vX.Y.Z` (on release tags).
 
 > [!NOTE]
 > **Initial GHCR package visibility**: GitHub Container Registry creates new packages as **private by default**. After the first workflow publish, the repository owner must open each package on GitHub (`tournamenthub-bot` and `tournamenthub-web` → **Package settings** → **Change visibility**) and set it to **Public** so community operators can pull anonymously without a GitHub account. If pulling from a private registry/fork, authenticate first on the host with a read-only token (`read:packages` scope only):
@@ -150,6 +150,7 @@ Environment=BOT_ENV_FILE=/etc/tournamenthub/staging-bot.env
 Environment=BOT_HOST_PORT=8081
 Environment=BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:staging
 Environment=SKIP_IF_UNCHANGED=1
+Environment=REJECTED_STATE_FILE=/var/tmp/tournamenthub-staging-rejected-target.state
 ExecStart=/opt/tournamenthub/deploy/rollout.sh
 ```
 
@@ -180,7 +181,7 @@ sudo systemctl list-timers tournamenthub-staging-rollout.timer
 sudo journalctl -u tournamenthub-staging-rollout.service -n 50 --no-pager
 ```
 
-When `SKIP_IF_UNCHANGED=1`, `deploy/rollout.sh` compares the pulled `:staging` digest(s) against the currently running container `.Image` digest(s) and exits immediately without restarting if unchanged and healthy. If a new `:staging` image was published, it updates the service(s), verifies both `bot` and `web` running digests, waits up to 90s for `/ready` (and `/api/health`), and rolls back automatically (re-verifying readiness on the restored digest) if `docker compose up` or the readiness probe fails.
+When `SKIP_IF_UNCHANGED=1`, `deploy/rollout.sh` compares the pulled `:staging` digest(s) against the currently running container `.Image` digest(s) and exits immediately without restarting if unchanged and healthy. In `DEPLOY_PROFILE=full`, it also verifies that the `org.opencontainers.image.revision` label on `bot` and `web` matches before touching running containers. If a new `:staging` image fails `docker compose up` or the readiness probe, `deploy/rollout.sh` rolls back automatically (re-verifying readiness on the restored digest) **and records the rejected target digest in `REJECTED_STATE_FILE`** so subsequent timer ticks do not re-attempt the broken image until a new digest is published (or an operator explicitly sets `FORCE_ROLLOUT=1`).
 
 Both images run on Node 22 as non-root users (`node` for bot, `nextjs` for web), directly start Node (no PM2), and use a read-only root filesystem with `tmpfs` mounts, `cap_drop: ALL`, `no-new-privileges: true` and a bridge network. All durable state lives in Supabase.
 
