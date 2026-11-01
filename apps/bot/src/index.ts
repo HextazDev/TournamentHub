@@ -16,6 +16,7 @@ import { authMiddleware, requireGuildAdmin } from "./middleware/auth";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
+import { SchedulerRecovery } from "./services/SchedulerRecovery";
 import { ScoreService } from "./services/ScoreService";
 import { ArchiveService } from "./services/ArchiveService";
 import { RegistrationService } from "./services/RegistrationService";
@@ -69,7 +70,12 @@ app.locals.discordClient = client;
 const guildAdminGuard = requireGuildAdmin(client);
 
 // Health check (no auth required — skipped in middleware)
+const schedulerRecovery = new SchedulerRecovery(
+  () => SchedulerService.init(client),
+  (error) => logger.error("[Scheduler] Restoration failed; retrying", error),
+);
 app.use(createHealthRouter(() => client.isReady(), async () => {
+  if (!schedulerRecovery.isReady()) return false;
   const { error } = await supabase.from("server_settings").select("guild_id").limit(1)
     .abortSignal(AbortSignal.timeout(3000));
   return !error;
@@ -424,7 +430,7 @@ const bootstrap = async () => {
 
 
     // Start Tournament Scheduler
-    await SchedulerService.init(client);
+    void schedulerRecovery.start();
 
     // Initialize Webhook Roles Service
     // This service handles team updates via Supabase Database Webhooks
@@ -574,6 +580,7 @@ const bootstrap = async () => {
     // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info(`[Process] Received ${signal}, shutting down gracefully...`);
+      schedulerRecovery.stop();
       SchedulerService.cancelAllJobs();
 
       if (server) {

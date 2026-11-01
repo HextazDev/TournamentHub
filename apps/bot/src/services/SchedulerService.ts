@@ -22,11 +22,11 @@ export class SchedulerService {
       .from("tournaments")
       .select("*")
       .in("status", ["REGISTRATION", "ACTIVE"])
-      .gte("checkin_end_at", new Date().toISOString());
+      .gte("checkin_end_at", new Date().toISOString())
+      .abortSignal(AbortSignal.timeout(10_000));
 
     if (error) {
-      console.error("[Scheduler] Error fetching active tournaments:", error);
-      return;
+      throw new Error("Failed to load active tournaments", { cause: error });
     }
 
     if (tournaments && tournaments.length > 0) {

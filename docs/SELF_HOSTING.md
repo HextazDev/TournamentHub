@@ -60,7 +60,7 @@ migration history before retrying; restore to a new database if recovery is need
 Create your own Discord application. Enable **Server Members Intent**, plus the
 Guilds and GuildMessages intents used by the code. Invite with `bot` and
 `applications.commands` scopes. Grant View Channels, Send Messages, Embed Links,
-Read Message History, Manage Channels and Manage Roles as needed by tournament
+Read Message History, Manage Channels, Manage Roles and Manage Nicknames as needed by tournament
 features. Place the bot role above roles it manages; Administrator is unnecessary.
 Use the same application ID for the web OAuth provider and this bot.
 
@@ -182,11 +182,12 @@ name alone does not isolate Discord or database credentials. Do not run two acti
 bot instances against the same application/database: schedulers can duplicate work.
 
 `/health` retains HTTP 200 liveness with `botConnected` reflecting `client.isReady()`.
-`/ready` returns 200 only with a current Gateway connection and a successful minimal
+`/ready` returns 200 only after scheduler restoration, with a current Gateway connection and a successful minimal
 Supabase read, otherwise 503; its database timeout is 3 seconds. Neither endpoint
 returns credentials or database error details. Restrict public access to probes
 at the proxy if desired. This probe does not prove every RPC or the entire schema.
-Express currently starts after Discord login, so probes may be unreachable during
+Scheduler restoration retries every 30 seconds after an initial failure; this does not
+guarantee that every scheduled Discord operation succeeds. Express currently starts after Discord login, so probes may be unreachable during
 startup. The image allows a 90-second start period.
 
 Winston emits JSON in production: info to stdout, warnings/errors to stderr.
@@ -221,13 +222,15 @@ permissions, tournaments, roles and Realtime before being considered successful.
 
 ## Verification evidence and remaining acceptance
 
-Audit on 2026-11-01 found five production dependency advisories in the existing
+Audit on 2026-11-01 found five production dependency advisories in the previous
 lockfile (one critical, three high, one moderate), including Next.js 16.4.0.
+The bot's unused direct Next.js dependency has since been removed; the web still
+uses Next.js, and a fresh audit of the final image remains necessary.
 Dependency remediation and a fresh audit are required before production approval;
 this packaging change does not upgrade those dependencies or certify the instance
-as secure. The web source is unchanged; local compilation additionally exposed its
-existing invalid `authOptions` export from a Next.js route. Resolve that build
-failure separately before treating the full monorepo build as passing.
+as secure. Linux CI for commit e3fda45 passed both the monorepo build and Docker
+image checks; a separate Windows local build encountered a Next.js route typing
+failure. Recheck CI for subsequent commits.
 
 The PR adds local Vitest tests for rejected configuration, sanitized diagnostics,
 disconnected Gateway, successful readiness and database failure. The dedicated CI
