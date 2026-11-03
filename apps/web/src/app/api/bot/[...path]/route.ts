@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isBotProxyPathAllowed } from "@/lib/botProxyAllowlist";
+import { BOT_UNREACHABLE, botAccessError } from "@/lib/accessErrors";
+import { getServerLocale } from "@/i18n/server";
 
 /**
  * Proxy navigateur ➜ bot. Le secret BOT_API_SECRET et l'identité Discord (issue de la session serveur) sont
@@ -61,12 +63,14 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
     });
 
     const contentType = res.headers.get("content-type");
-    const payload = contentType?.includes("application/json") ? await res.json() : { error: await res.text() };
+    const payload: unknown = contentType?.includes("application/json") ? await res.json() : { error: await res.text() };
 
-    return NextResponse.json(payload, { status: res.status });
+    // SEC-18 : un refus d'accès du bot devient un message traduit ; les erreurs métier sont relayées telles quelles.
+    const accessError = res.ok ? null : botAccessError(payload, await getServerLocale());
+    return NextResponse.json(accessError ?? payload, { status: res.status });
   } catch (error: unknown) {
     console.error(`Proxy Error to ${targetUrl}:`, error);
-    return NextResponse.json({ error: "Bot unreachable" }, { status: 502 });
+    return NextResponse.json(botAccessError(BOT_UNREACHABLE, await getServerLocale()), { status: 502 });
   }
 }
 

@@ -1,15 +1,13 @@
 import { Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "crypto";
-import { PermissionFlagsBits } from "discord.js";
-import type { GuildAdminReason } from "@hub/shared";
-import { supabase } from "../lib/supabase";
+import { canPerform, type AccessDeniedCode, type GuildAccess, type GuildAction } from "@hub/shared";
 import { logger } from "../utils/logger";
-import { resolveAdminReason } from "../utils/adminAccess";
+import { resolveMemberAccess, type DiscordClientLike, type MemberAccessDecision } from "../services/MemberAccessService";
 
 export interface AdminCheck {
   discordId: string;
   guildId: string;
-  reason: GuildAdminReason;
+  access: GuildAccess;
 }
 
 declare module "express-serve-static-core" {
@@ -48,32 +46,19 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
-interface PermCacheEntry {
-  adminCheck: AdminCheck | null;
-  timestamp: number;
+/** Refus d'accès structuré : `code` permet au web d'afficher un message traduit (jamais le texte brut). */
+function deny(res: Response, status: number, code: AccessDeniedCode, error: string) {
+  return res.status(status).json({ error, code });
 }
 
-const permCache = new Map<string, PermCacheEntry>();
-const PERM_CACHE_TTL_MS = 30_000; // SEC-05 : délai maximal de prise en compte d'une perte de droits.
+type DeniedDecision = Extract<MemberAccessDecision, { allowed: false }>;
 
-export function clearPermissionCache() {
-  permCache.clear();
-}
-
-/** Sous-ensemble du client Discord utilisé (facilite les tests). */
-interface DiscordClientLike {
-  guilds: {
-    fetch(guildId: string): Promise<{
-      ownerId: string;
-      members: {
-        fetch(userId: string): Promise<{
-          permissions: { has(flag: bigint): boolean };
-          roles: { cache: { has(roleId: string): boolean } };
-        }>;
-      };
-    }>;
-  };
-}
+const DENIAL_RESPONSES: Record<DeniedDecision["code"], { status: number; error: string }> = {
+  BOT_NOT_IN_GUILD: { status: 404, error: "Guild not found" },
+  NOT_A_MEMBER: { status: 403, error: "User not found in guild" },
+  NO_RIGHTS: { status: 403, error: "Insufficient Discord permissions" },
+  CHECK_FAILED: { status: 503, error: "Permission check temporarily unavailable" },
+};
 
 function firstString(...values: unknown[]): string | undefined {
   return values.find((v): v is string => typeof v === "string" && v.length > 0);
@@ -81,7 +66,7 @@ function firstString(...values: unknown[]): string | undefined {
 
 /**
  * Exige que l'utilisateur (X-Discord-User-Id, injecté par le proxy) administre le serveur ciblé :
- * propriétaire, Administrateur, Gérer le serveur ou rôle TO configuré (règle unique resolveAdminReason).
+ * propriétaire, Administrateur, Gérer le serveur ou rôle TO configuré (décision unique resolveMemberAccess).
  */
 export function requireGuildAdmin(discordClient: DiscordClientLike) {
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -95,57 +80,62 @@ export function requireGuildAdmin(discordClient: DiscordClientLike) {
     );
 
     if (!discordId) {
-      return res.status(401).json({ error: "User identity required" });
+      return deny(res, 401, "NOT_LOGGED_IN", "User identity required");
     }
     if (!guildId) {
       return res.status(400).json({ error: "guildId required — provide in body, query, or X-Guild-Id header" });
     }
 
-    const cacheKey = `${guildId}:${discordId}`;
-    const cached = permCache.get(cacheKey);
-    const now = Date.now();
-    if (cached && now - cached.timestamp < PERM_CACHE_TTL_MS) {
-      if (!cached.adminCheck) return res.status(403).json({ error: "Insufficient Discord permissions" });
-      req.adminCheck = cached.adminCheck;
-      return next();
+    const decision = await resolveMemberAccess(discordClient, guildId, discordId);
+    if (!decision.allowed) {
+      const { status, error } = DENIAL_RESPONSES[decision.code];
+      return deny(res, status, decision.code, error);
     }
-
-    const guild = await discordClient.guilds.fetch(guildId).catch(() => null);
-    if (!guild) {
-      return res.status(404).json({ error: "Guild not found" });
-    }
-
-    const member = await guild.members.fetch(discordId).catch(() => null);
-    if (!member) {
-      permCache.set(cacheKey, { adminCheck: null, timestamp: now });
-      return res.status(403).json({ error: "User not found in guild" });
-    }
-
-    const { data: settings, error } = await supabase
-      .from("server_settings")
-      .select("to_role_id")
-      .eq("guild_id", guildId)
-      .maybeSingle();
-    if (error) {
-      logger.error(`[Auth] Lecture du rôle TO impossible pour ${guildId}:`, error);
-      return res.status(503).json({ error: "Permission check temporarily unavailable" });
-    }
-
-    const toRoleId = (settings as { to_role_id: string | null } | null)?.to_role_id ?? null;
-    const reason = resolveAdminReason({
-      isOwner: guild.ownerId === discordId,
-      hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
-      hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
-      hasToRole: !!toRoleId && member.roles.cache.has(toRoleId),
-    });
-
-    const adminCheck = reason ? { discordId, guildId, reason } : null;
-    permCache.set(cacheKey, { adminCheck, timestamp: now });
-
-    if (!adminCheck) {
-      return res.status(403).json({ error: "Insufficient Discord permissions" });
-    }
-    req.adminCheck = adminCheck;
+    req.adminCheck = { discordId, guildId, access: decision.access };
     next();
+  };
+}
+
+const ACTION_DENIED_CODE: Record<GuildAction, AccessDeniedCode> = {
+  MANAGE_SERVER_SETTINGS: "SERVER_SETTINGS_RESERVED",
+  CREATE_TOURNAMENT: "NO_RIGHTS",
+  DELETE_TOURNAMENT: "NO_RIGHTS",
+  MANAGE_TOURNAMENT: "NO_RIGHTS",
+};
+
+/**
+ * À placer après requireGuildAdmin : restreint une route à une action précise (canPerform, SEC-16).
+ * Sans adminCheck (garde mal montée), la requête est refusée.
+ */
+export function requireGuildAction(action: GuildAction) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.adminCheck || !canPerform(req.adminCheck.access, action)) {
+      return deny(res, 403, ACTION_DENIED_CODE[action], "Action reserved to server managers");
+    }
+    next();
+  };
+}
+
+/**
+ * GET /api/discord/permissions — décision d'accès pour le panel web (appel serveur Next.js uniquement :
+ * le proxy /api/bot ne relaie pas cette route, cf. SEC-13). Même décision et même cache que requireGuildAdmin.
+ */
+export function guildPermissionsHandler(discordClient: DiscordClientLike) {
+  return async (req: Request, res: Response) => {
+    const guildId = typeof req.query.guildId === "string" ? req.query.guildId : "";
+    const userId = typeof req.query.userId === "string" ? req.query.userId : "";
+    if (!guildId || !userId) return res.status(400).json({ error: "Missing parameters" });
+
+    try {
+      const decision = await resolveMemberAccess(discordClient, guildId, userId);
+      if (decision.allowed) return res.status(200).json({ hasPermission: true, access: decision.access });
+      if (decision.code === "CHECK_FAILED") {
+        return deny(res, 503, "CHECK_FAILED", DENIAL_RESPONSES.CHECK_FAILED.error);
+      }
+      return res.status(200).json({ hasPermission: false, reason: decision.code });
+    } catch (error) {
+      logger.error("[Auth] Vérification des permissions impossible:", error);
+      return deny(res, 500, "CHECK_FAILED", "Internal Server Error");
+    }
   };
 }

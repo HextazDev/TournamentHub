@@ -131,6 +131,49 @@ export type ServerSettingsUpdate = z.infer<typeof ServerSettingsUpdateSchema>;
 export const GuildAdminReasonSchema = z.enum(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE"]);
 export type GuildAdminReason = z.infer<typeof GuildAdminReasonSchema>;
 
+/**
+ * Accès d'un membre au back-office d'un serveur (SEC-11) :
+ * - SERVER : propriétaire, Administrateur, Gérer le serveur ou rôle TO du serveur (server_settings.to_role_id) ;
+ * - TOURNAMENT : rôle TO propre à certains tournois (tournaments.discord_to_role_id), limité à ces tournois.
+ */
+export type GuildAccess =
+  | { level: "SERVER"; reason: GuildAdminReason }
+  | { level: "TOURNAMENT"; tournamentIds: readonly string[] };
+
+export const GUILD_ACTIONS = ["MANAGE_SERVER_SETTINGS", "CREATE_TOURNAMENT", "DELETE_TOURNAMENT", "MANAGE_TOURNAMENT"] as const;
+export type GuildAction = (typeof GUILD_ACTIONS)[number];
+
+/** Motifs de refus d'accès, partagés par le bot (champ `code` des réponses) et le web (messages traduits). */
+export const AccessDeniedCodeSchema = z.enum([
+  "NOT_LOGGED_IN",
+  "NOT_A_MEMBER",
+  "NO_RIGHTS",
+  "BOT_NOT_IN_GUILD",
+  "CHECK_FAILED",
+  "SERVER_SETTINGS_RESERVED",
+]);
+export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
+
+/** Les paramètres du serveur décident qui est TO : ils restent hors de portée du rôle TO (SEC-16). */
+const SERVER_SETTINGS_REASONS: ReadonlySet<GuildAdminReason> = new Set(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD"]);
+
+/** Règle pure des actions autorisées (SEC-15 / SEC-16), partagée par le bot et le web. Fermée par défaut. */
+export function canPerform(access: GuildAccess, action: GuildAction, tournamentId?: string): boolean {
+  if (access.level === "TOURNAMENT") {
+    return action === "MANAGE_TOURNAMENT" && tournamentId !== undefined && access.tournamentIds.includes(tournamentId);
+  }
+  switch (action) {
+    case "MANAGE_SERVER_SETTINGS":
+      return SERVER_SETTINGS_REASONS.has(access.reason);
+    case "CREATE_TOURNAMENT":
+    case "DELETE_TOURNAMENT":
+    case "MANAGE_TOURNAMENT":
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Common Zod Schemas
 export const CreateTournamentSchema = z.object({
   name: z.string().min(2, "Le nom du tournoi doit comporter au moins 2 caractères"),
