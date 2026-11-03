@@ -1,5 +1,5 @@
 type Row = Record<string, unknown>;
-type Filter = { column: string; value: unknown };
+type Filter = { column: string; value: unknown } | { column: string; values: readonly unknown[] };
 
 export interface WriteLog {
   table: string;
@@ -15,7 +15,7 @@ export interface QueryResult {
 }
 
 /**
- * Base Supabase en mémoire : `select / eq / limit / single / maybeSingle / update / insert`.
+ * Base Supabase en mémoire : `select / eq / in / limit / single / maybeSingle / update / insert`.
  * L'update applique réellement ses filtres `eq` (comme PostgREST) : un `update().eq("status", X)` sur une ligne
  * dont le statut a changé ne modifie rien et renvoie 0 ligne. On teste ainsi l'atomicité observable.
  *
@@ -53,6 +53,11 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
   public eq(column: string, value: unknown) {
     this.filters.push({ column, value });
+    return this;
+  }
+
+  public in(column: string, values: readonly unknown[]) {
+    this.filters.push({ column, values });
     return this;
   }
 
@@ -95,7 +100,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
   }
 
   private matches(row: Row): boolean {
-    return this.filters.every(f => row[f.column] === f.value);
+    return this.filters.every(f => ("values" in f ? f.values.includes(row[f.column]) : row[f.column] === f.value));
   }
 
   private toSingle(res: QueryResult): QueryResult {

@@ -2,7 +2,7 @@
 
 import React from "react";
 import { useTranslation } from "@/i18n/LanguageContext";
-import { resolveGroupPoints } from "@hub/shared";
+import { compareStandings, computeStandings, resolveGroupPoints, type StandingsMatch } from "@hub/shared";
 
 export interface PhaseTeamStat {
   id: string;
@@ -25,72 +25,22 @@ export interface PhaseTeamStat {
   };
 }
 
-export function LeaderboardTable({ teams, matches, settings }: { teams: PhaseTeamStat[], matches?: any[], settings?: unknown }) {
+/**
+ * Sans matchs fournis : valeurs persistées (phase_teams). Avec matchs : même calcul partagé que le bot
+ * (`computeStandings` de @hub/shared), pour un classement identique web / Discord (LB-06).
+ */
+function withStandings(teams: PhaseTeamStat[], matches: readonly StandingsMatch[] | undefined, settings: unknown): PhaseTeamStat[] {
+  if (!matches || matches.length === 0) return teams;
+  const standings = computeStandings(teams.map((team) => team.team_id), matches, resolveGroupPoints(settings));
+  return teams.map((team) => {
+    const standing = standings.get(team.team_id);
+    return standing ? { ...team, ...standing } : team;
+  });
+}
+
+export function LeaderboardTable({ teams, matches, settings }: { teams: PhaseTeamStat[], matches?: readonly StandingsMatch[], settings?: unknown }) {
   const { t } = useTranslation();
-
-  // Config defaults (from @hub/shared / LeaderboardService)
-  const {
-    points_win: pointsWin,
-    points_draw: pointsDraw,
-    points_loss: pointsLoss,
-    points_forfeit: pointsForfeit,
-  } = resolveGroupPoints(settings);
-
-  // Option: dynamically override stats based on matches array if provided
-  const computedTeams = teams.map((t) => {
-    if (!matches || matches.length === 0) return t;
-
-    let played = 0, wins = 0, draws = 0, losses = 0, forfeits = 0, score_for = 0, score_against = 0;
-
-    matches.forEach((m) => {
-      const isCompleted = m.status === "COMPLETED" || m.status === "FF";
-      if (!isCompleted) return;
-
-      const isTeam1 = m.team1_id === t.team_id;
-      const isTeam2 = m.team2_id === t.team_id;
-
-      if (!isTeam1 && !isTeam2) return;
-
-      played += 1;
-
-      const myScore = isTeam1 ? (m.team1_score || 0) : (m.team2_score || 0);
-      const theirScore = isTeam1 ? (m.team2_score || 0) : (m.team1_score || 0);
-
-      score_for += myScore;
-      score_against += theirScore;
-
-      if (myScore > theirScore) {
-        wins += 1;
-      } else if (myScore < theirScore) {
-        losses += 1;
-        if (m.status === "FF") {
-           forfeits += 1;
-        }
-      } else {
-        draws += 1;
-      }
-    });
-
-    return {
-      ...t,
-      played,
-      wins,
-      draws,
-      losses,
-      forfeits,
-      score_for,
-      score_against,
-      differential: score_for - score_against,
-      points: (wins * pointsWin) + (draws * pointsDraw) + (losses * pointsLoss) + (forfeits * pointsForfeit)
-    };
-  });
-
-  // Sort teams: points DESC, differential DESC, score_for DESC
-  const sortedTeams = [...computedTeams].sort((a, b) => {
-    if (b.points !== a.points) return b.points - a.points;
-    if (b.differential !== a.differential) return b.differential - a.differential;
-    return b.score_for - a.score_for;
-  });
+  const sortedTeams = [...withStandings(teams, matches, settings)].sort(compareStandings);
 
   return (
     <div className="w-full overflow-x-auto rounded-lg border border-slate-800/60 shadow-xl bg-slate-900/50">

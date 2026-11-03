@@ -251,3 +251,132 @@ export function resolveGroupPoints(settings: unknown): GroupPoints {
   return resolved;
 }
 
+// ─── Classement d'une phase (poules & Suisse) ────────────────────────────────
+// Calcul unique partagé par le classement persisté (LeaderboardService ➜ phase_teams)
+// et le classement web (LeaderboardTable) : bot et web affichent les mêmes valeurs (LB-06).
+
+/** Statuts de match qui comptent au classement ; tous les autres (PENDING, CONTESTED, DSQ…) sont ignorés. */
+export const STANDINGS_MATCH_STATUSES = ["COMPLETED", "FF", "BYE"] as const;
+
+/** Champs d'un match lus par le calcul du classement. */
+export interface StandingsMatch {
+  team1_id: string | null;
+  team2_id: string | null;
+  team1_score: number | null;
+  team2_score: number | null;
+  status: string;
+}
+
+export interface TeamStanding {
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+  forfeits: number;
+  score_for: number;
+  score_against: number;
+  differential: number;
+  points: number;
+}
+
+type MatchOutcome = "win" | "draw" | "loss" | "forfeit";
+
+function emptyStanding(): TeamStanding {
+  return {
+    played: 0, wins: 0, draws: 0, losses: 0, forfeits: 0,
+    score_for: 0, score_against: 0, differential: 0, points: 0,
+  };
+}
+
+function isStandingsStatus(status: string): boolean {
+  return (STANDINGS_MATCH_STATUSES as readonly string[]).includes(status);
+}
+
+function applyOutcome(
+  standing: TeamStanding,
+  outcome: MatchOutcome,
+  scoreFor: number,
+  scoreAgainst: number,
+  points: GroupPoints,
+): void {
+  standing.played += 1;
+  standing.score_for += scoreFor;
+  standing.score_against += scoreAgainst;
+  standing.differential = standing.score_for - standing.score_against;
+  switch (outcome) {
+    case "win":
+      standing.wins += 1;
+      standing.points += points.points_win;
+      break;
+    case "draw":
+      standing.draws += 1;
+      standing.points += points.points_draw;
+      break;
+    case "loss":
+      standing.losses += 1;
+      standing.points += points.points_loss;
+      break;
+    case "forfeit":
+      standing.forfeits += 1;
+      standing.points += points.points_forfeit;
+      break;
+  }
+}
+
+/**
+ * Classement des équipes `teamIds` à partir de leurs matchs.
+ * - `COMPLETED` : victoire / nul / défaite selon le score.
+ * - `FF` : forfait **exclusif** — le gagnant prend `points_win`, le perdant un forfait et `points_forfeit`
+ *   (jamais `points_loss` en plus, LB-05). À égalité, double forfait (LB-07).
+ * - `BYE`, ou adversaire `null` : victoire de l'équipe présente au barème `points_win` (LB-08, SWS-05).
+ * Les équipes absentes de `teamIds` (autre groupe) ne sont pas créditées.
+ */
+export function computeStandings(
+  teamIds: readonly string[],
+  matches: readonly StandingsMatch[],
+  points: GroupPoints,
+): Map<string, TeamStanding> {
+  const standings = new Map<string, TeamStanding>();
+  for (const teamId of teamIds) standings.set(teamId, emptyStanding());
+
+  for (const match of matches) {
+    if (!isStandingsStatus(match.status)) continue;
+    const s1 = match.team1_score ?? 0;
+    const s2 = match.team2_score ?? 0;
+    const team1 = match.team1_id === null ? undefined : standings.get(match.team1_id);
+    const team2 = match.team2_id === null ? undefined : standings.get(match.team2_id);
+
+    const isBye = match.status === "BYE" || match.team1_id === null || match.team2_id === null;
+    if (isBye) {
+      // Une seule équipe réelle : elle gagne, son score est le plus haut des deux (1-0 à la génération).
+      const realTeam = match.team1_id !== null ? team1 : team2;
+      if (realTeam) applyOutcome(realTeam, "win", Math.max(s1, s2), Math.min(s1, s2), points);
+      continue;
+    }
+
+    let outcome1: MatchOutcome;
+    let outcome2: MatchOutcome;
+    if (match.status === "FF") {
+      outcome1 = s1 > s2 ? "win" : "forfeit";
+      outcome2 = s2 > s1 ? "win" : "forfeit";
+    } else {
+      outcome1 = s1 > s2 ? "win" : s1 < s2 ? "loss" : "draw";
+      outcome2 = s2 > s1 ? "win" : s2 < s1 ? "loss" : "draw";
+    }
+    if (team1) applyOutcome(team1, outcome1, s1, s2, points);
+    if (team2) applyOutcome(team2, outcome2, s2, s1, points);
+  }
+
+  return standings;
+}
+
+/** Ordre du classement : points ➜ différence ➜ score marqué (décroissants). */
+export function compareStandings(
+  a: Pick<TeamStanding, "points" | "differential" | "score_for">,
+  b: Pick<TeamStanding, "points" | "differential" | "score_for">,
+): number {
+  if (b.points !== a.points) return b.points - a.points;
+  if (b.differential !== a.differential) return b.differential - a.differential;
+  return b.score_for - a.score_for;
+}
+

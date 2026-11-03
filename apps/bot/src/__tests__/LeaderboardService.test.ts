@@ -6,11 +6,12 @@ vi.mock("../utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
+import { computeStandings, resolveGroupPoints, type StandingsMatch } from "@hub/shared";
 import { logger } from "../utils/logger";
 import { LeaderboardService } from "../services/LeaderboardService";
 
 type Row = Record<string, unknown>;
-type Fixture = { settings: unknown; teams: string[]; matches: Row[] };
+type Fixture = { settings: unknown; teams: string[]; matches: StandingsMatch[] };
 type Update = { team_id: unknown; payload: Row };
 
 /**
@@ -22,10 +23,16 @@ function mockGroup(fixture: Fixture): Update[] {
   db.from.mockImplementation((table: string) => {
     let payload: Row | null = null;
     const filters: Record<string, unknown> = {};
+    let statusFilter: unknown[] | null = null;
     const result = () => {
       if (table === "groups") return { data: { phase_id: "phase-1" }, error: null };
       if (table === "phases") return { data: { settings: fixture.settings }, error: null };
-      if (table === "matches") return { data: fixture.matches, error: null };
+      if (table === "matches") {
+        // Applique le filtre `.in("status", …)` comme le ferait PostgreSQL.
+        const allowed = statusFilter;
+        const rows = allowed ? fixture.matches.filter((m) => allowed.includes(m.status)) : fixture.matches;
+        return { data: rows, error: null };
+      }
       if (table === "phase_teams" && payload) {
         updates.push({ team_id: filters.team_id, payload });
         return { data: null, error: null };
@@ -37,7 +44,10 @@ function mockGroup(fixture: Fixture): Update[] {
     };
     const builder = {
       select: () => builder,
-      in: () => builder,
+      in: (col: string, values: unknown[]) => {
+        if (col === "status") statusFilter = values;
+        return builder;
+      },
       update: (p: Row) => {
         payload = p;
         return builder;
@@ -55,7 +65,7 @@ function mockGroup(fixture: Fixture): Update[] {
   return updates;
 }
 
-const matches: Row[] = [
+const matches: StandingsMatch[] = [
   // A bat B, A fait nul avec C, C bat B
   { team1_id: "A", team2_id: "B", team1_score: 2, team2_score: 0, status: "COMPLETED" },
   { team1_id: "A", team2_id: "C", team1_score: 1, team2_score: 1, status: "COMPLETED" },
@@ -109,5 +119,91 @@ describe("LeaderboardService.calculateGroupStandings — barème des poules", ()
     const updates = mockGroup({ settings: JSON.stringify({ points_win: 5 }), teams: ["A", "B", "C"], matches });
     await LeaderboardService.calculateGroupStandings("group-1");
     expect(pointsOf(updates)).toEqual({ A: 6, B: 0, C: 6 });
+  });
+});
+
+function standingOf(updates: Update[], teamId: string): Row {
+  const update = updates.find((u) => u.team_id === teamId);
+  if (!update) throw new Error(`Aucune écriture phase_teams pour ${teamId}`);
+  return update.payload;
+}
+
+describe("LeaderboardService.calculateGroupStandings — forfaits et BYE (#51)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("LB-05: match FF en poules ➜ persisté en forfait exclusif (pas ignoré, pas de défaite cumulée)", async () => {
+    const updates = mockGroup({
+      settings: { points_win: 3, points_loss: 1, points_forfeit: -1 },
+      teams: ["A", "B"],
+      matches: [{ team1_id: "A", team2_id: "B", team1_score: 0, team2_score: 3, status: "FF" }],
+    });
+    await LeaderboardService.calculateGroupStandings("group-1");
+    expect(standingOf(updates, "A")).toMatchObject({ played: 1, losses: 0, forfeits: 1, points: -1 });
+    expect(standingOf(updates, "B")).toMatchObject({ played: 1, wins: 1, forfeits: 0, points: 3 });
+  });
+
+  it("LB-06: valeurs persistées identiques au calcul partagé utilisé par le web", async () => {
+    const settings = { points_win: 2, points_draw: 1, points_loss: 0, points_forfeit: -2 };
+    const groupMatches: StandingsMatch[] = [
+      ...matches,
+      { team1_id: "B", team2_id: "C", team1_score: 0, team2_score: 0, status: "FF" },
+      { team1_id: "A", team2_id: null, team1_score: 1, team2_score: 0, status: "COMPLETED" },
+      { team1_id: "C", team2_id: "A", team1_score: 5, team2_score: 0, status: "PENDING" },
+    ];
+    const updates = mockGroup({ settings, teams: ["A", "B", "C"], matches: groupMatches });
+    await LeaderboardService.calculateGroupStandings("group-1");
+
+    const expected = computeStandings(["A", "B", "C"], groupMatches, resolveGroupPoints(settings));
+    for (const teamId of ["A", "B", "C"]) {
+      expect(standingOf(updates, teamId)).toEqual(expected.get(teamId));
+    }
+  });
+});
+
+describe("LeaderboardService.calculateSwissStandings — barème phase.settings (#51)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const swissMatches: StandingsMatch[] = [
+    { team1_id: "A", team2_id: "B", team1_score: 2, team2_score: 1, status: "COMPLETED" },
+    { team1_id: "C", team2_id: "D", team1_score: 1, team2_score: 1, status: "COMPLETED" },
+    { team1_id: "E", team2_id: null, team1_score: 1, team2_score: 0, status: "BYE" },
+  ];
+
+  it("SWS-05: barème personnalisé appliqué, BYE inclus (plus de 3 / 1 / 0 en dur)", async () => {
+    const updates = mockGroup({
+      settings: { points_win: 2, points_draw: 0, points_loss: 1 },
+      teams: ["A", "B", "C", "D", "E"],
+      matches: swissMatches,
+    });
+    await LeaderboardService.calculateSwissStandings("phase-1");
+    expect(pointsOf(updates)).toEqual({ A: 2, B: 1, C: 0, D: 0, E: 2 });
+    expect(standingOf(updates, "E")).toMatchObject({ played: 1, wins: 1 });
+  });
+
+  it("SWS-05: settings {} ➜ barème par défaut 3 / 1 / 0, BYE = 3 pts (non-régression)", async () => {
+    const updates = mockGroup({ settings: {}, teams: ["A", "B", "C", "D", "E"], matches: swissMatches });
+    await LeaderboardService.calculateSwissStandings("phase-1");
+    expect(pointsOf(updates)).toEqual({ A: 3, B: 0, C: 1, D: 1, E: 3 });
+  });
+
+  it("LB-02: settings Suisse malformé ➜ barème par défaut, erreur journalisée", async () => {
+    const updates = mockGroup({ settings: "{not json", teams: ["A", "B", "C", "D", "E"], matches: swissMatches });
+    await LeaderboardService.calculateSwissStandings("phase-1");
+    expect(pointsOf(updates)).toEqual({ A: 3, B: 0, C: 1, D: 1, E: 3 });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("Malformed settings JSON"), expect.any(SyntaxError));
+  });
+
+  it("LB-05: FF en Suisse ➜ forfait exclusif comme en poules", async () => {
+    const updates = mockGroup({
+      settings: { points_forfeit: -1 },
+      teams: ["A", "B"],
+      matches: [{ team1_id: "A", team2_id: "B", team1_score: 3, team2_score: 0, status: "FF" }],
+    });
+    await LeaderboardService.calculateSwissStandings("phase-1");
+    expect(standingOf(updates, "B")).toMatchObject({ losses: 0, forfeits: 1, points: -1 });
   });
 });

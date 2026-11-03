@@ -44,7 +44,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **SWS-02** | `generateFirstRound` | Nombre impair d'équipes. | L'équipe au seed le plus faible reçoit un match `BYE` (`team2_id = null`, score `1-0`), compté comme une victoire. | 🛡️ |
 | **SWS-03** | `generateNextRound` | Nombre impair d'équipes lors d'une ronde suivante. | Le BYE va à l'équipe **la moins bien classée n'ayant jamais eu de BYE**. Repli : la dernière équipe si toutes en ont déjà eu un. | 🛡️ |
 | **SWS-04** | `generateNextRound` | Aucun adversaire disponible que l'équipe n'a pas déjà affronté. | Repli : appariement avec l'équipe non appariée la plus proche au classement, même si c'est une revanche. La génération n'est jamais bloquée. | 🛡️ |
-| **SWS-05** | `calculateSwissStandings` | Victoire via BYE en Suisse. | Le BYE rapporte **3 points en dur**, sans lire `phase.settings.points_win`. | ⚠️ Incohérent avec le barème configurable des poules |
+| **SWS-05** | `calculateSwissStandings` / `computeStandings` | Barème de points en Suisse, victoire via BYE comprise. | Barème lu dans `phase.settings` via `resolveGroupPoints` (repli `3/1/0/0`, JSON malformé journalisé) : le BYE rapporte `points_win`, plus de `3/1/0` en dur (`LeaderboardService.test.ts`, `standings.test.ts`). | ✅ |
 | **SWS-06** | `generateNextRound` / `progressTeams` | Génération demandée pour une ronde qui a déjà des matchs (double validation, score forcé par un TO sur une ronde déjà close). | No-op : `logger.warn`, retour `false`, aucune insertion ; `progressTeams` ne resynchronise pas les salons et n'annonce pas la ronde en double. **Limite** : garde applicative (lecture puis insertion), sans contrainte unique `(phase_id, round_number)` en base ; deux appels réellement simultanés restent possibles, la sérialisation effective vient de la transition atomique SCR-05. | ✅ `apps/bot/src/__tests__/SwissGeneratorService.test.ts`, `ScoreService.test.ts` |
 | **RR-01** | `generateGroups` | Moins d'équipes que de groupes demandés. | Rejet explicite. Attention : les anciens `groups` de la phase sont **supprimés avant** la validation. | ⚠️ Suppression non atomique |
 | **RR-02** | `generateGroups` | Groupe au nombre impair d'équipes. | Ajout d'un slot virtuel `"BYE"`. Le match contre le BYE est inséré en `COMPLETED` avec `1-0` (et non `BYE`) pour être compté par le classement. | 🛡️ |
@@ -53,8 +53,10 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **LB-02** | `calculateGroupStandings` | JSON `phase.settings` malformé. | Log d'erreur (`logger.error`) et repli sur le barème par défaut (`3/1/0/0`) : pas de crash (`LeaderboardService.test.ts`). | ✅ |
 | **LB-03** | `resolveGroupPoints` / `calculateGroupStandings` | Settings vides (`{}`), `null`, `NaN`, chaîne ou clé manquante. | Repli clé par clé sur le barème par défaut (`3/1/0/0`), jamais de `0` point indésirable (`groupPoints.test.ts`, `LeaderboardService.test.ts`). | ✅ |
 | **LB-04** | `resolveGroupPoints` / `calculateGroupStandings` | Barème personnalisé défini par l'organisateur (ex. victoire = 2, pénalité forfait = -1). | Valeurs entières respectées et appliquées fidèlement au calcul des points (`groupPoints.test.ts`, `LeaderboardService.test.ts`). | ✅ |
-| **LB-05** | `calculateGroupStandings` / `LeaderboardTable` | Match `FF` en poules. | Une seule sémantique du forfait, identique bot et web. Aujourd'hui : ignoré par le bot, compté `points_loss + points_forfeit` par le web (`KI-01`, [#51](https://github.com/HextazDev/TournamentHub/issues/51)). | ⚠️ |
-| **LB-06** | `LeaderboardService` / `LeaderboardTable` | Classement d'une même phase affiché par le bot (`phase_teams`) et par le web. | Valeurs identiques. Aujourd'hui : le web recalcule à la volée avec des règles différentes (statut `BYE` notamment) (`KI-01`, [#51](https://github.com/HextazDev/TournamentHub/issues/51)). | ⚠️ |
+| **LB-05** | `computeStandings` (`calculateGroupStandings`, `calculateSwissStandings`, `LeaderboardTable`) | Match `FF` en poules ou en Suisse. | **Forfait exclusif** : le gagnant (score le plus haut) prend une victoire et `points_win` ; le perdant prend un forfait (pas de défaite) et `points_forfeit`, jamais `points_loss` en plus. Scores saisis comptés en BP/BC (`standings.test.ts`, `LeaderboardService.test.ts`). | ✅ |
+| **LB-06** | `LeaderboardService` / `LeaderboardTable` / `PUT /:id/force-score` | Classement d'une même phase affiché par le bot (`phase_teams`, Discord) et par le web. | Une seule fonction pure partagée (`computeStandings`, `@hub/shared`) pour le bot et le web ; `phase_teams` est recalculé après une validation **et** après un score forcé en poules (`LeaderboardService.test.ts`, `MatchRouter.forceScore.test.ts`). | ✅ |
+| **LB-07** | `computeStandings` | Match `FF` à égalité (ex. `0-0`) : impossible de savoir quelle équipe a déclaré forfait. | **Double forfait** : chaque équipe prend un forfait et `points_forfeit`, aucune victoire attribuée (`standings.test.ts`). | ✅ |
+| **LB-08** | `computeStandings` | BYE : statut `BYE` (Suisse) ou adversaire `null` en `COMPLETED` (poules, RR-02) ; match contre une équipe hors du groupe ; statut non terminé (`PENDING`, `WAITING_VALIDATION`, `CONTESTED`, `DISPUTED`, `DSQ`). | BYE = victoire à `points_win` pour l'équipe présente, aucune stat pour le côté `null` ; seules les équipes du groupe sont créditées ; seuls `COMPLETED`, `FF` et `BYE` comptent (`standings.test.ts`). | ✅ |
 | **PH-01** | `PUT /api/phases/:id` / `GroupPointsSettingsSchema` | Valeur de points vide (`""`), non numérique, décimale ou hors [-99, 99]. | Validation stricte : rejet `400 Validation Error` sans aucune écriture en base (`PhaseRouter.update.test.ts`, `groupPoints.test.ts`). | ✅ |
 
 ---
@@ -175,8 +177,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 Les lignes ⚠️ ci-dessus sont des **bugs latents connus**. Ordre de traitement recommandé :
 1. **RR-01** : suppression des groupes avant validation ➜ perte de données sur une entrée invalide.
 2. **REG-06** : roster partiel ➜ passer par une RPC transactionnelle.
-3. **SWS-05** : barème BYE suisse codé en dur.
-4. **SCR-07** : repli non atomique de `assign_team_to_match`.
-5. **I18N-08** : fuseau horaire des dates rendues côté serveur.
+3. **SCR-07** : repli non atomique de `assign_team_to_match`.
+4. **I18N-08** : fuseau horaire des dates rendues côté serveur.
 
 Les lignes 🛡️ des domaines **BRK**, **SWS** et **SCR** sont les premières candidates au TDD (`/test-audit`).
