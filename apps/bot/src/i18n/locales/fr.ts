@@ -59,6 +59,7 @@ export const fr = {
     contestBtn: "Contester",
     notifyOpponent: "Attention <@{captainId}>, veuillez valider ou contester ce score ci-dessous.",
     onlyOpponentCanValidate: "❌ Seul le capitaine adverse peut valider ou contester ce score.",
+    alreadyProcessed: "⚠️ Ce score a déjà été traité.",
     scoreContestedTitle: "❌ Score Contesté !",
     scoreContestedContent: "**SCORE CONTESTÉ** - Appel aux arbitres : {toPing}",
     scoreValidatedTitle: "✅ Score Validé (Match Terminé)",

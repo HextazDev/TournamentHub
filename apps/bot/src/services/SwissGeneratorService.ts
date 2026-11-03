@@ -1,5 +1,7 @@
 import { supabase } from "../lib/supabase";
 import crypto from "crypto";
+import { LeaderboardService } from "./LeaderboardService";
+import { logger } from "../utils/logger";
 
 export class SwissGeneratorService {
   /**
@@ -78,14 +80,28 @@ export class SwissGeneratorService {
     if (insertError) throw insertError;
 
     // Calculate Swiss standings immediately (handles the BYE team getting their point)
-    const { LeaderboardService } = require("./LeaderboardService");
     await LeaderboardService.calculateSwissStandings(phaseId).catch(console.error);
   }
 
   /**
    * Generates next Round matches dynamically based on current standings and match history.
+   * @returns `true` si la ronde a été créée, `false` si elle existait déjà (SWS-06 : aucune insertion).
    */
-  public static async generateNextRound(phaseId: string, nextRoundNumber: number) {
+  public static async generateNextRound(phaseId: string, nextRoundNumber: number): Promise<boolean> {
+    // 0. SWS-06 : ne jamais générer deux fois la même ronde (double validation, score forcé par un TO…)
+    const { data: existingRound, error: existingError } = await supabase
+      .from("matches")
+      .select("id")
+      .eq("phase_id", phaseId)
+      .eq("round_number", nextRoundNumber)
+      .limit(1);
+
+    if (existingError) throw existingError;
+    if (existingRound && existingRound.length > 0) {
+      logger.warn(`[SwissGenerator] Ronde ${nextRoundNumber} déjà générée pour la phase ${phaseId} : génération ignorée.`);
+      return false;
+    }
+
     // 1. Get all teams in this phase
     const { data: phaseTeams, error: ptError } = await supabase
       .from("phase_teams")
@@ -213,7 +229,7 @@ export class SwissGeneratorService {
     if (insertError) throw insertError;
 
     // Automatically recalculate Swiss standings to account for new BYE point
-    const { LeaderboardService } = require("./LeaderboardService");
     await LeaderboardService.calculateSwissStandings(phaseId).catch(console.error);
+    return true;
   }
 }
