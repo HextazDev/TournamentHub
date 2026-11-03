@@ -6,7 +6,7 @@ import { ArchiveService } from "../services/ArchiveService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant";
 import { LocaleSchema } from "@hub/shared";
-import { logger } from "../utils/logger";
+import { sendServerError } from "../utils/serverError";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
@@ -72,9 +72,8 @@ tournamentRouter.post("/", async (req, res) => {
     if (error) throw error;
 
     res.status(201).json(created);
-  } catch (error: any) {
-    console.error("[TournamentRouter] Create error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.create");
   }
 });
 
@@ -176,9 +175,8 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
     }
 
     res.json(data);
-  } catch (error: any) {
-    console.error("[TournamentRouter] Settings update error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.updateSettings");
   }
 });
 
@@ -208,9 +206,8 @@ tournamentRouter.patch("/:id/visibility", async (req, res) => {
     if (!data) return res.status(404).json({ error: "Tournament not found" });
 
     res.json(data);
-  } catch (error: any) {
-    console.error("[TournamentRouter] Visibility update error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.visibility");
   }
 });
 
@@ -229,9 +226,8 @@ tournamentRouter.post("/:id/launch", async (req, res) => {
     const targetGuildId = guildId || authGuildId;
     await LifecycleService.launchTournament(tournamentId, targetGuildId, discordClient);
     res.json({ success: true, message: "Tournament launched successfully." });
-  } catch (error: any) {
-    console.error(`[TournamentRouter] Error launching tournament:`, error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.launch");
   }
 });
 
@@ -250,9 +246,8 @@ tournamentRouter.post("/:id/close", async (req, res) => {
     const targetGuildId = guildId || authGuildId;
     await LifecycleService.closeTournament(tournamentId, targetGuildId, discordClient);
     res.json({ success: true, message: "Tournament closed successfully." });
-  } catch (error: any) {
-    console.error(`[TournamentRouter] Error closing tournament:`, error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.close");
   }
 });
 
@@ -295,8 +290,8 @@ tournamentRouter.post("/:id/registrations", async (req, res) => {
     try {
       await RegistrationService.sendRegistrationEmbed(tournamentId, discordClient);
     } catch (embedError: unknown) {
-      logger.error(`[TournamentRouter] Annonce d'inscription échouée pour ${tournamentId}:`, embedError);
-      return res.status(502).json({ error: embedError instanceof Error ? embedError.message : "Discord announcement failed" });
+      sendServerError(res, embedError, `TournamentRouter.registrations: annonce d'inscription échouée pour ${tournamentId}`, 502);
+      return;
     }
 
     const { error: flagError } = await supabase
@@ -304,14 +299,13 @@ tournamentRouter.post("/:id/registrations", async (req, res) => {
       .update({ is_registration_open: true })
       .eq('id', tournamentId);
     if (flagError) {
-      logger.error(`[TournamentRouter] Ouverture des inscriptions non enregistrée pour ${tournamentId}:`, flagError);
-      return res.status(500).json({ error: flagError.message });
+      sendServerError(res, flagError, `TournamentRouter.registrations: ouverture des inscriptions non enregistrée pour ${tournamentId}`);
+      return;
     }
 
     res.json({ success: true, message: "Registration action executed." });
-  } catch (error: any) {
-    console.error(`[TournamentRouter] Error:`, error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.registrations");
   }
 });
 
@@ -369,8 +363,7 @@ tournamentRouter.post("/:id/checkin/stop", async (req, res) => {
     }
 
     res.json(updated);
-  } catch (error: any) {
-    console.error("[TournamentRouter] Stop check-in error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.stopCheckin");
   }
 });

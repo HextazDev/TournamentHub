@@ -1,6 +1,7 @@
 import { Client, Guild, ChannelType, CategoryChannel, PermissionFlagsBits, OverwriteData, PermissionResolvable } from 'discord.js';
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage } from '../i18n';
+import { DomainError } from '../utils/serverError';
 
 function hasPerm(list: PermissionResolvable[] | undefined, bit: bigint): boolean {
   if (!list) return false;
@@ -182,7 +183,7 @@ export class LifecycleService {
 
       const tournament = phase.tournaments;
       if (!tournament.discord_category_id) {
-        throw new Error('Tournament does not have an active Discord Category. Please launch the tournament first.');
+        throw new DomainError(409, 'Tournament does not have an active Discord Category. Please launch the tournament first.');
       }
 
       const lang = await getGuildLanguage(guildId, tournament.id);

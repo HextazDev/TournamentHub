@@ -130,7 +130,8 @@ describe("PUT /api/server-settings", () => {
     db({ currentToRole: "1", upsertError: { message: "boom" } });
     const out = await put({ guild_id: GUILD, to_role_id: "2" });
     expect(out.status).toBe(500);
-    expect(logger.error).toHaveBeenCalled();
+    expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
+    expect(logger.error).toHaveBeenCalledWith(expect.any(String), { message: "boom" });
     expect(GuildRegistryService.syncGuildAdmins).not.toHaveBeenCalled();
   });
 });

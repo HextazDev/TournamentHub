@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
-import { logger } from "../utils/logger";
+import { sendServerError } from "../utils/serverError";
 import { getAuthenticatedGuildId } from "../utils/tenant";
 import { ServerSettingsUpdateSchema } from "@hub/shared";
 import { GuildRegistryService, readToRoleId } from "../services/GuildRegistryService";
@@ -42,8 +42,8 @@ serverSettingsRouter.put("/", async (req, res) => {
     .single();
 
   if (error) {
-    logger.error(`[ServerSettingsRouter] Upsert échoué pour ${authGuildId}:`, error);
-    return res.status(500).json({ error: error.message });
+    sendServerError(res, error, `ServerSettingsRouter: upsert échoué pour ${authGuildId}`);
+    return;
   }
 
   // DISC-08 : le nouveau rôle TO doit ouvrir (ou fermer) l'accès au panel sans attendre un redémarrage du bot.

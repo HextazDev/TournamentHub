@@ -28,6 +28,7 @@ export const en: typeof fr = {
     auto: "Auto",
     or: "or",
     unknown: "Unknown",
+    internalError: "An internal error occurred. Please try again in a moment.",
     unknownTeam: "Unknown Team",
     match: "Match",
     round: "Round",

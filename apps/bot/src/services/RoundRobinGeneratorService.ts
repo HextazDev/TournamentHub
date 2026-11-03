@@ -1,4 +1,5 @@
 import { supabase } from "../lib/supabase";
+import { DomainError } from "../utils/serverError";
 
 export class RoundRobinGeneratorService {
   static async generateGroups(phaseId: string, groupCount: number = 1) {
@@ -16,7 +17,7 @@ export class RoundRobinGeneratorService {
 
     // Validate: need at least groupCount teams total to fill groups
     if (teams.length < groupCount) {
-      throw new Error(`Cannot create ${groupCount} groups with only ${teams.length} teams. Reduce the number of groups or add more teams.`);
+      throw new DomainError(400, `Cannot create ${groupCount} groups with only ${teams.length} teams. Reduce the number of groups or add more teams.`);
     }
 
     const newGroups = [];

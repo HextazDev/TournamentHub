@@ -70,7 +70,7 @@ describe("POST /api/tournaments/:id/registrations (open)", () => {
     vi.mocked(RegistrationService.sendRegistrationEmbed).mockRejectedValueOnce(new Error("Missing Access"));
     const out = await open();
     expect(out.status).toBe(502);
-    expect(out.body).toEqual({ error: "Missing Access" });
+    expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
     expect(updates).toEqual([]);
   });
 
@@ -78,5 +78,6 @@ describe("POST /api/tournaments/:id/registrations (open)", () => {
     db({ status: "DRAFT", is_public: true }, { message: "write failed" });
     const out = await open();
     expect(out.status).toBe(500);
+    expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
   });
 });

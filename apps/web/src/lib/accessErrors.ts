@@ -1,4 +1,4 @@
-import { AccessDeniedCodeSchema, type AccessDeniedCode } from "@hub/shared";
+import { AccessDeniedCodeSchema, INTERNAL_ERROR_CODE, type AccessDeniedCode } from "@hub/shared";
 import { t } from "../i18n";
 import type { Locale } from "../i18n/types";
 
@@ -17,8 +17,17 @@ export function botAccessError(payload: unknown, locale: Locale): { error: strin
 }
 
 /**
+ * SEC-19 : un échec serveur du bot (`{ error: "Internal Server Error", code: "INTERNAL_ERROR" }`) devient
+ * un message générique traduit. Renvoie null pour tout autre corps.
+ */
+export function botInternalError(payload: unknown, locale: Locale): { error: string } | null {
+  if (!payload || typeof payload !== "object" || !("code" in payload) || payload.code !== INTERNAL_ERROR_CODE) return null;
+  return { error: t(locale, "common.internalError") };
+}
+
+/**
  * Corps d'erreur renvoyé au navigateur par un proxy dédié à partir du corps brut du bot :
- * refus d'accès traduit, sinon le message métier `{ error }` du bot, sinon un message générique traduit.
+ * refus d'accès ou échec serveur traduit, sinon le message métier `{ error }` du bot, sinon un message générique traduit.
  */
 export function relayedBotError(rawBody: string, locale: Locale): { error: string; code?: AccessDeniedCode } {
   let payload: unknown = null;
@@ -30,6 +39,8 @@ export function relayedBotError(rawBody: string, locale: Locale): { error: strin
   }
   const access = botAccessError(payload, locale);
   if (access) return access;
+  const internal = botInternalError(payload, locale);
+  if (internal) return internal;
   if (payload && typeof payload === "object" && "error" in payload && typeof payload.error === "string" && payload.error) {
     return { error: payload.error };
   }
