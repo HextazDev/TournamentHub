@@ -82,6 +82,15 @@ describe("PUT /api/server-settings", () => {
     db();
     const out = await put({ guild_id: GUILD, invite_url: "https://evil.example/abc" });
     expect(out.status).toBe(400);
+    expect(out.body).toEqual({ error: "Invitation Discord invalide" });
+    expect(upserted).toBeUndefined();
+  });
+
+  it("SEC-08: refuse un identifiant de rôle ou de salon qui n'est pas un ID Discord, avec un message explicite", async () => {
+    db();
+    const out = await put({ guild_id: GUILD, to_role_id: "abc" });
+    expect(out.status).toBe(400);
+    expect(out.body).toEqual({ error: "Identifiant Discord invalide" });
     expect(upserted).toBeUndefined();
   });
 

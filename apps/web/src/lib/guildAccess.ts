@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { GuildAccess, GuildAdminReason } from "@hub/shared";
+import { AccessDeniedCodeSchema, GuildAccessSchema, type GuildAccess } from "@hub/shared";
 
 // Décision d'accès au back-office côté web (SEC-11 / SEC-17) : seul le bot décide, avec la même source et le
 // même cache que ses routes de mutation. guild_admins n'est qu'un annuaire pour le hub, jamais une autorisation.
@@ -8,17 +8,9 @@ export type GuildAdminAccess =
   | { allowed: true; access: GuildAccess }
   | { allowed: false; reason: "NOT_LOGGED_IN" | "NOT_A_MEMBER" | "NO_RIGHTS" | "BOT_NOT_IN_GUILD" | "CHECK_FAILED" };
 
-// Miroir local des types @hub/shared (@hub/shared embarque zod 3, le web zod 4 : les schémas ne se mélangent pas).
-const GuildAdminReasonSchema = z.enum(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE"]) satisfies z.ZodType<GuildAdminReason>;
-
-const GuildAccessSchema = z.discriminatedUnion("level", [
-  z.object({ level: z.literal("SERVER"), reason: GuildAdminReasonSchema }),
-  z.object({ level: z.literal("TOURNAMENT"), tournamentIds: z.array(z.string().min(1)) }),
-]) satisfies z.ZodType<GuildAccess>;
-
 const PermissionResponseSchema = z.discriminatedUnion("hasPermission", [
   z.object({ hasPermission: z.literal(true), access: GuildAccessSchema }),
-  z.object({ hasPermission: z.literal(false), reason: z.enum(["NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD"]) }),
+  z.object({ hasPermission: z.literal(false), reason: AccessDeniedCodeSchema.extract(["NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD"]) }),
 ]);
 
 export interface GuildAccessCheckInput {

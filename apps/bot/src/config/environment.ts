@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const httpUrl = z.string().url().refine((value) => /^https?:\/\//.test(value));
+const httpUrl = z.url().refine((value) => /^https?:\/\//.test(value));
 const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   DISCORD_TOKEN: z.string().min(1),

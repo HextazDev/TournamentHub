@@ -22,7 +22,7 @@ serverSettingsRouter.put("/", async (req, res) => {
 
   const parsed = ServerSettingsUpdateSchema.safeParse(req.body);
   if (!parsed.success) {
-    return res.status(400).json({ error: parsed.error.errors[0]?.message ?? "Invalid payload" });
+    return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
   }
 
   const previous = await readToRoleId(authGuildId);
