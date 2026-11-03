@@ -10,10 +10,12 @@ vi.mock("../services/GuildRegistryService", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/GuildRegistryService")>()),
   GuildRegistryService: { syncGuildAdmins: vi.fn().mockResolvedValue(true) },
 }));
+vi.mock("../services/MemberAccessService", () => ({ invalidateGuildAccess: vi.fn() }));
 
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { GuildRegistryService } from "../services/GuildRegistryService";
+import { invalidateGuildAccess } from "../services/MemberAccessService";
 import { serverSettingsRouter } from "../routes/ServerSettingsRouter";
 import { callRoute } from "./helpers/route";
 
@@ -42,7 +44,7 @@ function put(body: Record<string, unknown>) {
     method: "PUT",
     path: "/",
     body,
-    adminCheck: { discordId: "u1", guildId: GUILD, reason: "ADMINISTRATOR" },
+    adminCheck: { discordId: "u1", guildId: GUILD, access: { level: "SERVER", reason: "ADMINISTRATOR" } },
     locals: { discordClient: { guilds: { fetch: () => Promise.resolve(guild) } } },
   });
 }
@@ -75,6 +77,18 @@ describe("PUT /api/server-settings", () => {
     db({ currentToRole: "1" });
     await put({ guild_id: GUILD, to_role_id: "2" });
     expect(GuildRegistryService.syncGuildAdmins).toHaveBeenCalledWith(guild);
+  });
+
+  it("SEC-05: un changement de rôle TO invalide le cache d'accès du serveur (nouveaux TO admis, anciens refusés)", async () => {
+    db({ currentToRole: "1" });
+    await put({ guild_id: GUILD, to_role_id: "2" });
+    expect(invalidateGuildAccess).toHaveBeenCalledWith(GUILD);
+  });
+
+  it("SEC-05: un rôle TO inchangé ne vide pas le cache d'accès", async () => {
+    db({ currentToRole: "2" });
+    await put({ guild_id: GUILD, to_role_id: "2" });
+    expect(invalidateGuildAccess).not.toHaveBeenCalled();
   });
 
   it("DISC-08: un rôle TO inchangé ne déclenche pas de resynchronisation", async () => {

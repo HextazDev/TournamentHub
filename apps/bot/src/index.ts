@@ -12,7 +12,8 @@ import { createHealthRouter } from "./routes/HealthRouter";
 import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
-import { authMiddleware, requireGuildAdmin } from "./middleware/auth";
+import { authMiddleware, guildPermissionsHandler, requireGuildAction, requireGuildAdmin } from "./middleware/auth";
+import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
@@ -21,7 +22,6 @@ import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
 import { WebhookRolesService } from "./services/WebhookRolesService";
 import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
-import { resolveAdminReason } from "./utils/adminAccess";
 import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
@@ -68,6 +68,8 @@ app.use("/api", authMiddleware);
 app.locals.discordClient = client;
 
 const guildAdminGuard = requireGuildAdmin(client);
+// SEC-16 : les paramètres du serveur (dont le rôle TO) et l'auto-setup Discord restent hors de portée du rôle TO.
+const serverSettingsGuard = [guildAdminGuard, requireGuildAction("MANAGE_SERVER_SETTINGS")];
 
 // Health check (no auth required — skipped in middleware)
 const schedulerRecovery = new SchedulerRecovery(
@@ -165,35 +167,8 @@ const getGuild = async (res: any, guildId: string): Promise<any> => {
   return guild;
 };
 
-// Endpoint: Vérifier si un membre a les droits d'admin/TO sur un serveur (appel serveur Next.js uniquement :
-// le proxy /api/bot ne relaie pas cette route, cf. SEC-13). Le rôle TO est relu en base, jamais pris du client.
-app.get("/api/discord/permissions", async (req, res) => {
-  const guildId = typeof req.query.guildId === "string" ? req.query.guildId : "";
-  const userId = typeof req.query.userId === "string" ? req.query.userId : "";
-  if (!guildId || !userId) return res.status(400).json({ error: "Missing parameters" });
-
-  try {
-    const guild = await client.guilds.fetch(guildId).catch(() => null);
-    if (!guild) return res.status(200).json({ hasPermission: false, reason: "BOT_NOT_IN_GUILD" });
-
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return res.status(200).json({ hasPermission: false, reason: "NOT_A_MEMBER" });
-
-    const settings = await readToRoleId(guildId);
-    if (!settings.ok) return res.status(503).json({ error: "Permission check temporarily unavailable" });
-
-    const reason = resolveAdminReason({
-      isOwner: guild.ownerId === userId,
-      hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
-      hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
-      hasToRole: !!settings.toRoleId && member.roles.cache.has(settings.toRoleId),
-    });
-    return res.status(200).json({ hasPermission: reason !== null, reason: reason ?? "NO_RIGHTS" });
-  } catch (error) {
-    logger.error("Error checking permissions:", error);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
+// Endpoint: décision d'accès au back-office pour le web (SEC-11 / SEC-13), partagée avec requireGuildAdmin.
+app.get("/api/discord/permissions", guildPermissionsHandler(client));
 
 // Endpoint: Fetch Channels for Check-in configurations
 app.get("/api/discord/channels", guildAdminGuard, async (req, res) => {
@@ -243,7 +218,7 @@ app.get("/api/discord/members", guildAdminGuard, async (req, res) => {
 });
 
 // Endpoint: Auto-setup for Checkin requirements
-app.post("/api/discord/auto-setup", guildAdminGuard, async (req, res) => {
+app.post("/api/discord/auto-setup", ...serverSettingsGuard, async (req, res) => {
   try {
     const guildId = (req.query.guildId || req.body?.guildId) as string;
     const guild = await getGuild(res, guildId);
@@ -314,11 +289,14 @@ const bootstrap = async () => {
 
   try {
     // Droits back-office : guild_admins suit les membres, leurs rôles et leurs permissions (DISC-08).
+    // SEC-05 : chaque changement connu invalide aussi le cache d'accès, sans attendre son expiration.
     client.on('guildMemberRemove', async (member) => {
+      invalidateMemberAccess(member.guild.id, member.user.id);
       await GuildRegistryService.removeMember(member.guild.id, member.user.id);
     });
 
     client.on('guildMemberUpdate', async (oldMember, newMember) => {
+      invalidateMemberAccess(newMember.guild.id, newMember.id);
       const oldRoleIds = new Set(oldMember.roles.cache.keys());
       const newRoleIds = new Set(newMember.roles.cache.keys());
       const rolesChanged =
@@ -334,6 +312,7 @@ const bootstrap = async () => {
     // Un rôle peut gagner ou perdre Administrateur / Gérer le serveur sans qu'aucun membre ne change de rôle.
     client.on('roleUpdate', async (oldRole, newRole) => {
       if (oldRole.permissions.bitfield === newRole.permissions.bitfield) return;
+      invalidateGuildAccess(newRole.guild.id);
       await GuildRegistryService.syncGuildAdmins(newRole.guild);
     });
 
@@ -343,10 +322,12 @@ const bootstrap = async () => {
         await GuildRegistryService.syncGuildAdmins(guild);
       }
     });
-    client.on("guildUpdate", async (_oldGuild, newGuild) => {
+    client.on("guildUpdate", async (oldGuild, newGuild) => {
+      if (oldGuild.ownerId !== newGuild.ownerId) invalidateGuildAccess(newGuild.id);
       await GuildRegistryService.registerGuild(newGuild);
     });
     client.on("guildDelete", async (guild) => {
+      invalidateGuildAccess(guild.id);
       await GuildRegistryService.markGuildLeft(guild.id);
     });
 

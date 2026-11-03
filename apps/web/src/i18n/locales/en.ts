@@ -120,6 +120,8 @@ export const en: typeof fr = {
     NO_RIGHTS: "You must own the server, have the Administrator or Manage Server permission, or hold the TO role chosen in the server settings.",
     BOT_NOT_IN_GUILD: "The bot is not installed on this server.",
     CHECK_FAILED: "Checking your permissions failed (bot unreachable). Please try again in a moment.",
+    SERVER_SETTINGS_RESERVED: "Server settings (including the TO role) are reserved to the owner, Administrators and members with the Manage Server permission.",
+    settingsDeniedTitle: "Settings restricted",
     retry: "Retry",
     backToServer: "See the server's tournaments",
     installBot: "Install the bot",

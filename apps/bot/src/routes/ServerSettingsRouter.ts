@@ -4,6 +4,7 @@ import { logger } from "../utils/logger";
 import { getAuthenticatedGuildId } from "../utils/tenant";
 import { ServerSettingsUpdateSchema } from "@hub/shared";
 import { GuildRegistryService, readToRoleId } from "../services/GuildRegistryService";
+import { invalidateGuildAccess } from "../services/MemberAccessService";
 
 export const serverSettingsRouter = Router();
 
@@ -41,7 +42,9 @@ serverSettingsRouter.put("/", async (req, res) => {
   }
 
   // DISC-08 : le nouveau rôle TO doit ouvrir (ou fermer) l'accès au panel sans attendre un redémarrage du bot.
+  // SEC-05 : les décisions d'accès en cache reposent sur l'ancien rôle TO.
   if (previous.toRoleId !== parsed.data.to_role_id) {
+    invalidateGuildAccess(authGuildId);
     const guild = await req.app.locals.discordClient.guilds.fetch(authGuildId).catch(() => null);
     if (guild) await GuildRegistryService.syncGuildAdmins(guild);
   }

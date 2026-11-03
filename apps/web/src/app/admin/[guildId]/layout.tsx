@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ShieldAlert } from "lucide-react";
+import { canPerform } from "@hub/shared";
 import { ServerSidebarWrapper } from "@/components/ServerSidebarWrapper";
 import { AdminSidebarNav } from "@/components/AdminSidebarNav";
 import { getGuildAdminAccess } from "@/lib/viewer";
@@ -56,7 +57,7 @@ export default async function AdminLayout({
   return (
     <div className="flex flex-col lg:flex-row min-h-[calc(100vh-4rem)] bg-slate-900 text-white relative">
       <ServerSidebarWrapper>
-        <AdminSidebarNav guildId={guildId} />
+        <AdminSidebarNav guildId={guildId} canManageServer={canPerform(access.access, "MANAGE_SERVER_SETTINGS")} />
       </ServerSidebarWrapper>
 
       <main className="flex-1 overflow-y-auto flex flex-col">

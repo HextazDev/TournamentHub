@@ -118,6 +118,8 @@ export const fr = {
     NO_RIGHTS: "Il faut être propriétaire du serveur, avoir la permission Administrateur ou Gérer le serveur, ou porter le rôle TO choisi dans les paramètres du serveur.",
     BOT_NOT_IN_GUILD: "Le bot n'est pas installé sur ce serveur.",
     CHECK_FAILED: "La vérification de vos droits a échoué (bot injoignable). Réessayez dans un instant.",
+    SERVER_SETTINGS_RESERVED: "Les paramètres du serveur (dont le rôle TO) sont réservés au propriétaire, aux Administrateurs et aux membres ayant la permission Gérer le serveur.",
+    settingsDeniedTitle: "Paramètres réservés",
     retry: "Réessayer",
     backToServer: "Voir les tournois du serveur",
     installBot: "Installer le bot",

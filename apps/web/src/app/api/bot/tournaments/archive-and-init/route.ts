@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { BOT_UNREACHABLE, botAccessError, relayedBotError } from "@/lib/accessErrors";
+import { getServerLocale } from "@/i18n/server";
 
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);
@@ -36,14 +38,14 @@ export async function POST(request: Request) {
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      return NextResponse.json({ error: `Bot returned ${res.status}: ${errText}` }, { status: res.status });
+      // SEC-18 : refus d'accès traduit, jamais le texte brut du bot.
+      return NextResponse.json(relayedBotError(await res.text(), await getServerLocale()), { status: res.status });
     }
 
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error: any) {
     console.error("Error calling bot API:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(botAccessError(BOT_UNREACHABLE, await getServerLocale()), { status: 502 });
   }
 }
