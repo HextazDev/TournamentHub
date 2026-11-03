@@ -45,7 +45,7 @@ Les consignes publiques décrivent l'architecture et les commandes du projet. Le
    * **STOP** : Attendre la validation explicite de l'utilisateur avant d'écrire la moindre ligne de code.
 3. **Phase 3 : Implémentation Rigoureuse & Discipline d'Ingénierie** :
    * Ordre : `1. SQL/Migrations` ➔ `2. @hub/shared` ➔ `3. Services Bot` ➔ `4. Routes API` ➔ `5. Web UI` ➔ `6. Tests`.
-   * ⚡ **Après modification de `packages/shared`** : exécuter impérativement `npm run build --workspace=@hub/shared`.
+   * ⚡ **Après modification de `packages/shared`** : `make test`, `make lint` et `make build` recompilent `@hub/shared` automatiquement (cible `build-shared`) ; hors Makefile (`npx vitest`, `npx tsc`, IDE), exécuter `npm run build --workspace=@hub/shared`.
    * 🔴 **TDD strict avec Verify RED** : pour tout service métier ou utilitaire (`BracketGeneratorService`, `SchedulerService`), écrire le test Vitest d'abord, **constater l'échec terminal pour la raison attendue**, puis implémenter le code minimal pour passer au vert.
    * 🛡️ **Loi d'airain Anti-Symptôme (Anti-Band-Aids)** : interdiction formelle de poser une rustine pour faire taire le compilateur ou masquer une erreur (`?.` sauvage, `as any`, `as unknown as`, `try/catch` vide qui étouffe l'erreur). Identifier et corriger la cause racine.
    * 🔒 **Sécurité par défaut** : toute route de mutation appelle `verify*Guild` (`apps/bot/src/utils/tenant.ts`) avant d'écrire ; toute nouvelle table active la RLS avec politiques d'écriture restreintes ; toute fonction `SECURITY DEFINER` fixe son `search_path` ; aucun secret en `NEXT_PUBLIC_*` ; toute entrée externe (body, customId, modal) est validée (Zod / guards) avant usage.
@@ -124,7 +124,7 @@ Le projet utilise un `Makefile` pour orchestrer les tâches monorepo. **Toujours
 
 ### 1. Tests Unitaires
 ```bash
-# Via Makefile (exécute Vitest en mode 'run' sur tout le monorepo)
+# Via Makefile (compile @hub/shared puis exécute Vitest en mode 'run' sur tout le monorepo)
 make test
 
 # Ou via npm
@@ -139,7 +139,7 @@ npx vitest run apps/bot -t "BracketGenerator"
 
 ### 2. Linting & Validation de Types
 ```bash
-# Via Makefile (valide le typage bot avec tsc --noEmit + eslint sur web)
+# Via Makefile (compile @hub/shared puis valide le typage shared/bot avec tsc --noEmit + eslint sur web)
 make lint
 
 # Typecheck granulaire par package
@@ -153,7 +153,9 @@ npx tsc --noEmit --project apps/web/tsconfig.json
 # Compiler le monorepo complet dans l'ordre de dépendance (Shared -> Bot -> Web)
 make build
 
-# Important : Si vous modifiez uniquement packages/shared, recompilez-le avec :
+# Compiler uniquement packages/shared (déjà inclus dans make test, make lint et make build) :
+make build-shared
+# Équivalent hors Makefile, à lancer avant npx vitest / npx tsc après modification de packages/shared :
 npm run build --workspace=@hub/shared
 ```
 
@@ -173,7 +175,7 @@ make dev-stop         # Arrête les conteneurs de dev
 
 ### 1. Gestion des Types Partagés (`packages/shared`)
 * Toute structure de données partagée (`Tournament`, `Phase`, `Match`, `Team`, `User`) et tout schéma Zod commun doit résider dans `packages/shared/src/index.ts`.
-* **Règle absolue** : Après chaque modification dans `packages/shared`, lancer `npm run build --workspace=@hub/shared` pour régénérer les fichiers `dist/index.d.ts` et `dist/index.js`.
+* **Règle absolue** : Après chaque modification dans `packages/shared`, les fichiers `dist/index.d.ts` et `dist/index.js` doivent être régénérés. `make test`, `make lint` et `make build` le font automatiquement (cible `build-shared`) ; pour toute commande hors Makefile (`npx vitest`, `npx tsc`, IDE), lancer `npm run build --workspace=@hub/shared`.
 * Importer dans `apps/bot` et `apps/web` exclusivement via `@hub/shared`.
 
 ### 2. Typage Strict (`apps/bot`)
