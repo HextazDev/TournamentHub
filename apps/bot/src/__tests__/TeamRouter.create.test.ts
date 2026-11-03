@@ -18,6 +18,7 @@ vi.mock("../utils/tenant", () => ({
   verifyTournamentGuild: tenant.verifyTournamentGuild,
 }));
 
+import { MAX_FAKE_TEAMS } from "@hub/shared";
 import { teamRouter } from "../routes/TeamRouter";
 import { callRoute } from "./helpers/route";
 
@@ -216,5 +217,59 @@ describe("POST /api/teams/generate-fake — REG-07", () => {
     expect(out.status).toBe(201);
     expect(presence.applyPresence).not.toHaveBeenCalled();
     expect(presence.removePresence).not.toHaveBeenCalled();
+  });
+});
+
+describe("POST /api/teams/generate-fake — PH-02/REG-07 validation du corps", () => {
+  const fakeInserts: unknown[][] = [];
+
+  beforeEach(() => {
+    fakeInserts.length = 0;
+    db.from.mockImplementation((table: string) => {
+      if (table === "teams") {
+        return {
+          insert: (rows: unknown[]) => {
+            fakeInserts.push(rows);
+            return { select: async () => ({ data: rows.map((r, i) => ({ ...(r as object), id: `t-${i}` })), error: null }) };
+          },
+        };
+      }
+      if (table === "team_members") return { insert: () => ({ select: async () => ({ data: [], error: null }) }) };
+      throw new Error(`unexpected table ${table}`);
+    });
+  });
+
+  const generate = (payload: unknown) => callRoute(teamRouter, {
+    method: "POST", path: "/generate-fake", body: payload, adminCheck, locals: { discordClient: client },
+  });
+
+  it.each([
+    ["tournament_id absent", { count: 2 }],
+    ["tournament_id non UUID", { tournament_id: "abc", count: 2 }],
+    ["count absent", { tournament_id: TOURNAMENT_ID }],
+    ["count nul", { tournament_id: TOURNAMENT_ID, count: 0 }],
+    ["count négatif", { tournament_id: TOURNAMENT_ID, count: -1 }],
+    ["count chaîne", { tournament_id: TOURNAMENT_ID, count: "5" }],
+    ["count décimal", { tournament_id: TOURNAMENT_ID, count: 2.5 }],
+  ])("REG-07: %s ➜ 400 sans vérification de tenant ni écriture", async (_label, payload) => {
+    const out = await generate(payload);
+    expect(out.status).toBe(400);
+    expect(tenant.verifyTournamentGuild).not.toHaveBeenCalled();
+    expect(fakeInserts).toEqual([]);
+  });
+
+  it("REG-07: count au-delà du plafond ➜ plafonné à MAX_FAKE_TEAMS (pas de 400)", async () => {
+    const out = await generate({ tournament_id: TOURNAMENT_ID, count: 1000, guildId: "111" });
+    expect(out.status).toBe(201);
+    expect(fakeInserts).toHaveLength(1);
+    expect(fakeInserts[0]).toHaveLength(MAX_FAKE_TEAMS);
+    expect(tenant.verifyTournamentGuild).toHaveBeenCalledWith(TOURNAMENT_ID, "111");
+  });
+
+  it("SEC-01: tournoi d'un autre serveur ➜ 403 sans écriture", async () => {
+    tenant.verifyTournamentGuild.mockResolvedValue(false);
+    const out = await generate({ tournament_id: TOURNAMENT_ID, count: 2 });
+    expect(out.status).toBe(403);
+    expect(fakeInserts).toEqual([]);
   });
 });
