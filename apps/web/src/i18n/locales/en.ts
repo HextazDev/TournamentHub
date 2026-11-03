@@ -641,6 +641,7 @@ export const en: typeof fr = {
     nowPrivate: "The tournament is now private",
     fakeTeamsInvalidCount: "Please enter a valid number of teams (between {min} and {max}).",
     teamAdded: "Team added successfully!",
+    teamAddedPresenceWarning: "The Captain role or nickname could not be applied on Discord (captain not on the server or missing bot permissions). Please check it manually.",
     teamCheckedIn: "Team check-in confirmed!",
     teamCheckinCancelled: "Team check-in cancelled!",
     teamUpdated: "Team updated successfully!",

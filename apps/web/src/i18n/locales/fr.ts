@@ -639,6 +639,7 @@ export const fr = {
     nowPrivate: "Le tournoi est désormais privé",
     fakeTeamsInvalidCount: "Veuillez renseigner un nombre d'équipes valide (entre {min} et {max}).",
     teamAdded: "Équipe ajoutée avec succès !",
+    teamAddedPresenceWarning: "Le rôle Capitaine ou le pseudo n'a pas pu être appliqué sur Discord (capitaine absent du serveur ou permissions du bot insuffisantes). Vérifiez-le manuellement.",
     teamCheckedIn: "Check-in de l'équipe validé !",
     teamCheckinCancelled: "Check-in de l'équipe annulé !",
     teamUpdated: "Équipe mise à jour avec succès !",

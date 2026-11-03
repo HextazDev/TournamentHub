@@ -199,6 +199,31 @@ export const ReportScoreSchema = z.object({
   reported_by_team_id: z.string().optional(),
 });
 
+// Bornes alignées sur le schéma SQL (`teams.name VARCHAR(32)`, `team_members` VARCHAR(50) / VARCHAR(25)).
+export const TEAM_NAME_MAX_LENGTH = 32;
+export const TEAM_MEMBERS_MAX = 10;
+const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+
+export const CreateTeamMemberSchema = z.object({
+  user_id: DiscordSnowflakeSchema.nullable().default(null),
+  ingame_name: z.string().trim().max(50),
+  friend_code: z.string().trim().max(25),
+  is_captain: z.boolean().default(false),
+});
+
+/**
+ * Corps de `POST /api/teams` (ajout manuel d'une équipe par un TO, REG-09).
+ * `is_checked_in` absent ➜ le bot applique la règle par défaut selon l'état du tournoi.
+ */
+export const CreateTeamSchema = z.object({
+  tournament_id: z.uuid(),
+  name: z.string().trim().min(1, "Le nom de l'équipe est obligatoire").max(TEAM_NAME_MAX_LENGTH),
+  captain_discord_id: DiscordSnowflakeSchema,
+  is_checked_in: z.boolean().optional(),
+  members: z.array(CreateTeamMemberSchema).max(TEAM_MEMBERS_MAX).default([]),
+});
+export type CreateTeamInput = z.infer<typeof CreateTeamSchema>;
+
 // ─── Barème de points des poules (phase.settings) ────────────────────────────
 // Source unique partagée par le formulaire web, la route PUT /api/phases/:id,
 // le classement persisté (LeaderboardService) et le classement web (LeaderboardTable).

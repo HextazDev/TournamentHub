@@ -97,7 +97,6 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
           guildId,
           name: newTeamName,
           captain_discord_id: selectedMember.id,
-          is_checked_in: true,
           members: membersPayload,
         }),
       });
@@ -113,6 +112,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
       setSelectedMember(null);
       setIsAdding(false);
       toast.success(t("feedback.teamAdded"));
+      if (data.presence_warning === true) toast.warning(t("feedback.teamAddedPresenceWarning"));
       router.refresh();
     } catch (err: unknown) {
       console.error(err);

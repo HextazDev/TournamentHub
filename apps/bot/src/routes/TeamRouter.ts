@@ -1,61 +1,82 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
-import { MAX_FAKE_TEAMS } from "@hub/shared";
+import { CreateTeamSchema, MAX_FAKE_TEAMS } from "@hub/shared";
 import type { Client } from "discord.js";
-import { applyPresence, removePresence } from "../services/CaptainPresenceService";
+import { applyPresence, hasPresenceFailure, removePresence } from "../services/CaptainPresenceService";
+import { defaultCheckedInOnManualAdd } from "../utils/manualTeamCheckin";
+import { logger } from "../utils/logger";
+
+const UNIQUE_VIOLATION = "23505";
 
 export const teamRouter = Router();
 
-// POST /api/teams — Create a team with its members
+// POST /api/teams — Create a team with its members (ajout manuel par un TO)
 teamRouter.post("/", async (req, res) => {
   try {
-    const { tournament_id, name, captain_discord_id, is_checked_in, members } = req.body;
+    // REG-09 : le corps est une entrée externe, validé (contrôle pur, sans base) avant toute lecture ou écriture.
+    const parsed = CreateTeamSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
+    }
+    const { tournament_id, name, captain_discord_id, is_checked_in, members } = parsed.data;
+
     const authGuildId = getAuthenticatedGuildId(req);
     if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    if (!tournament_id || !name) {
-      return res.status(400).json({ error: "tournament_id and name are required" });
+    const { data: tournament, error: tournamentError } = await supabase
+      .from("tournaments")
+      .select("status, checkin_start_at")
+      .eq("id", tournament_id)
+      .single();
+    if (tournamentError || !tournament) {
+      return res.status(404).json({ error: "Tournament not found" });
     }
+
+    const checkedIn = is_checked_in ?? defaultCheckedInOnManualAdd(tournament, new Date());
 
     const { data: team, error: teamError } = await supabase
       .from("teams")
-      .insert({
-        tournament_id,
-        name,
-        captain_discord_id: captain_discord_id || null,
-        is_checked_in: is_checked_in ?? true,
-      })
+      .insert({ tournament_id, name, captain_discord_id, is_checked_in: checkedIn })
       .select()
       .single();
 
+    if (teamError?.code === UNIQUE_VIOLATION) {
+      return res.status(409).json({ error: "Ce capitaine a déjà une équipe ou ce nom est déjà pris dans ce tournoi." });
+    }
     if (teamError) throw teamError;
 
-    let insertedMembers: any[] = [];
-    if (members && members.length > 0) {
-      const membersToInsert = members.map((m: any) => ({
-        team_id: team.id,
-        user_id: m.user_id || null,
-        ingame_name: m.ingame_name || "",
-        friend_code: m.friend_code || "",
-        is_captain: m.is_captain ?? false,
-      }));
-
+    let insertedMembers: unknown[] = [];
+    if (members.length > 0) {
       const { data: mData, error: mError } = await supabase
         .from("team_members")
-        .insert(membersToInsert)
+        .insert(members.map((m) => ({ team_id: team.id, ...m })))
         .select();
 
       if (mError) throw mError;
-      insertedMembers = mData || [];
+      insertedMembers = mData ?? [];
     }
 
-    res.status(201).json({ ...team, team_members: insertedMembers });
-  } catch (error: any) {
-    console.error("[TeamRouter] Create error:", error);
-    res.status(500).json({ error: error.message });
+    // DISC-12 : une équipe créée check-in reçoit la présence comme au check-in (DISC-11).
+    // Un refus Discord n'annule pas la création : il est signalé au TO via `presence_warning`.
+    let presenceWarning = false;
+    if (team.is_checked_in) {
+      const client: Client = req.app.locals.discordClient;
+      const report = await applyPresence(client, {
+        id: team.id,
+        tournament_id: team.tournament_id,
+        name: team.name,
+        captain_discord_id: team.captain_discord_id,
+      });
+      presenceWarning = hasPresenceFailure(report);
+    }
+
+    res.status(201).json({ ...team, team_members: insertedMembers, presence_warning: presenceWarning });
+  } catch (error: unknown) {
+    logger.error("[TeamRouter] Create error:", error);
+    res.status(500).json({ error: error instanceof Error ? error.message : "Team creation failed" });
   }
 });
 
