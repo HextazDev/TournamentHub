@@ -12,4 +12,4 @@ Bugs **constatés et non encore corrigés**, avec leur impact visible, un contou
 
 | ID | Domaine | Symptôme visible | Contournement | Edge cases | Suivi |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **KI-04** | Scores (back-office) | La case **Forfait** de la modale « Modifier le score » est sans effet : `PUT /api/matches/:id/force-score` enregistre toujours le match en `COMPLETED`, jamais en `FF`. Le perdant prend donc une défaite (`points_loss`), pas un forfait (`points_forfeit`). | Aucun pour appliquer `points_forfeit` ; saisir le score du forfait (ex. `3-0`) pour attribuer la victoire. | `LB-05` | [#77](https://github.com/HextazDev/TournamentHub/issues/77) |
+| **KI-05** | Placement des phases (back-office) | Un double forfait `FF` saisi à `0-0` n'est pas considéré comme un match joué : le placement (seeding) de la phase reste modifiable, et le re-seed **efface** les matchs et le classement de la phase. Même effet pour un `0-0` en attente de validation ou contesté. | Ne pas modifier le placement d'une phase dont un match a été joué, déclaré ou contesté. | `SCR-09` | [#82](https://github.com/HextazDev/TournamentHub/issues/82) |

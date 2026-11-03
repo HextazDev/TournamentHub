@@ -3,6 +3,7 @@ import {
   GROUP_POINTS_DEFAULTS,
   compareStandings,
   computeStandings,
+  isFinishedMatchStatus,
   type StandingsMatch,
   type TeamStanding,
 } from "@hub/shared";
@@ -145,4 +146,17 @@ describe("compareStandings — ordre du classement", () => {
     ];
     expect([...rows].sort(compareStandings).map((r) => r.id)).toEqual(["diff", "bp", "bp-low", "low"]);
   });
+});
+
+describe("isFinishedMatchStatus — match terminé (fin de ronde, classement)", () => {
+  it.each(["COMPLETED", "FF", "BYE"])("SCR-08: %s ➜ terminé", (status) => {
+    expect(isFinishedMatchStatus(status)).toBe(true);
+  });
+
+  it.each(["PENDING", "IN_PROGRESS", "WAITING_VALIDATION", "CONTESTED", "DISPUTED", "DSQ", ""])(
+    "SCR-08: %s ➜ non terminé",
+    (status) => {
+      expect(isFinishedMatchStatus(status)).toBe(false);
+    },
+  );
 });

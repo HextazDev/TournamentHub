@@ -199,6 +199,21 @@ export const ReportScoreSchema = z.object({
   reported_by_team_id: z.string().optional(),
 });
 
+/** Bornes d'un score saisi (alignées sur `isValidScore` côté Discord et la contrainte SQL `>= 0`). */
+const MATCH_SCORE_MAX = 99;
+const MatchScoreSchema = z.number().int().min(0).max(MATCH_SCORE_MAX);
+
+/** Statuts qu'un TO peut imposer via un score forcé : résultat ordinaire ou forfait (SCR-10). */
+export const FORCE_SCORE_STATUSES = ["COMPLETED", "FF"] as const;
+
+/** Corps de `PUT /api/matches/:id/force-score` (back-office). Les clés inconnues (`guildId`) sont retirées. */
+export const ForceScoreSchema = z.object({
+  team1_score: MatchScoreSchema,
+  team2_score: MatchScoreSchema,
+  status: z.enum(FORCE_SCORE_STATUSES),
+});
+export type ForceScoreInput = z.infer<typeof ForceScoreSchema>;
+
 // Bornes alignées sur le schéma SQL (`teams.name VARCHAR(32)`, `team_members` VARCHAR(50) / VARCHAR(25)).
 export const TEAM_NAME_MAX_LENGTH = 32;
 export const TEAM_MEMBERS_MAX = 10;
@@ -282,6 +297,14 @@ export function resolveGroupPoints(settings: unknown): GroupPoints {
 
 /** Statuts de match qui comptent au classement ; tous les autres (PENDING, CONTESTED, DSQ…) sont ignorés. */
 export const STANDINGS_MATCH_STATUSES = ["COMPLETED", "FF", "BYE"] as const;
+
+/**
+ * Match terminé : son résultat est acquis (`COMPLETED`, `FF`, `BYE`). Sert à la fin de ronde Suisse (SCR-08)
+ * et suit exactement les statuts comptés au classement.
+ */
+export function isFinishedMatchStatus(status: string): boolean {
+  return (STANDINGS_MATCH_STATUSES as readonly string[]).includes(status);
+}
 
 /** Champs d'un match lus par le calcul du classement. */
 export interface StandingsMatch {

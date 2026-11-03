@@ -217,3 +217,39 @@ describe("ScoreService.progressTeams - SWS-06 ronde suisse déjà générée", (
     expect(LifecycleService.syncPhaseChannels).not.toHaveBeenCalled();
   });
 });
+
+describe("ScoreService.progressTeams - SCR-08 fin de ronde suisse contenant un forfait (#77)", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
+  });
+
+  it("SCR-08 / SWS-06: ronde 1 = COMPLETED + FF ➜ ronde 2 générée une seule fois", async () => {
+    const fake = new FakeSupabase({
+      phases: [{ id: "phase-s", format: "SWISS", tournament_id: "tour-1", settings: { swiss_rounds_count: 3 } }],
+      tournaments: [{ id: "tour-1", guild_id: "guild-1", language: "fr" }],
+      phase_teams: [
+        { phase_id: "phase-s", team_id: "t1", points: 3, wins: 1 },
+        { phase_id: "phase-s", team_id: "t2", points: 0, wins: 0 },
+        { phase_id: "phase-s", team_id: "t3", points: 3, wins: 1 },
+        { phase_id: "phase-s", team_id: "t4", points: 0, wins: 0 },
+      ],
+      matches: [
+        { id: "r1-1", phase_id: "phase-s", round_number: 1, team1_id: "t1", team2_id: "t2", team1_score: 2, team2_score: 1, status: "COMPLETED" },
+        { id: "r1-2", phase_id: "phase-s", round_number: 1, team1_id: "t3", team2_id: "t4", team1_score: 3, team2_score: 0, status: "FF" },
+      ],
+    });
+    db.current = fake;
+    const channel = { guildId: "guild-1", send: vi.fn().mockResolvedValue(undefined) };
+    const ffMatch = fake.tables.matches?.[1];
+
+    await ScoreService.progressTeams(ffMatch, channel as never, "t3", "t4", {});
+    await ScoreService.progressTeams(ffMatch, channel as never, "t3", "t4", {});
+
+    const inserts = fake.writesTo("matches", "insert");
+    expect(inserts).toHaveLength(1);
+    const round2 = (fake.tables.matches ?? []).filter((m) => m.round_number === 2);
+    expect(round2).toHaveLength(2);
+    expect(channel.send).toHaveBeenCalledTimes(1);
+  });
+});
