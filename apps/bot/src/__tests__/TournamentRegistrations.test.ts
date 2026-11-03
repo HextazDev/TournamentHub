@@ -43,7 +43,7 @@ const open = () =>
     method: "POST",
     path: `/${TID}/registrations`,
     body: { action: "open", guildId: "111" },
-    adminCheck: { discordId: "u1", guildId: "111", reason: "TO_ROLE" },
+    adminCheck: { discordId: "u1", guildId: "111", access: { level: "SERVER", reason: "TO_ROLE" } },
     locals: { discordClient: {} },
   });
 

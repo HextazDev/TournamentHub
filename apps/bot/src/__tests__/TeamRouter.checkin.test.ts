@@ -28,7 +28,7 @@ const patch = (is_checked_in: unknown) => callRoute(teamRouter, {
   method: "PATCH",
   path: "/team-1/checkin",
   body: { is_checked_in, guildId: "111" },
-  adminCheck: { discordId: "to", guildId: "111", reason: "TO_ROLE" },
+  adminCheck: { discordId: "to", guildId: "111", access: { level: "SERVER", reason: "TO_ROLE" } },
   locals: { discordClient: client },
 });
 

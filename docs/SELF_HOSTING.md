@@ -142,6 +142,10 @@ public and must never embed a credential. `NEXT_PUBLIC_*` settings are frozen in
 the Next.js build: rebuild/redeploy your own frontend when changing public settings.
 Do not promote an image built for one Supabase instance to another unchanged.
 
+The web asks the bot API for every back-office access decision: if the web cannot
+reach the bot, the admin panel stays closed ("permission check failed") for everyone,
+including server owners. Public pages remain available.
+
 The API port binds to `127.0.0.1` by default. Place an HTTPS reverse proxy on the
 host, forwarding to `127.0.0.1:8080`, for example:
 
