@@ -42,10 +42,10 @@ export function AdminSidebarNav({ guildId }: { guildId: string }) {
           </label>
         </div>
         <div className="p-6 border-b border-slate-700">
-          <h2 className="text-xl font-bold flex items-center gap-2">
+          <Link href="/admin" className="text-xl font-bold flex items-center gap-2 hover:text-blue-300 transition-colors">
             <Settings className="w-6 h-6 text-blue-400" />
             {t("adminSidebar.toPanel")}
-          </h2>
+          </Link>
           <p className="text-sm text-slate-400 mt-1">
             {t("adminSidebar.serverAdmin")}
           </p>

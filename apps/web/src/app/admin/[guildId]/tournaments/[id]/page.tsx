@@ -1,36 +1,50 @@
-import { supabase } from "@/lib/supabase";
 import { notFound } from "next/navigation";
 import { ExternalLink, Users, Settings2, GitMerge } from "lucide-react";
 import Link from "next/link";
-import { cookies } from "next/headers";
 import { t } from "@/i18n";
-import { Locale } from "@/i18n/types";
+import { getServerLocale } from "@/i18n/server";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament, getServerProfile } from "@/lib/viewer";
+import { isServerSetupComplete, tournamentNextStep } from "@/lib/accessRules";
+import { NextStepCard } from "@/components/admin/NextStepCard";
 import { VisibilityToggle } from "./VisibilityToggle";
 import { OpenRegistrationButton } from "./OpenRegistrationButton";
 import { TournamentLifecycleManager } from "./TournamentLifecycleManager";
 
 export default async function TournamentDashboard({ params }: { params: Promise<{ guildId: string; id: string }> }) {
   const { guildId, id: tournamentId } = await params;
-  const cookieStore = await cookies();
-  const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
+  const locale = await getServerLocale();
 
-  // Récupération Tournoi
-  const { data: tournament, error } = await supabase.from('tournaments').select('*').eq('id', tournamentId).single();
-  if (error || !tournament) notFound();
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
-  // Récupération Phases pour Carte 3
-  const { data: phases } = await supabase
-    .from('phases')
-    .select('*, matches(id, status)')
-    .eq('tournament_id', tournamentId)
-    .order('phase_order', { ascending: true });
-  
-  // Comptage des participants confirmés
-  const { count: participantsCountRaw } = await supabase
-    .from('teams')
-    .select('*', { count: 'exact', head: true })
-    .eq('tournament_id', tournamentId);
-  const participantsCount = participantsCountRaw || 0;
+  const [phasesRes, teamsRes, profile] = await Promise.all([
+    supabaseAdmin
+      .from('phases')
+      .select('*, matches(id, status)')
+      .eq('tournament_id', tournamentId)
+      .order('phase_order', { ascending: true }),
+    supabaseAdmin
+      .from('teams')
+      .select('*', { count: 'exact', head: true })
+      .eq('tournament_id', tournamentId),
+    getServerProfile(guildId),
+  ]);
+  if (phasesRes.error) throw new Error(`phases read failed: ${phasesRes.error.message}`);
+  if (teamsRes.error) throw new Error(`teams count failed: ${teamsRes.error.message}`);
+  const phases = phasesRes.data;
+  const participantsCount = teamsRes.count ?? 0;
+
+  const nextStep = tournamentNextStep(
+    {
+      status: tournament.status,
+      is_registration_open: tournament.is_registration_open ?? false,
+      checkin_start_at: tournament.checkin_start_at ?? null,
+      checkin_end_at: tournament.checkin_end_at ?? null,
+      discord_registration_channel_id: tournament.discord_registration_channel_id ?? null,
+    },
+    { phasesCount: phases?.length ?? 0, teamsCount: participantsCount, serverSetupComplete: isServerSetupComplete(profile) },
+  );
 
   // États Configuration pour Carte 4
   const hasDiscordRoles = !!tournament.discord_captain_role_id || !!tournament.discord_to_role_id;
@@ -56,6 +70,8 @@ export default async function TournamentDashboard({ params }: { params: Promise<
           {t(locale, "nav.publicPage")} <ExternalLink className="w-4 h-4" />
         </Link>
       </header>
+
+      <NextStepCard guildId={guildId} tournamentId={tournamentId} step={nextStep} locale={locale} />
 
       {/* Tournament Lifecycle Manager */}
       <TournamentLifecycleManager 
@@ -87,7 +103,7 @@ export default async function TournamentDashboard({ params }: { params: Promise<
               tournamentId={tournamentId}
               guildId={guildId}
               isRegistrationOpen={!!tournament.is_registration_open}
-              isPublic={!!tournament.is_public}
+              hasRegistrationChannel={!!tournament.discord_registration_channel_id}
               hasStartedOrCheckin={hasStartedOrCheckin}
             />
           </div>

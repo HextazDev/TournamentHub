@@ -1,73 +1,13 @@
-import { supabase } from "@/lib/supabase";
-import Link from "next/link";
-import { notFound } from "next/navigation";
-import { cookies } from "next/headers";
-import { t } from "@/i18n";
-import { Locale } from "@/i18n/types";
+import { notFound, permanentRedirect } from "next/navigation";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getReadableTournament } from "@/lib/viewer";
 
-interface TournamentPageProps {
-  params: Promise<{
-    id: string;
-  }>;
-}
-
-export default async function TournamentDetailPage(props: TournamentPageProps) {
-  const params = await props.params;
-  const tournamentId = params.id;
-  const cookieStore = await cookies();
-  const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
-  const dateLocale = locale === "en" ? "en-US" : "fr-FR";
-
-  const { data: tournament, error } = await supabase
-    .from("tournaments")
-    .select("*")
-    .eq("id", tournamentId)
-    .single();
-
-  if (error || !tournament) {
-    notFound();
-  }
-
-  return (
-    <div className="min-h-screen p-8 bg-gray-50 flex flex-col items-center">
-      <div className="max-w-[1600px] w-full mx-auto">
-        <div className="mb-6 flex items-center justify-between">
-          <Link href="/tournaments" className="text-blue-600 hover:underline font-medium">
-            ← {t(locale, "nav.tournaments")}
-          </Link>
-        </div>
-
-        <div className="bg-white p-8 rounded-xl shadow-lg mb-8">
-          <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-3">
-            <span>🏆</span> {tournament.name}
-          </h1>
-          <p className="text-gray-500 mt-2 font-mono text-sm">ID: {tournament.id}</p>
-          
-          <div className="mt-6 flex flex-wrap gap-6 border-t pt-6 bg-gray-50 -mx-8 px-8 pb-4 rounded-b-xl border">
-            <div>
-              <span className="block text-xs font-semibold text-gray-500 uppercase">{t(locale, "adminSettingsPage.checkinStart")}</span>
-              <span className="font-medium text-gray-800">
-                {tournament.checkin_start_at ? new Date(tournament.checkin_start_at).toLocaleString(dateLocale, { dateStyle: 'short', timeStyle: 'short' }) : t(locale, "tournamentsPage.notDefined")}
-              </span>
-            </div>
-            <div>
-              <span className="block text-xs font-semibold text-gray-500 uppercase">{t(locale, "adminSettingsPage.checkinEnd")}</span>
-              <span className="font-medium text-gray-800">
-                {tournament.checkin_end_at ? new Date(tournament.checkin_end_at).toLocaleString(dateLocale, { dateStyle: 'short', timeStyle: 'short' }) : t(locale, "tournamentsPage.notDefined")}
-              </span>
-            </div>
-            <div>
-              <span className="block text-xs font-semibold text-gray-500 uppercase">Guild ID</span>
-              <span className="font-medium text-gray-800">
-                {tournament.guild_id}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* C'est ici que l'on intègre ton super PhaseManager (Drag & Drop) ! */}
-        {/* <PhaseManager tournamentId={tournament.id} /> */}
-      </div>
-    </div>
-  );
+// Ancienne URL sans serveur : redirige vers l'URL canonique, qui applique elle-même le contrôle d'accès (SEC-10).
+export default async function LegacyTournamentPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const { data, error } = await supabaseAdmin.from("tournaments").select("guild_id").eq("id", id).maybeSingle();
+  if (error && error.code !== "22P02") throw new Error(`tournament read failed: ${error.message}`);
+  // Ne révèle même pas le serveur d'un tournoi privé à un non-membre.
+  if (!data || !(await getReadableTournament(data.guild_id, id))) notFound();
+  permanentRedirect(`/${data.guild_id}/tournaments/${id}`);
 }

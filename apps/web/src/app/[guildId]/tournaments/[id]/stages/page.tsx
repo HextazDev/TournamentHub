@@ -1,6 +1,8 @@
 export const dynamic = 'force-dynamic';
 
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getReadableTournament } from "@/lib/viewer";
+import { notFound } from "next/navigation";
 import { StagesClientView } from "./StagesClientView";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
@@ -10,7 +12,9 @@ export default async function PublicStagesPage({
 }: {
   params: Promise<{ guildId: string; id: string }>;
 }) {
-  const { id } = await params;
+  const { guildId, id } = await params;
+  const tournament = await getReadableTournament(guildId, id);
+  if (!tournament) notFound();
   const locale = await getServerLocale();
 
   // Parallel fetching for phases and teams
@@ -18,22 +22,22 @@ export default async function PublicStagesPage({
     { data: phases },
     { data: teams }
   ] = await Promise.all([
-    supabase.from("phases").select("*").eq("tournament_id", id).order("phase_order", { ascending: true }),
-    supabase.from("teams").select("*").eq("tournament_id", id).eq("is_checked_in", true)
+    supabaseAdmin.from("phases").select("*").eq("tournament_id", id).order("phase_order", { ascending: true }),
+    supabaseAdmin.from("teams").select("*").eq("tournament_id", id).eq("is_checked_in", true)
   ]);
 
   let matches: any[] = [];
   let phaseTeams: any[] = [];
   if (phases && phases.length > 0) {
     const phaseIds = phases.map(p => p.id);
-    const { data } = await supabase
+    const { data } = await supabaseAdmin
       .from("matches")
       .select("*, team1:team1_id(*), team2:team2_id(*)")
       .in("phase_id", phaseIds)
       .order("round_number", { ascending: true });
     if (data) matches = data;
 
-    const { data: ptData } = await supabase
+    const { data: ptData } = await supabaseAdmin
       .from("phase_teams")
       .select("*, teams(id, name)")
       .in("phase_id", phaseIds);

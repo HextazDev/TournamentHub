@@ -1,4 +1,6 @@
-import { supabase } from "@/lib/supabase";
+import { notFound } from "next/navigation";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import MatchesTabs from "./MatchesTabs";
 import { cookies } from "next/headers";
 import { t } from "@/i18n";
@@ -12,11 +14,13 @@ export default async function MatchesLayout({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id: tournamentId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
   // Fetch all phases for this tournament to generate the tabs
-  const { data: phases } = await supabase
+  const { data: phases } = await supabaseAdmin
     .from("phases")
     .select("*")
     .eq("tournament_id", tournamentId)

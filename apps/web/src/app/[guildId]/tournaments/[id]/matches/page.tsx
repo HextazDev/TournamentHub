@@ -1,4 +1,6 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getReadableTournament } from "@/lib/viewer";
+import { notFound } from "next/navigation";
 import { RealtimeMatchesList } from "@/components/RealtimeMatchesList";
 import { cookies } from "next/headers";
 import { t } from "@/i18n";
@@ -9,17 +11,19 @@ export default async function PublicMatchesPage({
 }: {
   params: Promise<{ guildId: string; id: string }>;
 }) {
-  const { id } = await params;
+  const { guildId, id } = await params;
+  const tournament = await getReadableTournament(guildId, id);
+  if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
   // Get phase IDs via tournament
-  const { data: phases } = await supabase.from("phases").select("id").eq("tournament_id", id);
+  const { data: phases } = await supabaseAdmin.from("phases").select("id").eq("tournament_id", id);
   
   let matches: any[] = [];
   if (phases && phases.length > 0) {
     const phaseIds = phases.map(p => p.id);
-    const { data } = await supabase
+    const { data } = await supabaseAdmin
       .from("matches")
       .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order)")
       .in("phase_id", phaseIds);

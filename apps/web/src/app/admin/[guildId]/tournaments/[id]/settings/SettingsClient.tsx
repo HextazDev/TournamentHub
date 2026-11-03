@@ -1,7 +1,6 @@
 "use client";
 
 import { useForm } from "react-hook-form";
-import { useSession } from "next-auth/react";
 import { botApiFetch, getBotApiUrl } from '@/utils/api';
 import { CheckinTimeManager } from "./CheckinTimeManager";
 
@@ -14,7 +13,6 @@ import { getErrorMessage, readApiError } from "@/utils/errors";
 
 export function SettingsClient({ tournament, guildId, initialChannels = [], initialRoles = [] }: { tournament: any; guildId: string; initialChannels?: any[]; initialRoles?: any[] }) {
   const router = useRouter();
-  const { data: session, status } = useSession();
   const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
@@ -26,7 +24,6 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
 
   useEffect(() => {
     const fetchDiscordData = async () => {
-      if (status === 'loading') return;
 
       if (!guildId) {
         setIsLoadingDiscord(false);
@@ -64,7 +61,9 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
     };
 
     fetchDiscordData();
-  }, [guildId, session, status, t]);
+  // Ne dépend que du serveur : la session NextAuth est relue à chaque retour sur l'onglet, et la relancer
+  // ici rechargeait la base par-dessus les modifications non enregistrées.
+  }, [guildId, t]);
 
   const { register, handleSubmit } = useForm({
     defaultValues: {

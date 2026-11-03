@@ -90,7 +90,6 @@ updateEnvFile(botEnvPath, botExamplePath, {
   SUPABASE_URL: status.API_URL,
   SUPABASE_KEY: status.ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: status.SERVICE_ROLE_KEY,
-  SUPABASE_JWT_SECRET: status.JWT_SECRET || "super-secret-jwt-token-for-dev",
   BOT_API_SECRET: process.env.BOT_API_SECRET || "dev-bot-secret-key-123"
 });
 
@@ -101,7 +100,6 @@ updateEnvFile(webEnvPath, webExamplePath, {
   NEXT_PUBLIC_SUPABASE_URL: status.API_URL,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: status.ANON_KEY,
   SUPABASE_SERVICE_ROLE_KEY: status.SERVICE_ROLE_KEY,
-  SUPABASE_JWT_SECRET: status.JWT_SECRET || "super-secret-jwt-token-for-dev",
   BOT_API_SECRET: process.env.BOT_API_SECRET || "dev-bot-secret-key-123",
   NEXTAUTH_SECRET: process.env.NEXTAUTH_SECRET || "dev-only-secret-do-not-use-in-production-environment"
 });

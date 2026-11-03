@@ -16,30 +16,14 @@
 
 ---
 
-## 🌐 Environnement d'Hébergement & Services Homelab (24/7)
+## 🌐 Configuration propre à chaque instance
 
-Le Bot TournamentHub et l'écosystème de production sont hébergés sur une **machine dédiée personnelle allumée 24h/24** ("Lordi" / homelab, HP ProBook x360, Windows 11, Celeron 1.1 GHz, 4 Go RAM). Tous les services sont reliés au monde extérieur via **Cloudflare Zero Trust** sous le domaine `*.hextaz.dev` sans aucune ouverture de port sur la box.
+Les consignes publiques décrivent l'architecture et les commandes du projet. Les adresses d'administration, inventaires de services, identifiants de projets cloud, chemins locaux et procédures d'exploitation propres au mainteneur restent dans une documentation privée, hors du suivi Git.
 
-### Inventaire des Services Disponibles
-
-| Catégorie | Service | URL / Destination | Description & Rôle pour TournamentHub |
-| :--- | :--- | :--- | :--- |
-| **Production Bot API** | **Tournament Bot API** | `https://bot.hextaz.dev` | API Express du bot (`localhost:8080` sur Lordi). Contactée par Vercel pour créer des salons vocaux, attribuer les rôles et notifier les scores. |
-| **Frontend Web** | **TournamentHub Web** | `https://tournament.hextaz.dev` | Portail public & Back-office hébergé sur Vercel (Next.js 16). |
-| **CI/CD & GitOps** | **Webhook Receiver (CD)** | `https://deploy.hextaz.dev` | Récepteur de webhooks GitHub (`localhost:8081` sur Lordi). Déploie automatiquement le bot (`git pull`, `npm install`, build `@hub/shared` & `@hub/bot`, `pm2 restart`) sur push `main`. |
-| **Console de Logs** | **Lordi Logs Gateway** | `https://deploy.hextaz.dev/logs` | Console web unifiée chronologique & API brute pour inspecter les logs récents de n'importe quel bot avec le token secret. |
-| **Monitoring & Alertes** | **Uptime Kuma** | `https://status.hextaz.dev` | Surveillance 24/7 du bot, du site Vercel, et ping anti-mise en veille de la base Supabase de production. |
-| **Productivité & Debug** | **MicroBin** | `https://bin.hextaz.dev` | Pastebin instantané en Rust (avec QR Code). ➜ *Idéal pour exporter des dumps d'arbres JSON, logs de match ou stack traces.* |
-| | **Memos** | `https://notes.hextaz.dev` | Notes, devlog & micro-blogging en Go. ➜ *Idéal pour publier des devlogs de tournois ou notes de patch.* |
-| **Services Cloud** | **Supabase Prod** | `https://supabase.com` | Base de données PostgreSQL, Auth, et Realtime de TournamentHub (`kjplfpngnyrcpenlkuzo`). |
-| | **Cloudflare Zero Trust** | `https://one.dash.cloudflare.com` | Gestion du tunnel `lordi-tunnel`, des DNS et de la sécurité Access. |
-
-### 🚀 Synergies & Cas d'Usage pour TournamentHub
-1. **CI/CD Automatisé via `deploy.hextaz.dev`** : Tout commit fusionné sur `main` déclenche le webhook GitHub vers `https://deploy.hextaz.dev`. Lordi compile le package partagé, le bot et redémarre le processus PM2 automatiquement avec notification Discord.
-2. **Surveillance & Anti-AFK Supabase** : Uptime Kuma surveille en continu `https://bot.hextaz.dev/health` et envoie un heartbeat régulier à l'API Supabase pour garantir que la base de données ne s'endort jamais.
-3. **Capture des Crashs & Stack Traces en Temps Réel** : Grâce au bus d'événements interne de PM2 (`pm2.launchBus`), toute exception non gérée sur `tournament-bot` génère immédiatement un embed rouge sur Discord avec la stack trace complète.
-4. **Diagnostic Distant pour l'Agent IA** : L'agent Antigravity peut inspecter en direct l'état du bot en production via `https://deploy.hextaz.dev/logs?app=tournament-bot&raw=true&token=SECRET` pour débugger un comportement anormal sans intervention manuelle.
-5. **Dumps d'Arbres de Tournois vers MicroBin** : En cas de litige ou de fin de tournoi, possibilité de générer un rapport JSON complet du bracket et de l'uploader d'un clic vers `https://bin.hextaz.dev`.
+- Utiliser uniquement les environnements et services explicitement autorisés pour la tâche. Une URL citée dans une documentation ne donne pas l'autorisation de contacter le service.
+- Fournir les paramètres et secrets par l'environnement de l'instance. Ne jamais placer de token dans une URL, un exemple versionné, un log ou un message GitHub.
+- Analyser les diagnostics localement par défaut. Avant tout partage de logs, stack traces, dumps ou données de joueurs, retirer les secrets et données personnelles ; ne transmettre que le minimum nécessaire, vers la destination expressément autorisée par l'utilisateur.
+- Ne pas déployer ni contacter la production pour une simple tâche de développement. Toute opération de production doit être demandée et vérifiée séparément.
 
 ---
 
@@ -84,7 +68,7 @@ Le Bot TournamentHub et l'écosystème de production sont hébergés sur une **m
    * `git diff` audité sans console.log ou fichiers parasites. Zéro `any`. **`docs/EDGE_CASES.md` synchronisé**.
    * Interdiction formelle d'exécuter `git commit` automatiquement.
    * Mini-rapport en 5 lignes max (fichiers modifiés, preuves terminales, cas limites testés, instructions de test local `make dev`, commande de commit suggérée).
-   * Rappel : Le push sur `main` déclenchera automatiquement le déploiement sur le Lordi via `deploy.hextaz.dev`.
+   * Rappel : une fusion sur `main` peut déclencher un déploiement configuré par l'exploitant. Ouvrir une PR ; ne pas pousser directement sur `main` ni déclencher un déploiement sans demande explicite.
 
 ---
 
@@ -223,13 +207,13 @@ Le `tsconfig.json` du bot applique un typage strict renforcé :
 * **Ségrégation Stderr vs Stdout** :
   * `stdout` : Démarrage du bot, réceptions d'événements, synchronisations d'équipes et de brackets.
   * `stderr` : Erreurs API Discord, rejets de requêtes Supabase, exceptions inattendues.
-  * Consultable via la console distante unifiée `https://deploy.hextaz.dev/logs?app=tournament-bot&token=SECRET` (avec `filter=out|err|all`).
+  * Consulter les flux dans l'environnement autorisé ; conserver les adresses d'administration et moyens d'authentification hors des consignes publiques.
 * **Capture des Crashs & Stack Traces (Bus PM2)** :
   * Toujours transmettre l'objet `Error` complet : `logger.error('Échec génération bracket:', error)`.
-  * Le bus PM2 (`pm2.launchBus`) sur Lordi capte les `process:exception` pour envoyer immédiatement une notification Discord d'alerte rouge avec stack trace.
-* **Dumps d'Arbres & MicroBin** :
+  * Si l'exploitant utilise le bus PM2 (`pm2.launchBus`), les alertes doivent rester sur une destination autorisée et exclure secrets et données personnelles.
+* **Diagnostics volumineux** :
   * Ne jamais dumper de brackets JSON volumineux dans la console.
-  * Exporter les données de débogage étendues vers MicroBin (`https://bin.hextaz.dev`) et ne consigner que l'URL résultante.
+  * Conserver les dumps localement par défaut. Tout transfert externe nécessite une destination autorisée et une suppression préalable des secrets et données de joueurs.
 
 ---
 

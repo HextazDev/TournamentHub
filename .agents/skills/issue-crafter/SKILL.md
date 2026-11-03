@@ -107,11 +107,13 @@ Description claire du besoin utilisateur ou de la dette technique. Pourquoi ce c
 - Gestion des valeurs nulles / cas d'erreur / forfaits.
 - Rétrocompatibilité avec les tournois en cours.
 
-## 🌐 Synergies Homelab & Services 24/7 (`*.hextaz.dev`)
-- **API Bot & Vercel** (`bot.hextaz.dev`) : Impact sur les routes Express ou les webhooks Vercel.
-- **Uptime Kuma** (`status.hextaz.dev`) : Surveillance `/health` ou heartbeat de background jobs.
-- **MicroBin** (`bin.hextaz.dev`) : Export de brackets, dumps de tournoi ou logs de match.
-- **Memos** (`notes.hextaz.dev`) : Publication de devlog / changelog public du tournoi.
+## 🌐 Intégrations et exploitation
+
+- Identifier les impacts sur l'API bot, le frontend et les webhooks sans dépendre des services privés du mainteneur.
+- Décrire les besoins de monitoring par leurs fonctions (`/health`, disponibilité, jobs), pas par des adresses de production.
+- Ne pas créer d'export de logs, dumps ou données de tournoi vers un service externe sans besoin explicite, destination autorisée et suppression des données sensibles.
+
+---
 
 ## ✅ Critères d'Acceptation (Definition of Done)
 - [ ] Critère 1 testable

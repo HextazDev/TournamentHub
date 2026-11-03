@@ -1,5 +1,5 @@
 import { TournamentAdminSidebarNav } from "@/components/TournamentAdminSidebarNav";
-import { supabase } from "@/lib/supabase";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 
 export default async function TournamentAdminLayout({
@@ -10,18 +10,9 @@ export default async function TournamentAdminLayout({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id: tournamentId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
-  // Fetch the tournament from the DB to display its name
-  const { data: tournament, error } = await supabase
-    .from("tournaments")
-    .select("id, name, guild_id")
-    .eq("id", tournamentId)
-    .single();
-
-  // If tournament doesn't exist or is not associated with the current server/guild, 404
-  if (error || !tournament || tournament.guild_id !== guildId) {
-    notFound();
-  }
 
   return (
     <div className="flex flex-col lg:flex-row min-h-[calc(100vh-4rem)] bg-slate-900 text-white w-full relative">

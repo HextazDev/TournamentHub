@@ -16,6 +16,10 @@ out/
 .pnp.js
 
 # Env files
+.env.*
+!.env.example
+**/*.env
+!**/*.env.example
 .env
 .env.local
 .env.development.local
@@ -31,3 +35,7 @@ out/
 
 # Supabase local config
 supabase/.temp/
+
+# Configuration IA propre à une machine (non partageable)
+.antigravitycli/
+.claude/settings.local.json

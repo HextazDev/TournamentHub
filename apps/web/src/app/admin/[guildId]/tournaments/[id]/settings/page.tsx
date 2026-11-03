@@ -1,4 +1,4 @@
-import { supabase } from "@/lib/supabase";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { SettingsClient } from "./SettingsClient";
 import { getServerSession } from "next-auth/next";
@@ -10,14 +10,9 @@ export default async function TournamentSettingsPage({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id: tournamentId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
-  const { data: tournament, error } = await supabase
-    .from("tournaments")
-    .select("*")
-    .eq("id", tournamentId)
-    .single();
-
-  if (error || !tournament) notFound();
 
   // Fetch Discord data server-side using BOT_API_SECRET and user session headers
   let channels: any[] = [];

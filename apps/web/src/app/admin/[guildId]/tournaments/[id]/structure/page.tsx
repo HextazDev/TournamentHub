@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { StructureClient } from "./StructureClient";
 import { cookies } from "next/headers";
@@ -16,23 +17,16 @@ export default async function TournamentStructurePage({
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
-  // Verify tournament and retrieve info
-  const { data: tournament, error: tErr } = await supabase
-    .from("tournaments")
-    .select("id, status")
-    .eq("id", tournamentId)
-    .single();
-
-  if (tErr || !tournament) {
-    notFound();
-  }
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
   // Fetch existing phases for this tournament
-  const { data: phases, error: pErr } = await supabase
+  const { data: phases, error: pErr } = await supabaseAdmin
     .from("phases")
     .select("*")
     .eq("tournament_id", tournamentId)
     .order("created_at", { ascending: true });
+  if (pErr) throw new Error(`phases read failed: ${pErr.message}`);
 
   const currentPhases = phases || [];
 

@@ -1,0 +1,29 @@
+# Separate from docker-compose.yml (development). No deployment runs automatically.
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: apps/bot/Dockerfile
+      target: runner
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    env_file:
+      - ${BOT_ENV_FILE:-./deploy/bot.env}
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+    ports:
+      - "${BOT_BIND_ADDRESS:-127.0.0.1}:${BOT_HOST_PORT:-8080}:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

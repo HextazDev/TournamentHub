@@ -1,99 +1,101 @@
 import { Request, Response, NextFunction } from "express";
-import jwt from "jsonwebtoken";
+import { timingSafeEqual } from "crypto";
 import { PermissionFlagsBits } from "discord.js";
+import type { GuildAdminReason } from "@hub/shared";
 import { supabase } from "../lib/supabase";
+import { logger } from "../utils/logger";
+import { resolveAdminReason } from "../utils/adminAccess";
 
-const BOT_API_SECRET = process.env.BOT_API_SECRET || "";
+export interface AdminCheck {
+  discordId: string;
+  guildId: string;
+  reason: GuildAdminReason;
+}
+
+declare module "express-serve-static-core" {
+  interface Request {
+    adminCheck?: AdminCheck;
+  }
+}
+
+function secretMatches(token: string): boolean {
+  const secret = process.env.BOT_API_SECRET || "";
+  const a = Buffer.from(token);
+  const b = Buffer.from(secret);
+  return secret.length > 0 && a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
- * Middleware that authenticates requests to the bot API.
- *
- * Two supported methods:
- * 1. Shared secret: `Authorization: Bearer <BOT_API_SECRET>`
- *   - Simple and effective for service-to-service calls (web → bot)
- * 2. Supabase JWT: `Authorization: Bearer <supabase_jwt>`
- *   - Validates the JWT signed with SUPABASE_JWT_SECRET and extracts discord_id
- *   - Sets req.user = { discord_id } for downstream use
+ * Authentifie les appels service-à-service (Next.js ➜ bot) par le secret partagé BOT_API_SECRET.
+ * Le navigateur ne parle jamais directement au bot : il passe par le proxy /api/bot qui injecte ce secret
+ * et l'identité Discord issue de la session serveur (SEC-06).
  */
 export function authMiddleware(req: Request, res: Response, next: NextFunction) {
-  // Skip auth for health check
   if (req.path === "/health") return next();
+
+  if (!process.env.BOT_API_SECRET) {
+    return res.status(500).json({ error: "Server auth misconfiguration" });
+  }
 
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Missing Authorization header" });
   }
 
-  const token = authHeader.slice(7);
-
-  // Method 1: Shared secret match
-  if (BOT_API_SECRET && token === BOT_API_SECRET) {
-    return next();
+  if (!secretMatches(authHeader.slice(7))) {
+    return res.status(401).json({ error: "Invalid token" });
   }
-
-  // Method 2: Supabase JWT validation
-  const supabaseSecret = process.env.SUPABASE_JWT_SECRET;
-  if (!supabaseSecret) {
-    return res.status(500).json({ error: "Server auth misconfiguration" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, supabaseSecret) as { discord_id?: string; role?: string };
-    if (!decoded.discord_id) {
-      return res.status(401).json({ error: "Invalid token: missing discord_id" });
-    }
-    (req as any).user = { discord_id: decoded.discord_id };
-    next();
-  } catch {
-    return res.status(401).json({ error: "Invalid or expired token" });
-  }
+  next();
 }
 
-/**
- * Middleware that requires the requesting user to be a guild admin.
- * Checks Discord permissions live from the bot's cached member data.
- *
- * Identity resolution order:
- * 1. req.user.discord_id (set by JWT auth)
- * 2. X-Discord-User-Id header (set by Next.js proxy when using BOT_API_SECRET)
- *
- * Guild ID resolution order:
- * 1. req.body.guildId
- * 2. req.query.guildId
- * 3. X-Guild-Id header (set by Next.js proxy)
- *
- * Authorizes if the user has ANY of:
- * - Server Owner
- * - Administrator permission
- * - ManageGuild permission
- * - The configured TO role for the server
- */
 interface PermCacheEntry {
-  allowed: boolean;
-  adminCheck?: any;
+  adminCheck: AdminCheck | null;
   timestamp: number;
 }
 
 const permCache = new Map<string, PermCacheEntry>();
-const PERM_CACHE_TTL_MS = 30_000; // 30 seconds TTL
+const PERM_CACHE_TTL_MS = 30_000; // SEC-05 : délai maximal de prise en compte d'une perte de droits.
 
-export function requireGuildAdmin(discordClient: any) {
+export function clearPermissionCache() {
+  permCache.clear();
+}
+
+/** Sous-ensemble du client Discord utilisé (facilite les tests). */
+interface DiscordClientLike {
+  guilds: {
+    fetch(guildId: string): Promise<{
+      ownerId: string;
+      members: {
+        fetch(userId: string): Promise<{
+          permissions: { has(flag: bigint): boolean };
+          roles: { cache: { has(roleId: string): boolean } };
+        }>;
+      };
+    }>;
+  };
+}
+
+function firstString(...values: unknown[]): string | undefined {
+  return values.find((v): v is string => typeof v === "string" && v.length > 0);
+}
+
+/**
+ * Exige que l'utilisateur (X-Discord-User-Id, injecté par le proxy) administre le serveur ciblé :
+ * propriétaire, Administrateur, Gérer le serveur ou rôle TO configuré (règle unique resolveAdminReason).
+ */
+export function requireGuildAdmin(discordClient: DiscordClientLike) {
   return async (req: Request, res: Response, next: NextFunction) => {
-    // Resolve discord user ID
-    const discordId =
-      (req as any).user?.discord_id ||
-      req.headers["x-discord-user-id"] as string;
-
-    // Resolve guild ID
-    const guildId =
-      req.body?.guildId ||
-      req.body?.guild_id ||
-      req.query?.guildId as string ||
-      req.query?.guild_id as string ||
-      req.headers["x-guild-id"] as string;
+    const discordId = firstString(req.headers["x-discord-user-id"]);
+    const guildId = firstString(
+      req.body?.guildId,
+      req.body?.guild_id,
+      req.query?.guildId,
+      req.query?.guild_id,
+      req.headers["x-guild-id"],
+    );
 
     if (!discordId) {
-      return res.status(401).json({ error: "User identity required — provide JWT or X-Discord-User-Id header" });
+      return res.status(401).json({ error: "User identity required" });
     }
     if (!guildId) {
       return res.status(400).json({ error: "guildId required — provide in body, query, or X-Guild-Id header" });
@@ -102,69 +104,48 @@ export function requireGuildAdmin(discordClient: any) {
     const cacheKey = `${guildId}:${discordId}`;
     const cached = permCache.get(cacheKey);
     const now = Date.now();
-
     if (cached && now - cached.timestamp < PERM_CACHE_TTL_MS) {
-      if (!cached.allowed) {
-        return res.status(403).json({ error: "Insufficient Discord permissions (cached)" });
-      }
-      (req as any).adminCheck = cached.adminCheck;
+      if (!cached.adminCheck) return res.status(403).json({ error: "Insufficient Discord permissions" });
+      req.adminCheck = cached.adminCheck;
       return next();
     }
 
-    try {
-      const guild = await discordClient.guilds.fetch(guildId).catch(() => null);
-      if (!guild) {
-        return res.status(404).json({ error: "Guild not found" });
-      }
-
-      const member = await guild.members.fetch(discordId).catch(() => null);
-      if (!member) {
-        permCache.set(cacheKey, { allowed: false, timestamp: now });
-        return res.status(403).json({ error: "User not found in guild" });
-      }
-
-      // Check: Server Owner
-      const isOwner = guild.ownerId === discordId;
-
-      // Check: Administrator or ManageGuild
-      const hasAdminPerm =
-        member.permissions.has(PermissionFlagsBits.Administrator) ||
-        member.permissions.has(PermissionFlagsBits.ManageGuild);
-
-      // Check: TO role from DB
-      let hasToRole = false;
-      const { data: serverSettings } = await supabase
-        .from("server_settings")
-        .select("to_role_id")
-        .eq("guild_id", guildId)
-        .single();
-
-      if (serverSettings?.to_role_id) {
-        hasToRole = member.roles.cache.has(serverSettings.to_role_id);
-      }
-
-      const isAllowed = isOwner || hasAdminPerm || hasToRole;
-
-      const adminCheck = {
-        discordId,
-        guildId,
-        isOwner,
-        hasAdminPerm,
-        hasToRole,
-      };
-
-      permCache.set(cacheKey, { allowed: isAllowed, adminCheck, timestamp: now });
-
-      if (!isAllowed) {
-        return res.status(403).json({ error: "Insufficient Discord permissions" });
-      }
-
-      // Attach admin info for downstream use
-      (req as any).adminCheck = adminCheck;
-
-      next();
-    } catch (err) {
-      return res.status(500).json({ error: "Permission check failed" });
+    const guild = await discordClient.guilds.fetch(guildId).catch(() => null);
+    if (!guild) {
+      return res.status(404).json({ error: "Guild not found" });
     }
+
+    const member = await guild.members.fetch(discordId).catch(() => null);
+    if (!member) {
+      permCache.set(cacheKey, { adminCheck: null, timestamp: now });
+      return res.status(403).json({ error: "User not found in guild" });
+    }
+
+    const { data: settings, error } = await supabase
+      .from("server_settings")
+      .select("to_role_id")
+      .eq("guild_id", guildId)
+      .maybeSingle();
+    if (error) {
+      logger.error(`[Auth] Lecture du rôle TO impossible pour ${guildId}:`, error);
+      return res.status(503).json({ error: "Permission check temporarily unavailable" });
+    }
+
+    const toRoleId = (settings as { to_role_id: string | null } | null)?.to_role_id ?? null;
+    const reason = resolveAdminReason({
+      isOwner: guild.ownerId === discordId,
+      hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
+      hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
+      hasToRole: !!toRoleId && member.roles.cache.has(toRoleId),
+    });
+
+    const adminCheck = reason ? { discordId, guildId, reason } : null;
+    permCache.set(cacheKey, { adminCheck, timestamp: now });
+
+    if (!adminCheck) {
+      return res.status(403).json({ error: "Insufficient Discord permissions" });
+    }
+    req.adminCheck = adminCheck;
+    next();
   };
 }

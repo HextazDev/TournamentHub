@@ -226,8 +226,8 @@ Terminer systématiquement par un rapport dense et percutant :
    ```bash
    git add <fichiers concernés>
    git commit -m "<type>(<scope>): <description claire> (#<NUMERO>)"
-   # Le push sur main déclenche automatiquement le déploiement sur Lordi via deploy.hextaz.dev
-   git push origin main
+   # Pousser la branche de travail, puis ouvrir une PR. Aucun déploiement implicite.
+   git push origin HEAD
    ```
-   * **Suivi de mise en production** : Vérifier le statut sur Uptime Kuma (`https://status.hextaz.dev`) et inspecter les logs en direct sur `https://deploy.hextaz.dev/logs?app=tournament-bot`.
+   * **Suivi de mise en production** : uniquement si un déploiement a été demandé, vérifier le monitoring et les logs dans l'environnement autorisé. Conserver les coordonnées d'exploitation hors des consignes publiques.
 

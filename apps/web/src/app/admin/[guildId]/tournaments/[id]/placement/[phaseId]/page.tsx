@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { PlacementPhaseClient } from "./PlacementPhaseClient";
 import { cookies } from "next/headers";
@@ -12,6 +13,8 @@ export default async function PlacementPhasePage({
   params: Promise<{ guildId: string; id: string; phaseId: string }>;
 }) {
   const { guildId, id: tournamentId, phaseId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
@@ -20,6 +23,7 @@ export default async function PlacementPhasePage({
     .from("phases")
     .select("*")
     .eq("id", phaseId)
+    .eq("tournament_id", tournamentId)
     .single();
 
   if (phaseError || !phase) notFound();

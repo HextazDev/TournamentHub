@@ -5,7 +5,7 @@ import { supabase } from "../lib/supabase";
  * Extract the authenticated guildId attached by requireGuildAdmin middleware
  */
 export function getAuthenticatedGuildId(req: Request): string | null {
-  return (req as any).adminCheck?.guildId || null;
+  return req.adminCheck?.guildId ?? null;
 }
 
 /**

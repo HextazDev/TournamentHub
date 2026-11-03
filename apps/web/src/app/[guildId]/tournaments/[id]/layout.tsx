@@ -1,10 +1,11 @@
-import { supabase } from "@/lib/supabase";
+import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import Link from "next/link";
 import { PublicTournamentNav } from "@/components/PublicTournamentNav";
-import { cookies } from "next/headers";
+import { OrganizerCard } from "@/components/OrganizerCard";
 import { t } from "@/i18n";
-import { Locale } from "@/i18n/types";
+import { getServerLocale } from "@/i18n/server";
+import { getReadableTournament, getServerProfile } from "@/lib/viewer";
 
 export default async function PublicTournamentLayout({
   children,
@@ -14,26 +15,12 @@ export default async function PublicTournamentLayout({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id } = await params;
-  const cookieStore = await cookies();
-  const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
+  const locale = await getServerLocale();
 
-  // Fetch only what's needed for the layout (banner, logo, title)
-  const { data: tournament } = await supabase
-    .from("tournaments")
-    .select("name, description, start_at")
-    .eq("id", id)
-    .single();
-
-  if (!tournament) {
-    return (
-      <div className="min-h-screen p-8 text-center text-slate-400 bg-[#0f111a]">
-        <p className="text-xl">{t(locale, "tournaments.notFound")}</p>
-        <Link href={`/${guildId}`} className="text-blue-500 hover:text-blue-400 mt-4 inline-block">
-          {t(locale, "tournaments.backToServerTournaments")}
-        </Link>
-      </div>
-    );
-  }
+  // SEC-10 : tournoi privé d'un serveur dont le visiteur n'est pas membre, ou URL incohérente ➜ 404.
+  const tournament = await getReadableTournament(guildId, id);
+  if (!tournament) notFound();
+  const profile = await getServerProfile(guildId);
 
   return (
     <div className="min-h-screen bg-[#0f111a] text-slate-200 flex flex-col font-sans">
@@ -72,6 +59,9 @@ export default async function PublicTournamentLayout({
               <h1 className="text-3xl sm:text-4xl font-extrabold text-white tracking-tight">
                 {tournament.name}
               </h1>
+              <div className="mt-3 flex justify-center sm:justify-start">
+                <OrganizerCard guildId={guildId} profile={profile} locale={locale} />
+              </div>
             </div>
           </div>
         </div>

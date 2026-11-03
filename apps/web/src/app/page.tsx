@@ -2,7 +2,7 @@
 
 import { useSession, signIn } from "next-auth/react";
 import Link from "next/link";
-import { LogIn, ArrowRight } from "lucide-react";
+import { LogIn, ArrowRight, Trophy } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 
 export default function Home() {
@@ -21,6 +21,13 @@ export default function Home() {
         </p>
 
         <div className="pt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
+          <Link
+            href="/tournaments"
+            className="w-full sm:w-auto flex items-center justify-center gap-3 bg-[#151722] hover:bg-[#1a1d2d] border border-slate-700 text-white font-semibold py-4 px-8 rounded-xl transition-transform hover:scale-105"
+          >
+            <Trophy size={24} />
+            {t("home.browseTournaments")}
+          </Link>
           {!session ? (
             <button
               onClick={() => signIn("discord", { callbackUrl: "/servers" })}

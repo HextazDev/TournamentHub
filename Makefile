@@ -1,4 +1,4 @@
-.PHONY: install dev dev-bot dev-bot-start bot-start dev-bot-stop bot-stop dev-web dev-web-start web-start dev-web-stop web-stop dev-stop dev-build dev-logs supabase-start supabase-stop db-init env-init init lint build help
+.PHONY: install dev dev-bot dev-bot-start bot-start dev-bot-stop bot-stop dev-web dev-web-start web-start dev-web-stop web-stop dev-stop dev-build dev-logs supabase-start supabase-stop db-init db-test-rls db-push env-init init lint build help
 
 help:
 	@echo "Commandes disponibles :"
@@ -7,7 +7,9 @@ help:
 	@echo "  make supabase-start - Démarre la stack Supabase locale (Docker)"
 	@echo "  make supabase-stop  - Éteint la stack Supabase locale (Docker)"
 	@echo "  make env-init       - Récupère les clés locales Supabase et met à jour les fichiers .env"
-	@echo "  make db-init        - Applique le schéma SQL schema.sql sur la base de données locale"
+	@echo "  make db-init        - Applique les migrations supabase/migrations sur la base locale"
+	@echo "  make db-test-rls    - Rejoue les migrations sur une base jetable et vérifie la RLS"
+	@echo "  make db-push        - Applique les migrations en attente sur le projet Supabase lié (PRODUCTION)"
 	@echo "  make dev            - Lance le Bot et Next.js en arrière-plan (Docker Compose -d)"
 	@echo "  make dev-logs       - Affiche les logs en temps réel des conteneurs de dev"
 	@echo "  make dev-bot        - Lance uniquement le bot Discord de Dev (alias: bot-start)"
@@ -39,12 +41,30 @@ env-init:
 	@echo "🔑 Configuration des clés d'environnement locales..."
 	node scripts/setup-dev-env.js
 
+# Conteneur Postgres de la stack Supabase locale (son suffixe dépend du project_id au démarrage).
+DB_CONTAINER ?= $(shell docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -1)
+
 db-init:
 	@echo "🗄️ Application des migrations SQL locales..."
+	@test -n "$(DB_CONTAINER)" || (echo "❌ Stack Supabase locale introuvable : lancez 'make supabase-start'." && exit 1)
 	@for f in $$(ls supabase/migrations/*.sql | sort); do \
 		echo "-> Exécution de $$f..."; \
-		docker exec -i supabase_db_TournamentHub psql -U postgres -d postgres < $$f; \
+		docker exec -i $(DB_CONTAINER) psql -U postgres -d postgres -v ON_ERROR_STOP=1 --single-transaction < $$f || exit 1; \
 	done
+
+db-test-rls:
+	@echo "🔒 Vérification de la RLS sur une base jetable..."
+	@test -n "$(DB_CONTAINER)" || (echo "❌ Stack Supabase locale introuvable : lancez 'make supabase-start'." && exit 1)
+	@docker exec $(DB_CONTAINER) psql -U postgres -q -c "DROP DATABASE IF EXISTS rls_check" -c "CREATE DATABASE rls_check"
+	@for f in $$(ls supabase/migrations/*.sql | sort); do \
+		docker exec -i $(DB_CONTAINER) psql -U postgres -d rls_check -q -v ON_ERROR_STOP=1 --single-transaction < $$f > /dev/null || exit 1; \
+	done
+	@docker exec -i $(DB_CONTAINER) psql -U postgres -d rls_check -q -v ON_ERROR_STOP=1 < supabase/tests/rls_access.sql
+	@docker exec $(DB_CONTAINER) psql -U postgres -q -c "DROP DATABASE rls_check"
+
+# Production : nécessite 'npx supabase login' puis 'npx supabase link --project-ref <ref>'. Jamais depuis l'éditeur SQL.
+db-push:
+	npx supabase db push --linked
 
 dev:
 	@echo "🚀 Démarrage du Bot et de Next.js en arrière-plan..."

@@ -1,10 +1,11 @@
-import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { supabaseAdmin } from "@/lib/supabase-admin";
 import Link from "next/link";
+import { ShieldAlert } from "lucide-react";
 import { ServerSidebarWrapper } from "@/components/ServerSidebarWrapper";
 import { AdminSidebarNav } from "@/components/AdminSidebarNav";
+import { getGuildAdminAccess } from "@/lib/viewer";
+import { buildBotInviteUrl } from "@/lib/accessRules";
+import { t } from "@/i18n";
+import { getServerLocale } from "@/i18n/server";
 
 export default async function AdminLayout({
   children,
@@ -14,92 +15,53 @@ export default async function AdminLayout({
   params: Promise<{ guildId: string }>;
 }) {
   const { guildId } = await params;
-  const session = await getServerSession(authOptions);
+  // SEC-11 : même règle que le bouton « Panel » du hub et que requireGuildAdmin côté bot.
+  const access = await getGuildAdminAccess(guildId);
 
-  if (!session || !(session as any).accessToken) {
-    redirect("/");
-  }
-
-  let isAdmin = false;
-  try {
-    const discordId = (session.user as any)?.id;
-    const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
-    const botApiSecret = process.env.BOT_API_SECRET;
-
-    console.log("[AdminLayout Check]", {
-      guildId,
-      discordId,
-      user: session.user,
-      hasAccessToken: !!(session as any).accessToken
-    });
-
-    if (discordId) {
-      // 1. Check primary truth source: guild_admins table in Supabase via Admin Client
-      const { data: adminRecord, error: dbError } = await supabaseAdmin
-        .from("guild_admins")
-        .select("discord_id")
-        .eq("guild_id", guildId)
-        .eq("discord_id", discordId)
-        .maybeSingle();
-
-      console.log("[AdminLayout DB Check]", { guildId, discordId, adminRecord, dbError });
-
-      if (adminRecord) {
-        isAdmin = true;
-      } else {
-        // 2. Fallback: query Discord bot live permissions endpoint
-        const { data: serverSettings } = await supabaseAdmin
-          .from("server_settings")
-          .select("to_role_id")
-          .eq("guild_id", guildId)
-          .single();
-        const toRoleId = serverSettings?.to_role_id || "";
-
-        const headers: Record<string, string> = {};
-        if (botApiSecret) {
-          headers["Authorization"] = `Bearer ${botApiSecret}`;
-        }
-
-        const permRes = await fetch(
-          `${botApiUrl}/api/discord/permissions?guildId=${guildId}&userId=${discordId}&toRoleId=${toRoleId}`,
-          { headers, cache: "no-store" }
-        );
-
-        if (permRes.ok) {
-          const permData = await permRes.json();
-          console.log("[AdminLayout Bot Result]", permData);
-          if (permData.hasPermission) {
-            isAdmin = true;
-          }
-        } else {
-          console.log("[AdminLayout Bot Fetch Failed]", permRes.status, await permRes.text().catch(() => ""));
-        }
-      }
-    }
-  } catch (e) {
-    console.error("Error validating admin role:", e);
-  }
-
-  console.log("[AdminLayout Final]", { isAdmin, guildId });
-
-  if (!isAdmin) {
-    // If you don't have the permission, get redirected to the public hub
-    redirect(`/${guildId}`);
+  if (!access.allowed) {
+    const locale = await getServerLocale();
+    const clientId = process.env.DISCORD_CLIENT_ID;
+    return (
+      <div className="min-h-[calc(100vh-4rem)] flex items-center justify-center p-4 bg-slate-900">
+        <div className="max-w-lg w-full bg-slate-800 border border-slate-700 rounded-2xl p-8 text-center space-y-4">
+          <ShieldAlert className="w-12 h-12 text-amber-400 mx-auto" />
+          <h1 className="text-2xl font-bold text-white">{t(locale, "access.deniedTitle")}</h1>
+          <p className="text-slate-300">{t(locale, `access.${access.reason}`)}</p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center pt-2">
+            {access.reason === "CHECK_FAILED" && (
+              <Link href={`/admin/${guildId}`} className="rounded-lg bg-blue-600 hover:bg-blue-500 px-4 py-2 font-semibold text-white">
+                {t(locale, "access.retry")}
+              </Link>
+            )}
+            {access.reason === "BOT_NOT_IN_GUILD" && clientId && (
+              <a href={buildBotInviteUrl(clientId, guildId)} target="_blank" rel="noopener noreferrer" className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-2 font-semibold text-white">
+                {t(locale, "access.installBot")}
+              </a>
+            )}
+            {access.reason === "NOT_LOGGED_IN" ? (
+              <Link href="/" className="rounded-lg bg-blue-600 hover:bg-blue-500 px-4 py-2 font-semibold text-white">
+                {t(locale, "access.login")}
+              </Link>
+            ) : (
+              <Link href={`/${guildId}`} className="rounded-lg bg-slate-700 hover:bg-slate-600 px-4 py-2 font-semibold text-white">
+                {t(locale, "access.backToServer")}
+              </Link>
+            )}
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="flex flex-col lg:flex-row min-h-[calc(100vh-4rem)] bg-slate-900 text-white relative">
-      {/* Sidebar Server conditionally rendered */}
       <ServerSidebarWrapper>
         <AdminSidebarNav guildId={guildId} />
       </ServerSidebarWrapper>
 
-      {/* Main Content */}
       <main className="flex-1 overflow-y-auto flex flex-col">
         {children}
       </main>
     </div>
   );
 }
-
-

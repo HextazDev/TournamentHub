@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { PlacementOverviewClient } from "./PlacementOverviewClient";
 import { cookies } from "next/headers";
@@ -14,23 +15,16 @@ export default async function PlacementPage({
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
-  // Retrieve tournament
-  const { data: tournament, error: tErr } = await supabase
-    .from("tournaments")
-    .select("id, status")
-    .eq("id", tournamentId)
-    .single();
-
-  if (tErr || !tournament) {
-    notFound();
-  }
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
   // Fetch existing phases for this tournament
-  const { data: phases, error: pErr } = await supabase
+  const { data: phases, error: pErr } = await supabaseAdmin
     .from("phases")
     .select("*")
     .eq("tournament_id", tournamentId)
     .order("phase_order", { ascending: true });
+  if (pErr) throw new Error(`phases read failed: ${pErr.message}`);
 
   const currentPhases = phases || [];
 

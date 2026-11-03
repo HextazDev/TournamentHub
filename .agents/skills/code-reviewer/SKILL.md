@@ -57,7 +57,7 @@ Le reviewer peut être sollicité selon 3 modes :
 * **Supabase Realtime & Listeners** : Nettoyage systématique (`supabase.removeChannel()`, `removeListener()`) dans les fonctions de retour de `useEffect` pour éviter les fuites mémoire.
 * **Discord Gateway Limits** : Respect strict des rate-limits Discord (cache des rôles/membres, pas de requêtes massives en boucle).
 * **Rendu React & Next.js** : Pas de re-renders infinis ou d'objets instables dans les dépendances de hooks.
-* **Observabilité & Homelab** : Route `/health` valide pour Uptime Kuma (`status.hextaz.dev`), logs propres au format PM2 (`--time`) sans dump massif d'objets, et exports vers MicroBin (`bin.hextaz.dev`) pour les gros dumps de tournois.
+* **Observabilité** : Route `/health` exploitable par le monitoring de l'instance et logs structurés sans dump massif. Analyser localement ; ne partager de diagnostics qu'après suppression des secrets et données de joueurs, vers une destination autorisée.
 
 ### 4. 💎 Clean Code, SOLID & Anti-Symptômes (Note /20)
 * **Chasse aux Band-Aids** : Traquer les `?.` sauvages, les `try/catch` vides et les fallbacks masquant des bugs en amont.

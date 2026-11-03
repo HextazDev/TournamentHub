@@ -20,7 +20,7 @@ export default function Navbar() {
         <div className="flex justify-between h-16">
           <div className="flex items-center gap-3">
             <Link
-              href={session ? "/servers" : "/"}
+              href="/"
               className="flex-shrink-0 flex items-center gap-2"
             >
               <span className="font-bold text-xl tracking-tight">
@@ -31,6 +31,12 @@ export default function Navbar() {
           </div>
 
           <div className="hidden md:flex items-center space-x-4">
+            <Link
+              href="/tournaments"
+              className="text-slate-300 hover:text-white text-sm font-medium transition"
+            >
+              {t("nav.tournaments")}
+            </Link>
             <LanguageSwitcher />
             {!session ? (
               <button
@@ -46,6 +52,12 @@ export default function Navbar() {
                   className="text-slate-300 hover:text-white text-sm font-medium transition"
                 >
                   {t("nav.myServers")}
+                </Link>
+                <Link
+                  href="/admin"
+                  className="text-slate-300 hover:text-white text-sm font-medium transition"
+                >
+                  {t("nav.organizerPanel")}
                 </Link>
                 <div className="flex items-center gap-3">
                   <img
@@ -86,6 +98,13 @@ export default function Navbar() {
 
       {isOpen && (
         <div className="md:hidden bg-[#151722] border-t border-slate-800/50 pb-3 pt-2">
+          <Link
+            href="/tournaments"
+            className="block mx-4 px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:text-white hover:bg-[#0a0a0f]"
+            onClick={() => setIsOpen(false)}
+          >
+            {t("nav.tournaments")}
+          </Link>
           {!session ? (
             <div className="px-4 py-2">
               <button
@@ -116,6 +135,13 @@ export default function Navbar() {
                 onClick={() => setIsOpen(false)}
               >
                 {t("nav.myServers")}
+              </Link>
+              <Link
+                href="/admin"
+                className="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:text-white hover:bg-[#151722]"
+                onClick={() => setIsOpen(false)}
+              >
+                {t("nav.organizerPanel")}
               </Link>
               <button
                 onClick={() => signOut({ callbackUrl: "/" })}

@@ -27,6 +27,11 @@ export interface Tournament {
   game_type: GameType;
   language: Locale;
   start_at?: string | null;
+  start_date?: string | null;
+  is_registration_open?: boolean | null;
+  checkin_message_id?: string | null;
+  discord_category_id?: string | null;
+  tie_breaker_method?: string | null;
   checkin_start_at?: string | null;
   checkin_end_at?: string | null;
   discord_announcement_channel_id?: string | null;
@@ -34,7 +39,6 @@ export interface Tournament {
   discord_checkin_channel_id?: string | null;
   discord_captain_role_id?: string | null;
   discord_to_role_id?: string | null;
-  admin_ids?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -80,6 +84,52 @@ export interface Match {
   created_at: string;
   updated_at: string;
 }
+
+// Invitation Discord publique configurée par les TO (doublée par la contrainte SQL server_settings_invite_url_check).
+export const DiscordInviteUrlSchema = z
+  .string()
+  .trim()
+  .regex(/^https:\/\/(discord\.gg|discord\.com\/invite)\/[A-Za-z0-9-]+$/, "Invitation Discord invalide");
+
+export interface ServerSettings {
+  guild_id: string;
+  guild_name: string | null;
+  guild_icon: string | null;
+  bot_present: boolean;
+  invite_url: string | null;
+  language: Locale;
+  to_role_id: string | null;
+  captain_role_id: string | null;
+  checkin_channel_id: string | null;
+  announcement_channel_id: string | null;
+  registration_channel_id: string | null;
+  updated_at: string;
+}
+
+const OptionalDiscordId = z
+  .union([z.string().regex(/^\d{1,25}$/, "Identifiant Discord invalide"), z.literal(""), z.null()])
+  .optional()
+  .transform((v) => (v ? v : null));
+
+// Corps de PUT /api/server-settings. Les champs absents ne sont pas modifiés (sauf les rôles et salons, envoyés en bloc par le formulaire).
+export const ServerSettingsUpdateSchema = z.object({
+  guild_id: z.string().regex(/^\d{1,25}$/, "guild_id invalide"),
+  to_role_id: OptionalDiscordId,
+  captain_role_id: OptionalDiscordId,
+  checkin_channel_id: OptionalDiscordId,
+  announcement_channel_id: OptionalDiscordId,
+  registration_channel_id: OptionalDiscordId,
+  language: LocaleSchema.optional(),
+  invite_url: z
+    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v || null)),
+});
+export type ServerSettingsUpdate = z.infer<typeof ServerSettingsUpdateSchema>;
+
+// Motif d'accès au back-office d'un serveur (colonne guild_admins.reason).
+export const GuildAdminReasonSchema = z.enum(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE"]);
+export type GuildAdminReason = z.infer<typeof GuildAdminReasonSchema>;
 
 // Common Zod Schemas
 export const CreateTournamentSchema = z.object({

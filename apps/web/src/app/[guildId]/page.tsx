@@ -1,74 +1,45 @@
-import { supabase } from "@/lib/supabase";
-import { Trophy, Calendar, Settings } from "lucide-react";
 import Link from "next/link";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { cookies } from "next/headers";
+import { Settings, Trophy } from "lucide-react";
+import type { Tournament } from "@hub/shared";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getGuildAdminAccess, getServerProfile, getViewer, memberGuildIds } from "@/lib/viewer";
+import { OrganizerCard } from "@/components/OrganizerCard";
+import { TournamentCard } from "@/components/TournamentCard";
 import { t } from "@/i18n";
-import { Locale } from "@/i18n/types";
+import { getServerLocale } from "@/i18n/server";
 
-// Next.js 15: params is a Promise
-export default async function GuildHubPage({
-  params,
-}: {
-  params: Promise<{ guildId: string }>;
-}) {
+export default async function GuildHubPage({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
-  const cookieStore = await cookies();
-  const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
+  const locale = await getServerLocale();
 
-  // Verification if the user is a Discord Admin for this Guild
-  const session = await getServerSession(authOptions);
-  let isAdmin = false;
+  const [viewer, profile, access] = await Promise.all([getViewer(), getServerProfile(guildId), getGuildAdminAccess(guildId)]);
+  const isMember = memberGuildIds(viewer).has(guildId);
 
-  if (session && (session as any).accessToken) {
-    try {
-      const res = await fetch("https://discord.com/api/users/@me/guilds", {
-        headers: { Authorization: `Bearer ${(session as any).accessToken}` },
-        next: { revalidate: 60 },
-      });
-      if (res.ok) {
-        const guilds = await res.json();
-        const guild = guilds.find((g: any) => g.id === guildId);
-        // ADMINISTRATOR permission is 0x8 (bitmask 8)
-        if (
-          guild &&
-          (BigInt(guild.permissions) & BigInt(0x8)) === BigInt(0x8)
-        ) {
-          isAdmin = true;
-        }
-      }
-    } catch (e) {
-      console.error("Failed to check Discord permissions", e);
-    }
-  }
-
-  // Fetch tournaments for this guild
-  const { data: tournaments, error } = await supabase
+  // SEC-10 : les tournois privés ne sont lus que pour les membres du serveur.
+  let query = supabaseAdmin
     .from("tournaments")
     .select("*")
     .eq("guild_id", guildId)
+    .neq("status", "ARCHIVED")
     .order("created_at", { ascending: false });
-
-  if (error) {
-    console.error("Error fetching tournaments:", error);
-    return (
-      <div className="p-8 text-red-500">
-        {t(locale, "tournaments.loadError")}
-      </div>
-    );
-  }
+  if (!isMember) query = query.eq("is_public", true);
+  const { data, error } = await query;
+  if (error) throw new Error(`tournaments read failed: ${error.message}`);
+  const tournaments = (data ?? []) as Tournament[];
 
   return (
-    <div className="min-h-[calc(100vh-4rem)] bg-[#0f111a] text-slate-200 p-8">
-      <div className="max-w-[1600px] w-full mx-auto">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
-          <h1 className="text-4xl font-extrabold flex items-center gap-4 text-white">
-            <Trophy className="w-10 h-10 text-yellow-500" />
-            {t(locale, "tournaments.serverTournaments")}
-          </h1>
+    <div className="min-h-[calc(100vh-4rem)] bg-[#0f111a] text-slate-200 p-4 sm:p-8">
+      <div className="max-w-[1600px] w-full mx-auto space-y-8">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+          <div className="space-y-3">
+            <h1 className="text-3xl sm:text-4xl font-extrabold flex items-center gap-4 text-white">
+              <Trophy className="w-10 h-10 text-yellow-500 shrink-0" />
+              {t(locale, "discover.serverTournaments", { name: profile?.guild_name || t(locale, "discover.unknownServer") })}
+            </h1>
+            <OrganizerCard guildId={guildId} profile={profile} locale={locale} />
+          </div>
 
-          {isAdmin && (
+          {access.allowed && (
             <Link
               href={`/admin/${guildId}`}
               className="bg-[#151722] hover:bg-[#1a1d2d] transition-colors border border-slate-800/50 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-3 shadow-lg"
@@ -79,31 +50,18 @@ export default async function GuildHubPage({
           )}
         </div>
 
-        {tournaments?.length === 0 ? (
-          <p className="text-slate-400">
-            {t(locale, "tournaments.noTournamentsFound")}
-          </p>
+        {tournaments.length === 0 ? (
+          <div className="bg-[#151722] p-12 text-center rounded-2xl border border-slate-800/50 max-w-xl mx-auto">
+            <Trophy className="w-12 h-12 text-slate-600 mx-auto mb-4" />
+            <p className="text-slate-300 font-semibold">
+              {t(locale, isMember ? "discover.serverEmptyMember" : "discover.serverEmpty")}
+            </p>
+            {!viewer.discordId && <p className="text-slate-500 mt-3 text-sm">{t(locale, "discover.loginHint")}</p>}
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {tournaments?.map((tourn) => (
-              <Link key={tourn.id} href={`/${guildId}/tournaments/${tourn.id}`}>
-                <div className="bg-[#151722] border border-slate-800/50 p-6 rounded-xl hover:border-slate-700 transition-colors cursor-pointer group h-full flex flex-col">
-                  <h2 className="text-2xl font-bold mb-2 text-white group-hover:text-blue-400 transition-colors">
-                    {tourn.name}
-                  </h2>
-                  <p className="text-slate-400 mb-4 flex-grow line-clamp-3">
-                    {tourn.description || t(locale, "tournaments.noDescription")}
-                  </p>
-                  <div className="flex items-center text-sm text-slate-500 mt-auto">
-                    <Calendar className="w-4 h-4 mr-2" />
-                    {tourn.start_date
-                      ? new Intl.DateTimeFormat(locale === "en" ? "en-US" : "fr-FR", {
-                          dateStyle: "long",
-                        }).format(new Date(tourn.start_date))
-                      : t(locale, "common.dateNotSet")}
-                  </div>
-                </div>
-              </Link>
+            {tournaments.map((tourn) => (
+              <TournamentCard key={tourn.id} tournament={tourn} profile={profile} locale={locale} showOrganizer={false} />
             ))}
           </div>
         )}
@@ -111,5 +69,3 @@ export default async function GuildHubPage({
     </div>
   );
 }
-
-

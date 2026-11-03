@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { ParticipantsClient } from "./ParticipantsClient";
 import { cookies } from "next/headers";
@@ -14,16 +15,11 @@ export default async function ParticipantsPage({
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
-  const { data: tournament, error: tournamentError } = await supabase
-    .from("tournaments")
-    .select("*")
-    .eq("id", tournamentId)
-    .single();
-
-  if (tournamentError || !tournament) notFound();
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
   // Fetch teams
-  const { data: teams, error: teamsError } = await supabase
+  const { data: teams, error: teamsError } = await supabaseAdmin
     .from("teams")
     .select("*, team_members(*)")
     .eq("tournament_id", tournamentId)

@@ -6,6 +6,7 @@ import { ArchiveService } from "../services/ArchiveService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant";
 import { LocaleSchema } from "@hub/shared";
+import { logger } from "../utils/logger";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
@@ -40,11 +41,12 @@ tournamentRouter.post("/", async (req, res) => {
     }
 
     // Fetch server default settings
-    const { data: serverSettings } = await supabase
+    const { data: serverSettings, error: settingsError } = await supabase
       .from("server_settings")
       .select("*")
       .eq("guild_id", targetGuildId)
-      .single();
+      .maybeSingle();
+    if (settingsError) throw settingsError;
 
     const { data: created, error } = await supabase
       .from("tournaments")
@@ -266,39 +268,46 @@ tournamentRouter.post("/:id/registrations", async (req, res) => {
     const { action } = req.body;
     const discordClient = req.app.locals.discordClient;
     
-    if (action === 'open') {
-        const { data: tournament, error: fetchError } = await supabase
-          .from('tournaments')
-          .select('start_at, start_date, checkin_start_at, status, is_public')
-          .eq('id', tournamentId)
-          .single();
-
-        if (fetchError || !tournament) {
-          return res.status(404).json({ error: "Tournament not found" });
-        }
-        
-        if (!tournament.is_public) {
-          return res.status(400).json({ error: "Cannot open registrations: The tournament is currently private. Please make it public first." });
-        }
-
-        const now = new Date();
-        const startDate = tournament.start_at ? new Date(tournament.start_at) : (tournament.start_date ? new Date(tournament.start_date) : null);
-        const checkinStart = tournament.checkin_start_at ? new Date(tournament.checkin_start_at) : null;
-
-        // Condition: During or past check-in, or tournament has started/passed
-        if ((checkinStart && now >= checkinStart) || (startDate && now >= startDate) || tournament.status === 'ACTIVE' || tournament.status === 'COMPLETED' || tournament.status === 'ARCHIVED') {
-          return res.status(400).json({ error: "Cannot open registrations: The tournament has already reached the check-in phase or has already started." });
-        }
-
-        await RegistrationService.sendRegistrationEmbed(tournamentId, discordClient);
-
-        // Marque les inscriptions comme ouvertes dans la DB
-        await supabase
-          .from('tournaments')
-          .update({ is_registration_open: true })
-          .eq('id', tournamentId);
+    if (action !== 'open') {
+      return res.status(400).json({ error: "Unknown registration action" });
     }
-    
+
+    const { data: tournament, error: fetchError } = await supabase
+      .from('tournaments')
+      .select('start_at, start_date, checkin_start_at, status')
+      .eq('id', tournamentId)
+      .single();
+
+    if (fetchError || !tournament) {
+      return res.status(404).json({ error: "Tournament not found" });
+    }
+
+    // REG-08 : la visibilité web (is_public) n'a pas d'incidence. Un tournoi privé ouvre ses inscriptions
+    // aux membres du serveur, puisque l'inscription se fait sur Discord.
+    const now = new Date();
+    const startDate = tournament.start_at ? new Date(tournament.start_at) : (tournament.start_date ? new Date(tournament.start_date) : null);
+    const checkinStart = tournament.checkin_start_at ? new Date(tournament.checkin_start_at) : null;
+
+    if ((checkinStart && now >= checkinStart) || (startDate && now >= startDate) || ['ACTIVE', 'COMPLETED', 'ARCHIVED'].includes(tournament.status)) {
+      return res.status(400).json({ error: "Cannot open registrations: The tournament has already reached the check-in phase or has already started." });
+    }
+
+    try {
+      await RegistrationService.sendRegistrationEmbed(tournamentId, discordClient);
+    } catch (embedError: unknown) {
+      logger.error(`[TournamentRouter] Annonce d'inscription échouée pour ${tournamentId}:`, embedError);
+      return res.status(502).json({ error: embedError instanceof Error ? embedError.message : "Discord announcement failed" });
+    }
+
+    const { error: flagError } = await supabase
+      .from('tournaments')
+      .update({ is_registration_open: true })
+      .eq('id', tournamentId);
+    if (flagError) {
+      logger.error(`[TournamentRouter] Ouverture des inscriptions non enregistrée pour ${tournamentId}:`, flagError);
+      return res.status(500).json({ error: flagError.message });
+    }
+
     res.json({ success: true, message: "Registration action executed." });
   } catch (error: any) {
     console.error(`[TournamentRouter] Error:`, error);

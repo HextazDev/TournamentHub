@@ -1,0 +1,39 @@
+name: Validate bot production container
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  docker-bot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image (no instance credentials)
+        run: docker build --target runner -f apps/bot/Dockerfile -t tournamenthub-bot:check .
+      - name: Check image contents and non-root user
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' tournamenthub-bot:check)" = node
+          docker run --rm --network none --entrypoint sh tournamenthub-bot:check -ec '
+            test -f dist/index.js
+            test -f dist/deploy-commands.js
+            test ! -d src
+            test ! -d dist/__tests__
+            node -e "require(\"@hub/shared\"); require(\"express\"); require(\"discord.js\"); require(\"@supabase/supabase-js\")"
+            test ! -d /app/node_modules/typescript
+            test ! -d /app/node_modules/vitest
+          '
+      - name: Missing configuration must fail before network access
+        run: |
+          set +e
+          docker run --rm --network none tournamenthub-bot:check > startup.log 2>&1
+          result=$?
+          set -e
+          test "$result" -ne 0
+          grep -q 'Invalid bot environment' startup.log
+      - name: Validate Compose without starting services
+        env:
+          BOT_ENV_FILE: ./deploy/bot.env.example
+        run: docker compose -f compose.production.yml config --quiet

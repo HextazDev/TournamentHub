@@ -1,7 +1,6 @@
 import NextAuth from "next-auth/next";
 import { NextAuthOptions } from "next-auth";
 import DiscordProvider from "next-auth/providers/discord";
-import jwt from "jsonwebtoken";
 
 export const authOptions: NextAuthOptions = {
   providers: [
@@ -23,26 +22,9 @@ export const authOptions: NextAuthOptions = {
       return token;
     },
     async session({ session, token }) {
-      if (session) {
-        (session as any).accessToken = token.accessToken;
-        if (session.user) {
-          const discordId = token.id || token.sub;
-          (session.user as any).id = discordId;
-
-          // Sign the custom Supabase JWT
-          const supabaseSecret = process.env.SUPABASE_JWT_SECRET || "";
-          if (supabaseSecret) {
-            const supabaseToken = jwt.sign(
-              {
-                discord_id: discordId,
-                role: "authenticated",
-              },
-              supabaseSecret,
-              { expiresIn: "30d" }
-            );
-            (session as any).supabaseAccessToken = supabaseToken;
-          }
-        }
+      (session as { accessToken?: unknown }).accessToken = token.accessToken;
+      if (session.user) {
+        (session.user as { id?: unknown }).id = token.id || token.sub;
       }
       return session;
     },
@@ -50,7 +32,8 @@ export const authOptions: NextAuthOptions = {
   pages: {
     signIn: '/',
   },
-  secret: process.env.NEXTAUTH_SECRET || "default-fallback-secret-key-for-nextauth-do-not-use-in-production",
+  // Pas de valeur de repli : sans NEXTAUTH_SECRET, NextAuth refuse de signer les sessions (fail-closed).
+  secret: process.env.NEXTAUTH_SECRET,
 };
 
 const handler = NextAuth(authOptions);

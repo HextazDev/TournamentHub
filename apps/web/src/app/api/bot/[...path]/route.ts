@@ -1,100 +1,72 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { isBotProxyPathAllowed } from "@/lib/botProxyAllowlist";
 
+/**
+ * Proxy navigateur ➜ bot. Le secret BOT_API_SECRET et l'identité Discord (issue de la session serveur) sont
+ * injectés ici et jamais fournis par le client (SEC-06). Seules les routes de gestion sont relayées (SEC-13).
+ */
 async function handleProxy(request: Request, { params }: { params: Promise<{ path: string[] }> }) {
   const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const discordId = (session?.user as { id?: string } | undefined)?.id;
+  if (!discordId) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const resolvedParams = await params;
-  let pathStr = resolvedParams.path.join("/");
-  if (pathStr.startsWith("api/")) {
-    pathStr = pathStr.replace("api/", "");
+  const segments = (await params).path;
+  const path = (segments[0] === "api" ? segments.slice(1) : segments).join("/");
+  if (!isBotProxyPathAllowed(path)) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  const url = new URL(request.url);
-  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
   const botApiSecret = process.env.BOT_API_SECRET;
-
   if (!botApiSecret) {
     console.error("BOT_API_SECRET is missing");
     return NextResponse.json({ error: "Server configuration error" }, { status: 500 });
   }
 
-  const targetUrl = `${botApiUrl}/api/${pathStr}${url.search}`;
+  const url = new URL(request.url);
+  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
+  const targetUrl = `${botApiUrl}/api/${path}${url.search}`;
+
+  // Seuls les en-têtes nécessaires sont transmis : aucun cookie ni jeton du navigateur n'atteint le bot.
+  const headers = new Headers({
+    Authorization: `Bearer ${botApiSecret}`,
+    "X-Discord-User-Id": discordId,
+  });
+
+  const hasBody = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
+  const textBody = hasBody ? await request.text() : "";
+  if (textBody) headers.set("Content-Type", "application/json");
+
+  // requireGuildAdmin lit aussi guildId dans la query ou le corps ; l'en-tête sert de repli (DELETE, GET).
+  let guildId = url.searchParams.get("guildId") || url.searchParams.get("guild_id");
+  if (!guildId && textBody) {
+    try {
+      const body = JSON.parse(textBody) as { guildId?: unknown; guild_id?: unknown };
+      const candidate = body.guildId ?? body.guild_id;
+      if (typeof candidate === "string") guildId = candidate;
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+  }
+  if (guildId) headers.set("X-Guild-Id", guildId);
 
   try {
-    const headers = new Headers(request.headers);
-    headers.set("Authorization", `Bearer ${botApiSecret}`);
-
-    // Transmit the Discord user identity for requireGuildAdmin middleware.
-    // This is needed because BOT_API_SECRET doesn't carry user identity.
-    const discordId = (session.user as any)?.id || "";
-    if (discordId) {
-      headers.set("X-Discord-User-Id", discordId);
-    }
-
-    // Extract guildId from query params or request body and forward it.
-    // The requireGuildAdmin middleware reads this header as fallback.
-    const guildIdFromQuery = url.searchParams.get("guildId") || url.searchParams.get("guild_id");
-    if (guildIdFromQuery) {
-      headers.set("X-Guild-Id", guildIdFromQuery);
-    } else if (["POST", "PUT", "PATCH"].includes(request.method)) {
-      // Try to extract guildId from JSON body for forwarding
-      try {
-        const clonedReq = request.clone();
-        const textBody = await clonedReq.text();
-        if (textBody) {
-          const bodyObj = JSON.parse(textBody);
-          const gId = bodyObj.guildId || bodyObj.guild_id;
-          if (gId) {
-            headers.set("X-Guild-Id", gId);
-          }
-        }
-      } catch {
-        // Body not JSON or no guildId — that's OK, downstream may reject
-      }
-    }
-
-    // Prevent forwarding hostile headers that could break proxying
-    headers.delete("host");
-    headers.delete("connection");
-
-    const reqInit: RequestInit = {
+    const res = await fetch(targetUrl, {
       method: request.method,
       headers,
-    };
-
-    if (["POST", "PUT", "PATCH"].includes(request.method)) {
-      const clonedReq = request.clone();
-      const textBody = await clonedReq.text();
-      if (textBody) {
-        reqInit.body = textBody;
-      }
-    }
-
-    const res = await fetch(targetUrl, reqInit);
+      ...(textBody ? { body: textBody } : {}),
+    });
 
     const contentType = res.headers.get("content-type");
-    let json;
+    const payload = contentType?.includes("application/json") ? await res.json() : { error: await res.text() };
 
-    if (contentType?.includes("application/json")) {
-      json = await res.json();
-    } else {
-      const text = await res.text();
-      json = { _rawText: text };
-    }
-
-    return new NextResponse(JSON.stringify(json), {
-      status: res.status,
-      statusText: res.statusText,
-      headers: { "Content-Type": contentType || "application/json" }
-    });
-  } catch (error: any) {
+    return NextResponse.json(payload, { status: res.status });
+  } catch (error: unknown) {
     console.error(`Proxy Error to ${targetUrl}:`, error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json({ error: "Bot unreachable" }, { status: 502 });
   }
 }
 

@@ -70,10 +70,10 @@ Invocable via `/security-audit` :
   * `.env`, `.env.local` et `.pem` sont-ils strictement ignorés dans `.gitignore` ?
 * **Sanitization des Erreurs API** :
   * Les blocs `catch` renvoient-ils des messages génériques aux clients (ex: `"Une erreur interne est survenue"`) au lieu de fuiter la stacktrace, les requêtes SQL internes ou les détails du serveur ?
-* **Sécurité des Endpoints Homelab & Cloudflare Tunnel (`*.hextaz.dev`)** :
-  * L'API Bot (`bot.hextaz.dev`) exige-t-elle le header `Authorization: Bearer ${BOT_API_SECRET}` pour chaque requête venant de Vercel ?
-  * Le récepteur de webhooks (`deploy.hextaz.dev`) vérifie-t-il systématiquement la signature HMAC SHA-256 de GitHub (`X-Hub-Signature-256`) ?
-  * La console de logs (`deploy.hextaz.dev/logs`) est-elle verrouillée par token secret ?
+* **Sécurité des endpoints exposés et de l'exploitation** :
+  * L'API bot exige-t-elle le header `Authorization: Bearer ${BOT_API_SECRET}` pour les appels du serveur web ?
+  * Un éventuel récepteur de déploiement vérifie-t-il la signature HMAC SHA-256 de GitHub (`X-Hub-Signature-256`) et le dépôt/la branche autorisés ?
+  * L'accès aux logs d'administration est-il authentifié, avec identifiants hors des URL ? Les diagnostics exportés sont-ils minimisés, expurgés et transmis uniquement à une destination autorisée ?
 * **Messages Discord Éphémères** : Les données sensibles ou actions privées sur Discord utilisent-elles `flags: MessageFlags.Ephemeral` (ou `ephemeral: true`) ?
 
 ---

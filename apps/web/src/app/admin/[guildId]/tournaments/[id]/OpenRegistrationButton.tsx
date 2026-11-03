@@ -1,63 +1,75 @@
 "use client";
 
 import { useState } from "react";
-import { getBotApiUrl } from '@/utils/api';
+import { useRouter } from "next/navigation";
+import { botApiFetch } from "@/utils/api";
 import { RefreshCw, Send } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { useToast } from "@/context/ToastContext";
+import { getErrorMessage, readApiError } from "@/utils/errors";
 
-export function OpenRegistrationButton({ tournamentId, guildId, isRegistrationOpen, isPublic, hasStartedOrCheckin }: { tournamentId: string; guildId: string; isRegistrationOpen: boolean; isPublic: boolean; hasStartedOrCheckin: boolean }) {
-  const [isGeneratingEmbed, setIsGeneratingEmbed] = useState(false);
-  const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
+/**
+ * Ouvre les inscriptions et publie l'annonce Discord (REG-08) : indépendant de la visibilité web du tournoi.
+ * Chaque blocage affiche sa raison au lieu d'un bouton grisé muet.
+ */
+export function OpenRegistrationButton({
+  tournamentId,
+  guildId,
+  isRegistrationOpen,
+  hasRegistrationChannel,
+  hasStartedOrCheckin,
+}: {
+  tournamentId: string;
+  guildId: string;
+  isRegistrationOpen: boolean;
+  hasRegistrationChannel: boolean;
+  hasStartedOrCheckin: boolean;
+}) {
+  const [isSending, setIsSending] = useState(false);
   const { t } = useTranslation();
+  const { toast } = useToast();
+  const router = useRouter();
 
-  const isDisabled = isGeneratingEmbed || isRegistrationOpen || !isPublic || hasStartedOrCheckin;
+  const blockedReason = isRegistrationOpen
+    ? t("adminTournaments.alreadyOpen")
+    : hasStartedOrCheckin
+      ? t("adminTournaments.passedCheckin")
+      : !hasRegistrationChannel
+        ? t("adminTournaments.missingRegistrationChannel")
+        : null;
+  const isDisabled = isSending || blockedReason !== null;
 
-  const onGenerateRegistrationEmbed = async () => {
-    setIsGeneratingEmbed(true);
-    setMessage(null);
+  const onOpen = async () => {
+    setIsSending(true);
     try {
-      const res = await fetch(`${getBotApiUrl()}/api/tournaments/${tournamentId}/registrations`, {
+      const res = await botApiFetch(`/api/tournaments/${tournamentId}/registrations`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "open", guildId: guildId })
+        body: JSON.stringify({ action: "open", guildId }),
       });
-      if (res.ok) {
-        setMessage({ type: 'success', text: t("adminTournaments.openEmbedSent") });
-      } else {
-        const errorData = await res.json();
-        setMessage({ type: 'error', text: "Erreur Discord: " + (errorData.error || "Inconnue") });
+      if (!res.ok) {
+        throw new Error((await readApiError(res)) ?? t("common.unknown"));
       }
-    } catch(e: any) {
-        setMessage({ type: 'error', text: "Erreur: " + e.message });
+      toast.success(t("adminTournaments.openEmbedSent"));
+      router.refresh();
+    } catch (e: unknown) {
+      toast.error(t("adminTournaments.discordError", { message: getErrorMessage(e) ?? t("common.unknown") }));
     } finally {
-        setIsGeneratingEmbed(false);
-        // Clear success message after 5 seconds to avoid clutter
-        setTimeout(() => setMessage(null), 5000);
+      setIsSending(false);
     }
-  }
+  };
 
   return (
     <div className="flex flex-col gap-2 w-full mt-4">
       <button
-        onClick={onGenerateRegistrationEmbed}
+        onClick={onOpen}
         disabled={isDisabled}
-        className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md w-full ${isDisabled ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700' : 'bg-indigo-600 hover:bg-indigo-500 text-white'}`}
+        className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md w-full ${isDisabled ? "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700" : "bg-indigo-600 hover:bg-indigo-500 text-white"}`}
       >
-        {isGeneratingEmbed ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-        {isRegistrationOpen 
-          ? t("adminTournaments.alreadyOpen") 
-          : !isPublic 
-            ? t("adminTournaments.privateBlock")
-            : hasStartedOrCheckin
-              ? t("adminTournaments.passedCheckin")
-              : t("adminTournaments.openRegistrationsDiscord")}
+        {isSending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+        {t("adminTournaments.openRegistrationsDiscord")}
       </button>
-
-      {message && (
-        <div className={`text-xs px-3 py-2 rounded-md ${message.type === 'success' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
-          {message.text}
-        </div>
-      )}
+      {blockedReason && <p className="text-xs text-slate-400">{blockedReason}</p>}
     </div>
   );
 }

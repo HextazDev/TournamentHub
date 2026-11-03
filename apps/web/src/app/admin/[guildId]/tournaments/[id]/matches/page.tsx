@@ -1,4 +1,6 @@
-﻿import { supabase } from "@/lib/supabase";
+import { notFound } from "next/navigation";
+﻿import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { MatchesOverviewClient } from "./MatchesOverviewClient";
 
 export default async function MatchesOverviewPage({
@@ -7,9 +9,11 @@ export default async function MatchesOverviewPage({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id: tournamentId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
   // Fetch all matches for the tournament, joined with phase and teams
-  const { data: matches, error } = await supabase
+  const { data: matches, error } = await supabaseAdmin
     .from("matches")
     .select("*, phase:phases!inner(name, tournament_id, phase_order), team1:teams!team1_id(name), team2:teams!team2_id(name)")
     .eq("phase.tournament_id", tournamentId)

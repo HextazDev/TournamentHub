@@ -1,5 +1,6 @@
 export const dynamic = 'force-dynamic';
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { PhaseMatchesClient } from "./PhaseMatchesClient";
 
@@ -9,12 +10,15 @@ export default async function PhaseMatchesPage({
   params: Promise<{ guildId: string; id: string; phaseId: string }>;
 }) {
   const { guildId, id: tournamentId, phaseId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
 
   // 1. Fetch phase
   const { data: phase, error: phaseError } = await supabaseAdmin
     .from("phases")
     .select("*")
     .eq("id", phaseId)
+    .eq("tournament_id", tournamentId)
     .single();
 
   if (phaseError || !phase) {

@@ -1,6 +1,8 @@
 export const dynamic = 'force-dynamic';
 
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getReadableTournament } from "@/lib/viewer";
+import { notFound } from "next/navigation";
 import { ParticipantsClientView } from "./ParticipantsClientView";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
@@ -10,11 +12,13 @@ export default async function PublicParticipantsPage({
 }: {
   params: Promise<{ guildId: string; id: string }>;
 }) {
-  const { id } = await params;
+  const { guildId, id } = await params;
+  const tournament = await getReadableTournament(guildId, id);
+  if (!tournament) notFound();
   const locale = await getServerLocale();
 
   // Fetch all checked-in teams for the tournament
-  const { data: teams } = await supabase
+  const { data: teams } = await supabaseAdmin
     .from("teams")
     .select("*")
     .eq("tournament_id", id)

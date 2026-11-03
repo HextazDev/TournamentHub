@@ -1,4 +1,5 @@
-import { supabase } from "@/lib/supabase";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { getManagedTournament } from "@/lib/viewer";
 import { notFound } from "next/navigation";
 import { PhaseConfigClient } from "./PhaseConfigClient";
 import { cookies } from "next/headers";
@@ -13,20 +14,23 @@ export default async function PhaseConfigPage({
   params: Promise<{ guildId: string; id: string; phaseId: string }>
 }) {
   const { guildId, id: tournamentId, phaseId } = await params;
+  const tournament = await getManagedTournament(guildId, tournamentId);
+  if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
   // Retrieve phase data
-  const { data: phase, error } = await supabase
+  const { data: phase, error } = await supabaseAdmin
     .from('phases')
     .select('*')
     .eq('id', phaseId)
+    .eq('tournament_id', tournamentId)
     .single();
 
   if (error || !phase) notFound();
 
   // For Round-Robin (Groupes) we also need to know the number of teams for size
-  const { count: teamsCount } = await supabase
+  const { count: teamsCount } = await supabaseAdmin
     .from('teams')
     .select('*', { count: 'exact', head: true })
     .eq('tournament_id', tournamentId);
