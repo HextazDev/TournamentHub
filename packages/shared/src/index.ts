@@ -160,6 +160,13 @@ export const AccessDeniedCodeSchema = z.enum([
 ]);
 export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
 
+/**
+ * SEC-19 : code stable d'une réponse 5xx du bot (`{ error: "Internal Server Error", code }`).
+ * Le détail de l'erreur reste dans les logs du bot ; le web affiche un message générique traduit.
+ */
+export const INTERNAL_ERROR_CODE = "INTERNAL_ERROR";
+export type InternalErrorCode = typeof INTERNAL_ERROR_CODE;
+
 /** Les paramètres du serveur décident qui est TO : ils restent hors de portée du rôle TO (SEC-16). */
 const SERVER_SETTINGS_REASONS: ReadonlySet<GuildAdminReason> = new Set(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD"]);
 
@@ -238,6 +245,18 @@ export const CreateTeamSchema = z.object({
   members: z.array(CreateTeamMemberSchema).max(TEAM_MEMBERS_MAX).default([]),
 });
 export type CreateTeamInput = z.infer<typeof CreateTeamSchema>;
+
+/**
+ * Corps de `PUT /api/teams/:id` (modification d'une équipe par un TO, REG-10).
+ * `captain_discord_id` absent ➜ inchangé (jamais `null` : colonne NOT NULL) ;
+ * `members` absent ou vide ➜ roster inchangé, sinon il est remplacé en entier.
+ */
+export const UpdateTeamSchema = z.object({
+  name: CreateTeamSchema.shape.name,
+  captain_discord_id: DiscordSnowflakeSchema.optional(),
+  members: z.array(CreateTeamMemberSchema).max(TEAM_MEMBERS_MAX).optional(),
+});
+export type UpdateTeamInput = z.infer<typeof UpdateTeamSchema>;
 
 // ─── Barème de points des poules (phase.settings) ────────────────────────────
 // Source unique partagée par le formulaire web, la route PUT /api/phases/:id,

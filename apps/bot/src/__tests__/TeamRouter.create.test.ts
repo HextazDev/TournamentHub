@@ -196,6 +196,7 @@ describe("POST /api/teams — DISC-12 présence à la création", () => {
     tables.team = { data: null, error: { message: "db down" } };
     const out = await post(body());
     expect(out.status).toBe(500);
+    expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
     expect(presence.applyPresence).not.toHaveBeenCalled();
   });
 });

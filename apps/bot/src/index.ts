@@ -12,6 +12,7 @@ import { createHealthRouter } from "./routes/HealthRouter";
 import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
+import { sendServerError } from "./utils/serverError";
 import { authMiddleware, guildPermissionsHandler, requireGuildAction, requireGuildAdmin } from "./middleware/auth";
 import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
 import { supabase } from "./lib/supabase";
@@ -104,14 +105,10 @@ app.post("/api/webhook/team-update", async (req, res) => {
     if (result.success) {
       res.status(200).json({ received: true });
     } else {
-      res.status(500).json({ received: false, error: result.error });
+      sendServerError(res, result.error, "Webhook.teamUpdate");
     }
-  } catch (error: any) {
-    logger.error("Error handling team update webhook:", error);
-    res.status(500).json({
-      received: false,
-      error: error?.message || "Failed to handle webhook"
-    });
+  } catch (error: unknown) {
+    sendServerError(res, error, "Webhook.teamUpdate");
   }
 });
 

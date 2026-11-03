@@ -5,6 +5,7 @@ import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
 import { getAuthenticatedGuildId, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
+import { sendServerError } from "../utils/serverError";
 
 export const phaseRouter = Router();
 
@@ -32,8 +33,8 @@ phaseRouter.post("/", async (req, res) => {
 
     if (error) throw error;
     res.status(201).json(newPhase);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.create");
   }
 });
 
@@ -54,8 +55,8 @@ phaseRouter.get("/:tournamentId", async (req, res) => {
 
     if (error) throw error;
     res.json(phases || []);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.list");
   }
 });
 
@@ -124,9 +125,8 @@ phaseRouter.put("/:id/seeding", async (req, res) => {
       await LifecycleService.syncPhaseChannels(phaseId, tourneyGuild, discordClient).catch(e => console.error("Auto Sync Failed", e));
     }
     res.status(200).json({ message: 'Placement et arbre mis à jour avec succès' });
-  } catch (error: any) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.updateSeeding");
   }
 });
 
@@ -142,8 +142,8 @@ phaseRouter.get("/:id/seeding", async (req, res) => {
     const { data: seeded, error: err1 } = await supabase.from('phase_teams').select('team_id, seed, teams(id, name, logo_url)').eq('phase_id', phaseId).order('seed', { ascending: true });
     if (err1) throw err1;
     res.status(200).json(seeded || []);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.getSeeding");
   }
 });
 
@@ -166,9 +166,8 @@ phaseRouter.delete("/:id", async (req, res) => {
     if (error) throw error;
 
     res.json({ success: true });
-  } catch (error: any) {
-    console.error("[PhaseRouter] Delete error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.delete");
   }
 });
 
@@ -211,9 +210,8 @@ phaseRouter.put("/:id", async (req, res) => {
 
     if (error) throw error;
     res.json(data);
-  } catch (error: any) {
-    console.error("[PhaseRouter] Update error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.update");
   }
 });
 
@@ -233,8 +231,7 @@ phaseRouter.post("/:id/sync", async (req, res) => {
 
     await LifecycleService.syncPhaseChannels(phaseId, guildId, discordClient);
     res.status(200).json({ message: 'Salons Discord générés avec succès' });
-  } catch (error: any) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.sync");
   }
 });

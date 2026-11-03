@@ -23,7 +23,9 @@ let server: Server;
 let baseUrl: string;
 let updatePayloads: unknown[] = [];
 
-function mockPhaseUpdate() {
+type PhaseUpdateResult = { data: unknown; error: { message: string } | null };
+
+function mockPhaseUpdate(result: PhaseUpdateResult = { data: { id: "phase-1" }, error: null }) {
   vi.mocked(supabase.from).mockImplementation((() => {
     const builder = {
       update: (payload: unknown) => {
@@ -32,7 +34,7 @@ function mockPhaseUpdate() {
       },
       eq: () => builder,
       select: () => builder,
-      single: () => Promise.resolve({ data: { id: "phase-1" }, error: null }),
+      single: () => Promise.resolve(result),
     };
     return builder;
   }) as unknown as typeof supabase.from);
@@ -84,6 +86,13 @@ describe("PUT /api/phases/:id — PH-01 validation du barème", () => {
     const res = await put({ settings: "3/1/0/0" });
     expect(res.status).toBe(400);
     expect(updatePayloads).toEqual([]);
+  });
+
+  it("SEC-19: erreur Supabase ➜ 500 générique, sans le message interne", async () => {
+    mockPhaseUpdate({ data: null, error: { message: 'column "bracket_size" violates check constraint "phases_bracket_size_check"' } });
+    const res = await put({ name: "Poules" });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
   });
 
   it("SEC: phase d'un autre serveur ➜ 403 avant toute validation ou écriture", async () => {

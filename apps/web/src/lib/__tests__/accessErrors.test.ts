@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { botAccessError, BOT_UNREACHABLE, relayedBotError } from "../accessErrors";
+import { botAccessError, botInternalError, BOT_UNREACHABLE, relayedBotError } from "../accessErrors";
 import { t } from "../../i18n";
 
 describe("botAccessError (SEC-18) : erreurs d'accès traduites, jamais le texte brut du bot", () => {
@@ -45,5 +45,28 @@ describe("relayedBotError : corps d'erreur des proxys dédiés (plus de « Bot r
     for (const raw of ["", "<html>502</html>", JSON.stringify({ foo: 1 })]) {
       expect(relayedBotError(raw, "fr"), raw).toEqual({ error: t("fr", "common.unknown") });
     }
+  });
+});
+
+describe("botInternalError (SEC-19) : un échec serveur du bot devient un message générique traduit", () => {
+  const body = { error: "Internal Server Error", code: "INTERNAL_ERROR" };
+
+  it("SEC-19: traduit le code INTERNAL_ERROR en FR et en EN", () => {
+    const fr = botInternalError(body, "fr");
+    const en = botInternalError(body, "en");
+    expect(fr).toEqual({ error: t("fr", "common.internalError") });
+    expect(en).toEqual({ error: t("en", "common.internalError") });
+    expect(fr?.error).not.toBe("common.internalError");
+    expect(fr?.error).not.toBe(en?.error);
+  });
+
+  it("laisse passer les autres corps", () => {
+    expect(botInternalError({ error: "Phase introuvable" }, "fr")).toBeNull();
+    expect(botInternalError({ code: "NO_RIGHTS" }, "fr")).toBeNull();
+    expect(botInternalError(null, "fr")).toBeNull();
+  });
+
+  it("SEC-19: relayedBotError remplace le texte générique anglais par le message traduit", () => {
+    expect(relayedBotError(JSON.stringify(body), "fr")).toEqual({ error: t("fr", "common.internalError") });
   });
 });

@@ -26,6 +26,7 @@ export const fr = {
     auto: "Auto",
     or: "ou",
     unknown: "Inconnu",
+    internalError: "Une erreur interne est survenue. Réessayez dans un instant.",
     unknownTeam: "Équipe Inconnue",
     match: "Match",
     round: "Round",

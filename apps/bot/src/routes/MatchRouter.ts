@@ -5,6 +5,7 @@ import { LeaderboardService } from "../services/LeaderboardService";
 import { TextChannel } from "discord.js";
 import { getAuthenticatedGuildId, verifyMatchGuild } from "../utils/tenant";
 import { ForceScoreSchema } from "@hub/shared";
+import { sendServerError } from "../utils/serverError";
 
 export const matchRouter = Router();
 
@@ -72,8 +73,7 @@ matchRouter.put("/:id/force-score", async (req, res) => {
     await ScoreService.progressTeams(updatedMatch, channel, winnerId, loserId, discordClient);
 
     res.status(200).json({ message: "Score forced and bracket updated", match: updatedMatch });
-  } catch (error: any) {
-    console.error("Force Score Error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "MatchRouter.forceScore");
   }
 });

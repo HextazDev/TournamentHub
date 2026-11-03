@@ -1,11 +1,11 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
-import { CreateTeamSchema, MAX_FAKE_TEAMS } from "@hub/shared";
+import { CreateTeamSchema, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
 import type { Client } from "discord.js";
 import { applyPresence, hasPresenceFailure, removePresence } from "../services/CaptainPresenceService";
 import { defaultCheckedInOnManualAdd } from "../utils/manualTeamCheckin";
-import { logger } from "../utils/logger";
+import { sendServerError } from "../utils/serverError";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -75,8 +75,7 @@ teamRouter.post("/", async (req, res) => {
 
     res.status(201).json({ ...team, team_members: insertedMembers, presence_warning: presenceWarning });
   } catch (error: unknown) {
-    logger.error("[TeamRouter] Create error:", error);
-    res.status(500).json({ error: error instanceof Error ? error.message : "Team creation failed" });
+    sendServerError(res, error, "TeamRouter.create");
   }
 });
 
@@ -146,9 +145,8 @@ teamRouter.post("/generate-fake", async (req, res) => {
     }));
 
     res.status(201).json(result);
-  } catch (error: any) {
-    console.error("[TeamRouter] Generate-fake error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TeamRouter.generateFake");
   }
 });
 
@@ -161,15 +159,16 @@ teamRouter.put("/:id", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette équipe n'appartient pas à votre serveur." });
     }
 
-    const { name, captain_discord_id, members } = req.body;
-
-    if (!name) {
-      return res.status(400).json({ error: "name is required" });
+    // REG-10 : le corps est une entrée externe, validé avant toute écriture.
+    const parsed = UpdateTeamSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
+    const { name, captain_discord_id, members } = parsed.data;
 
     const { data: updatedTeam, error: updateError } = await supabase
       .from("teams")
-      .update({ name, captain_discord_id: captain_discord_id || null })
+      .update(captain_discord_id === undefined ? { name } : { name, captain_discord_id })
       .eq("id", teamId)
       .select()
       .single();
@@ -177,32 +176,24 @@ teamRouter.put("/:id", async (req, res) => {
     if (updateError) throw updateError;
     if (!updatedTeam) return res.status(404).json({ error: "Team not found" });
 
-    // Replace all members if provided
-    let updatedMembers: any[] = [];
+    // Replace all members if provided (non transactionnel, cf. REG-10)
+    let updatedMembers: unknown[] = [];
     if (members && members.length > 0) {
-      await supabase.from("team_members").delete().eq("team_id", teamId);
-
-      const membersToInsert = members.map((m: any) => ({
-        team_id: teamId,
-        user_id: m.user_id || null,
-        ingame_name: m.ingame_name || "",
-        friend_code: m.friend_code || "",
-        is_captain: m.is_captain ?? false,
-      }));
+      const { error: deleteError } = await supabase.from("team_members").delete().eq("team_id", teamId);
+      if (deleteError) throw deleteError;
 
       const { data: inserted, error: insertError } = await supabase
         .from("team_members")
-        .insert(membersToInsert)
+        .insert(members.map((m) => ({ team_id: teamId, ...m })))
         .select();
 
       if (insertError) throw insertError;
-      updatedMembers = inserted || [];
+      updatedMembers = inserted ?? [];
     }
 
     res.json({ ...updatedTeam, team_members: updatedMembers });
-  } catch (error: any) {
-    console.error("[TeamRouter] Update error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TeamRouter.update");
   }
 });
 
@@ -245,9 +236,8 @@ teamRouter.patch("/:id/checkin", async (req, res) => {
     }
 
     res.json(updated);
-  } catch (error: any) {
-    console.error("[TeamRouter] Checkin error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TeamRouter.checkin");
   }
 });
 
@@ -267,8 +257,7 @@ teamRouter.delete("/:id", async (req, res) => {
     if (error) throw error;
 
     res.json({ success: true });
-  } catch (error: any) {
-    console.error("[TeamRouter] Delete error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TeamRouter.delete");
   }
 });
