@@ -68,7 +68,7 @@ app.use("/api", authMiddleware);
 app.locals.discordClient = client;
 
 const guildAdminGuard = requireGuildAdmin(client);
-// SEC-16 : les paramètres du serveur (dont le rôle TO) et l'auto-setup Discord restent hors de portée du rôle TO.
+// SEC-16 : l'auto-setup Discord reste hors de portée du rôle TO (comme /api/server-settings, gardé par son routeur).
 const serverSettingsGuard = [guildAdminGuard, requireGuildAction("MANAGE_SERVER_SETTINGS")];
 
 // Health check (no auth required — skipped in middleware)
@@ -272,6 +272,7 @@ app.use('/api/phases', guildAdminGuard, phaseRouter);
 app.use('/api/matches', guildAdminGuard, matchRouter);
 app.use('/api/tournaments', guildAdminGuard, tournamentRouter);
 app.use('/api/teams', guildAdminGuard, teamRouter);
+// La garde MANAGE_SERVER_SETTINGS (SEC-16) est appliquée par le routeur lui-même.
 app.use('/api/server-settings', guildAdminGuard, serverSettingsRouter);
 
 // 3. Connect DB and Start Systems

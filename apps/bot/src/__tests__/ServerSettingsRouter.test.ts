@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { GuildAdminReason } from "@hub/shared";
 
 vi.mock("../lib/supabase", () => ({
   supabase: { from: vi.fn() },
@@ -39,12 +40,12 @@ function db(opts: { currentToRole?: string | null; upsertError?: { message: stri
 }
 
 const guild = { id: GUILD };
-function put(body: Record<string, unknown>) {
+function put(body: Record<string, unknown>, reason: GuildAdminReason = "ADMINISTRATOR") {
   return callRoute(serverSettingsRouter, {
     method: "PUT",
     path: "/",
     body,
-    adminCheck: { discordId: "u1", guildId: GUILD, access: { level: "SERVER", reason: "ADMINISTRATOR" } },
+    adminCheck: { discordId: "u1", guildId: GUILD, access: { level: "SERVER", reason } },
     locals: { discordClient: { guilds: { fetch: () => Promise.resolve(guild) } } },
   });
 }
@@ -52,6 +53,25 @@ function put(body: Record<string, unknown>) {
 beforeEach(() => vi.clearAllMocks());
 
 describe("PUT /api/server-settings", () => {
+  it("SEC-16: un membre du rôle TO ne peut pas modifier les paramètres du serveur (dont to_role_id)", async () => {
+    db({ currentToRole: "1" });
+    const out = await put({ guild_id: GUILD, to_role_id: "2" }, "TO_ROLE");
+    expect(out.status).toBe(403);
+    expect(out.body).toMatchObject({ code: "SERVER_SETTINGS_RESERVED" });
+    expect(upserted).toBeUndefined();
+    expect(GuildRegistryService.syncGuildAdmins).not.toHaveBeenCalled();
+  });
+
+  it.each(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD"] as const)(
+    "SEC-16: %s peut modifier les paramètres du serveur",
+    async (reason) => {
+      db({ currentToRole: "1" });
+      const out = await put({ guild_id: GUILD, to_role_id: "2" }, reason);
+      expect(out.status).toBe(200);
+      expect(upserted).toMatchObject({ guild_id: GUILD, to_role_id: "2" });
+    },
+  );
+
   it("SEC-08: refuse la modification d'un autre serveur", async () => {
     db();
     const out = await put({ guild_id: "222" });

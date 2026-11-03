@@ -5,8 +5,13 @@ import { getAuthenticatedGuildId } from "../utils/tenant";
 import { ServerSettingsUpdateSchema } from "@hub/shared";
 import { GuildRegistryService, readToRoleId } from "../services/GuildRegistryService";
 import { invalidateGuildAccess } from "../services/MemberAccessService";
+import { requireGuildAction } from "../middleware/auth";
 
 export const serverSettingsRouter = Router();
+
+// SEC-16 : les paramètres du serveur (dont to_role_id, donc qui est TO) sont hors de portée du rôle TO.
+// La garde vit dans le routeur pour ne pas dépendre du montage dans index.ts (requireGuildAdmin reste requis avant).
+serverSettingsRouter.use(requireGuildAction("MANAGE_SERVER_SETTINGS"));
 
 // PUT /api/server-settings — Upsert server settings
 serverSettingsRouter.put("/", async (req, res) => {
