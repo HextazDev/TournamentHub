@@ -1,7 +1,14 @@
 import { ModalSubmitInteraction, ButtonInteraction, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, TextChannel, StringSelectMenuInteraction, ModalBuilder, TextInputBuilder, TextInputStyle } from "discord.js";
 import { supabase } from "../lib/supabase";
 import { LeaderboardService } from "./LeaderboardService";
-import { tBot, getGuildLanguage, getPhaseLanguage } from "../i18n";
+import { SwissGeneratorService } from "./SwissGeneratorService";
+import { LifecycleService } from "./LifecycleService";
+import { tBot, getGuildLanguage, getPhaseLanguage, type BotLocale } from "../i18n";
+import { logger } from "../utils/logger";
+
+type MatchValidationUpdate =
+  | { status: "COMPLETED"; winner_id?: string; loser_id?: string }
+  | { status: "CONTESTED" };
 
 function isValidScore(val: number): boolean {
   return Number.isInteger(val) && val >= 0 && val <= 99;
@@ -171,8 +178,14 @@ export class ScoreService {
     const action = parts[2]; // 'val' or 'deny'
     const matchId = parts[3];
     const expectedCaptainTeamId = parts[4];
+    if (!matchId || !expectedCaptainTeamId) {
+      logger.warn(`[ScoreService] customId de bouton de score invalide : ${interaction.customId}`);
+      return;
+    }
 
-    await interaction.deferReply();
+    // deferUpdate : editReply agit ensuite sur le message d'origine (celui qui porte les boutons).
+    // Les refus passent donc par followUp éphémère pour ne pas écraser ce message.
+    await interaction.deferUpdate();
 
     const { data: match } = await supabase.from("matches").select("*").eq("id", matchId).single();
     const lang = await getPhaseLanguage(interaction.guildId, match?.phase_id);
@@ -180,19 +193,26 @@ export class ScoreService {
     const { data: team } = await supabase.from("teams").select("name, captain_discord_id").eq("id", expectedCaptainTeamId).single();
 
     if (!team || team.captain_discord_id !== interaction.user.id) {
-      return interaction.editReply({ content: tBot(lang, 'score.onlyOpponentCanValidate') });
+      return interaction.followUp({ content: tBot(lang, 'score.onlyOpponentCanValidate'), ephemeral: true });
     }
 
-    if (!match) return interaction.editReply({ content: tBot(lang, 'score.matchNotFound') });
+    if (!match) return interaction.followUp({ content: tBot(lang, 'score.matchNotFound'), ephemeral: true });
+
+    // SCR-05 : seul un score en attente de validation peut être validé ou contesté (vieux message, double-clic, score forcé par un TO).
+    if (match.status !== "WAITING_VALIDATION") {
+      return this.rejectProcessedClick(interaction, lang, matchId, match.status);
+    }
 
     if (action === "deny") {
-      await supabase.from("matches").update({ status: "CONTESTED" }).eq("id", matchId);
+      const outcome = await this.transitionFromWaitingValidation(matchId, { status: "CONTESTED" });
+      if (outcome === "error") return interaction.followUp({ content: tBot(lang, 'score.updateError'), ephemeral: true });
+      if (outcome === "already_processed") return this.rejectProcessedClick(interaction, lang, matchId, "WAITING_VALIDATION");
 
       const { data: settings } = await supabase.from("server_settings").select("to_role_id").eq("guild_id", interaction.guildId).single();
       const toPing = settings?.to_role_id ? `<@&${settings.to_role_id}>` : tBot(lang, 'score.toFallback');
 
       const embedBase = interaction.message.embeds[0];
-      if (!embedBase) return interaction.editReply({ content: tBot(lang, 'score.originalEmbedNotFound') });
+      if (!embedBase) return interaction.editReply({ content: tBot(lang, 'score.originalEmbedNotFound'), components: [] });
 
       const updatedEmbed = EmbedBuilder.from(embedBase)
         .setTitle(tBot(lang, 'score.scoreContestedTitle'))
@@ -202,8 +222,8 @@ export class ScoreService {
       await interaction.editReply({ content: tBot(lang, 'score.scoreContestedContent', { toPing }), embeds: [updatedEmbed], components: [] });
 
     } else if (action === "val") {
-      let winnerId = null;
-      let loserId = null;
+      let winnerId: string | null = null;
+      let loserId: string | null = null;
 
       if (match.team1_score > match.team2_score) {
         winnerId = match.team1_id;
@@ -213,22 +233,27 @@ export class ScoreService {
         loserId = match.team1_id;
       }
 
-      const updatePayload: any = { status: "COMPLETED" };
-      if (winnerId) updatePayload.winner_id = winnerId;
-      if (loserId) updatePayload.loser_id = loserId;
+      const update: MatchValidationUpdate = winnerId && loserId
+        ? { status: "COMPLETED", winner_id: winnerId, loser_id: loserId }
+        : { status: "COMPLETED" };
 
-      await supabase.from("matches").update(updatePayload).eq("id", matchId);
+      const outcome = await this.transitionFromWaitingValidation(matchId, update);
+      if (outcome === "error") return interaction.followUp({ content: tBot(lang, 'score.updateError'), ephemeral: true });
+      // Un clic concurrent a gagné la transition : aucune progression ni recalcul de classement.
+      if (outcome === "already_processed") return this.rejectProcessedClick(interaction, lang, matchId, "WAITING_VALIDATION");
 
       const embedBase = interaction.message.embeds[0];
-      if (!embedBase) return interaction.editReply({ content: tBot(lang, 'score.scoreValidatedShort') });
+      if (embedBase) {
+        const updatedEmbed = EmbedBuilder.from(embedBase)
+          .setTitle(tBot(lang, 'score.scoreValidatedTitle'))
+          .setColor(0x00FF00)
+          .setDescription(tBot(lang, 'score.scoreValidatedDesc', { teamName: team.name, score1: match.team1_score, score2: match.team2_score }))
+          .setFooter({ text: tBot(lang, 'score.scoreValidatedFooter') });
 
-      const updatedEmbed = EmbedBuilder.from(embedBase)
-        .setTitle(tBot(lang, 'score.scoreValidatedTitle'))
-        .setColor(0x00FF00)
-        .setDescription(tBot(lang, 'score.scoreValidatedDesc', { teamName: team.name, score1: match.team1_score, score2: match.team2_score }))
-        .setFooter({ text: tBot(lang, 'score.scoreValidatedFooter') });
-
-      await interaction.editReply({ content: tBot(lang, 'score.matchFinished'), embeds: [updatedEmbed], components: [] });
+        await interaction.editReply({ content: tBot(lang, 'score.matchFinished'), embeds: [updatedEmbed], components: [] });
+      } else {
+        await interaction.editReply({ content: tBot(lang, 'score.scoreValidatedShort'), components: [] });
+      }
 
       // Leaderboard calculation for group matches
       if (match.group_id) {
@@ -240,6 +265,32 @@ export class ScoreService {
         await this.progressTeams(match, interaction.channel as TextChannel, winnerId, loserId, interaction.client);
       }
     }
+  }
+
+  /**
+   * Transition atomique WAITING_VALIDATION ➜ COMPLETED | CONTESTED (SCR-05).
+   * Le filtre sur le statut fait de l'update un verrou : un seul clic concurrent modifie la ligne.
+   */
+  private static async transitionFromWaitingValidation(matchId: string, update: MatchValidationUpdate): Promise<"applied" | "already_processed" | "error"> {
+    const { data, error } = await supabase
+      .from("matches")
+      .update(update)
+      .eq("id", matchId)
+      .eq("status", "WAITING_VALIDATION")
+      .select("id");
+
+    if (error) {
+      logger.error(`[ScoreService] Échec de la transition ${update.status} du match ${matchId}:`, error);
+      return "error";
+    }
+    return data && data.length > 0 ? "applied" : "already_processed";
+  }
+
+  /** Clic sur un score déjà traité : refus éphémère, et retrait des boutons restés actifs sur le message d'origine. */
+  private static async rejectProcessedClick(interaction: ButtonInteraction, lang: BotLocale, matchId: string, status: string) {
+    logger.warn(`[ScoreService] Clic ignoré sur le match ${matchId} (statut ${status}) : score déjà traité.`);
+    await interaction.followUp({ content: tBot(lang, 'score.alreadyProcessed'), ephemeral: true });
+    await interaction.editReply({ components: [] });
   }
 
   public static async progressTeams(match: any, channel: TextChannel | undefined, winnerId: string | null, loserId: string | null, discordClient?: any) {
@@ -287,11 +338,11 @@ export class ScoreService {
             if (currentRound < maxRounds) {
               // Generate next round
               const nextRound = currentRound + 1;
-              const { SwissGeneratorService } = require("./SwissGeneratorService");
-              await SwissGeneratorService.generateNextRound(match.phase_id, nextRound);
+              const generated = await SwissGeneratorService.generateNextRound(match.phase_id, nextRound);
+              // SWS-06 : ronde déjà générée par un autre appel ➜ ni resynchronisation ni annonce en double.
+              if (!generated) return;
 
               // Sync phase channel permissions
-              const { LifecycleService } = require("./LifecycleService");
               if (client && phase.tournament_id) {
                 const { data: tournament } = await supabase.from("tournaments").select("guild_id").eq("id", phase.tournament_id).single();
                 if (tournament?.guild_id) {

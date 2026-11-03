@@ -61,6 +61,7 @@ export const en: typeof fr = {
     contestBtn: "Contest",
     notifyOpponent: "Attention <@{captainId}>, please validate or contest this score below.",
     onlyOpponentCanValidate: "❌ Only the opposing captain can validate or contest this score.",
+    alreadyProcessed: "⚠️ This score has already been processed.",
     scoreContestedTitle: "❌ Score Contested!",
     scoreContestedContent: "**SCORE CONTESTED** - Calling Tournament Organizers: {toPing}",
     scoreValidatedTitle: "✅ Score Validated (Match Completed)",

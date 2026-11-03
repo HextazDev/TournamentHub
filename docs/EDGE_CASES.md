@@ -45,6 +45,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **SWS-03** | `generateNextRound` | Nombre impair d'équipes lors d'une ronde suivante. | Le BYE va à l'équipe **la moins bien classée n'ayant jamais eu de BYE**. Repli : la dernière équipe si toutes en ont déjà eu un. | 🛡️ |
 | **SWS-04** | `generateNextRound` | Aucun adversaire disponible que l'équipe n'a pas déjà affronté. | Repli : appariement avec l'équipe non appariée la plus proche au classement, même si c'est une revanche. La génération n'est jamais bloquée. | 🛡️ |
 | **SWS-05** | `calculateSwissStandings` | Victoire via BYE en Suisse. | Le BYE rapporte **3 points en dur**, sans lire `phase.settings.points_win`. | ⚠️ Incohérent avec le barème configurable des poules |
+| **SWS-06** | `generateNextRound` / `progressTeams` | Génération demandée pour une ronde qui a déjà des matchs (double validation, score forcé par un TO sur une ronde déjà close). | No-op : `logger.warn`, retour `false`, aucune insertion ; `progressTeams` ne resynchronise pas les salons et n'annonce pas la ronde en double. **Limite** : garde applicative (lecture puis insertion), sans contrainte unique `(phase_id, round_number)` en base ; deux appels réellement simultanés restent possibles, la sérialisation effective vient de la transition atomique SCR-05. | ✅ `apps/bot/src/__tests__/SwissGeneratorService.test.ts`, `ScoreService.test.ts` |
 | **RR-01** | `generateGroups` | Moins d'équipes que de groupes demandés. | Rejet explicite. Attention : les anciens `groups` de la phase sont **supprimés avant** la validation. | ⚠️ Suppression non atomique |
 | **RR-02** | `generateGroups` | Groupe au nombre impair d'équipes. | Ajout d'un slot virtuel `"BYE"`. Le match contre le BYE est inséré en `COMPLETED` avec `1-0` (et non `BYE`) pour être compté par le classement. | 🛡️ |
 | **RR-03** | `generateGroups` | Distribution des équipes dans plusieurs groupes. | Répartition en serpentin (snake seeding) : `G1, G2, …, Gn, Gn, …, G1`. | 🛡️ |
@@ -66,7 +67,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **SCR-02** | `handleSelectMenu` | Un utilisateur qui n'est capitaine d'aucune des deux équipes tente de déclarer un score. | Rejet `Vous n'êtes pas capitaine dans ce match.` | 🛡️ |
 | **SCR-03** | `handleModalSubmit` | Déclaration sur un match qui n'est ni `PENDING` ni `IN_PROGRESS`. | Rejet `Ce match n'est plus en attente de résultat.` | 🛡️ |
 | **SCR-04** | `handleButton` | Un joueur autre que le capitaine adverse clique sur « Valider » ou « Contester ». | Rejet `Seul le capitaine adverse peut valider ou contester ce score.` | 🛡️ |
-| **SCR-05** | `handleButton` | Double-clic sur « Valider », ou validation après une contestation. | **Attendu** : refus si le statut n'est plus `WAITING_VALIDATION`. **Actuel** : aucun contrôle de statut et boutons jamais retirés du message d'origine, donc `progressTeams` peut s'exécuter deux fois (en SWISS : ronde suivante générée en double). | ⚠️ [#45](https://github.com/HextazDev/TournamentHub/issues/45) |
+| **SCR-05** | `handleButton` | Double-clic sur « Valider » / « Contester », clic sur un vieux message, validation d'un match `CONTESTED` ou `COMPLETED` (forcé par un TO), contestation d'un match `COMPLETED`. | Transition atomique `WAITING_VALIDATION ➜ COMPLETED \| CONTESTED` par update conditionnel (`.eq("status", "WAITING_VALIDATION")`) : 0 ligne modifiée ➜ refus éphémère `Ce score a déjà été traité.`, `logger.warn`, aucune autre écriture, ni `progressTeams` ni recalcul du classement. `deferUpdate()` : les boutons sont retirés du message d'origine (y compris sur un vieux message cliqué). | ✅ `apps/bot/src/__tests__/ScoreService.test.ts` |
 | **SCR-06** | `progressTeams` | Égalité de score dans un bracket à élimination. | Aucune progression automatique. Ping des TO « MATCH NUL » pour arbitrage manuel. | 🛡️ |
 | **SCR-07** | `assignTeamToNextMatch` | Deux matchs parents se terminent simultanément et visent le même match suivant. | Assignation atomique via la RPC `assign_team_to_match`. Le repli non atomique en cas d'erreur RPC reste une fenêtre de course. | 🛡️ RPC / ⚠️ repli |
 | **SCR-08** | `progressTeams` (SWISS) | Dernier match d'une ronde suisse validé. | Génération automatique de la ronde suivante tant que `round < swiss_rounds_count` (3 par défaut), puis annonce de fin de phase. | 🛡️ |
@@ -172,11 +173,10 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 ## 📌 Dette de Couverture Prioritaire
 
 Les lignes ⚠️ ci-dessus sont des **bugs latents connus**. Ordre de traitement recommandé :
-1. **SCR-05** ([#45](https://github.com/HextazDev/TournamentHub/issues/45)) : double validation de score ➜ double progression, ronde suisse générée en double.
-2. **RR-01** : suppression des groupes avant validation ➜ perte de données sur une entrée invalide.
-3. **REG-06** : roster partiel ➜ passer par une RPC transactionnelle.
-4. **SWS-05** : barème BYE suisse codé en dur.
-5. **SCR-07** : repli non atomique de `assign_team_to_match`.
-6. **I18N-08** : fuseau horaire des dates rendues côté serveur.
+1. **RR-01** : suppression des groupes avant validation ➜ perte de données sur une entrée invalide.
+2. **REG-06** : roster partiel ➜ passer par une RPC transactionnelle.
+3. **SWS-05** : barème BYE suisse codé en dur.
+4. **SCR-07** : repli non atomique de `assign_team_to_match`.
+5. **I18N-08** : fuseau horaire des dates rendues côté serveur.
 
 Les lignes 🛡️ des domaines **BRK**, **SWS** et **SCR** sont les premières candidates au TDD (`/test-audit`).
