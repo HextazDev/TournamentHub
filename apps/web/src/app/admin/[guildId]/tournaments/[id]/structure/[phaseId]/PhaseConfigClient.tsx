@@ -357,7 +357,7 @@ export function PhaseConfigClient({
                    </div>
                  </div>
                  <div className="pl-7 grid grid-cols-3 gap-4 max-w-md">
-                     <div>
+                    <div>
                       <label className="block text-xs font-bold text-slate-400 mb-1">{t("adminPhaseConfig.win")}</label>
                       <input 
                         type="number" 

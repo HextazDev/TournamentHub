@@ -13,6 +13,7 @@
 * **`packages/shared`** : Types TypeScript de domaine, interfaces et schémas Zod partagés (`@hub/shared`).
 * **`supabase`** : Configuration PostgreSQL locale, migrations SQL (`supabase/migrations/*.sql`), fonctions RPC et politiques RLS.
 * **`docs/EDGE_CASES.md`** : Registre vivant des cas limites, invariants multi-tenant et règles de résilience (brackets, BYE, scores, check-in, Discord). Chaque entrée a un ID stable (`BRK-02`, `SEC-01`…) et un statut de couverture (✅ Testé / 🛡️ Garde-fou / ⚠️ Non couvert).
+* **`docs/KNOWN_ISSUES.md`** : Bugs constatés et non encore corrigés, vus côté organisateur / joueur (symptôme, contournement, issue de suivi). Une ligne y entre avec son issue et en sort quand le correctif est fusionné.
 
 ---
 
@@ -52,6 +53,7 @@ Les consignes publiques décrivent l'architecture et les commandes du projet. Le
      - **Ajouter** : tout cas limite introduit ou corrigé ➜ nouvelle ligne avec ID et test Vitest référencé.
      - **Promouvoir** : une ligne 🛡️/⚠️ couverte par un nouveau test passe en ✅.
      - **Purger** : toute règle supprimée ou refondue est retirée ou réécrite dans le même diff (zéro dette documentaire).
+   * 🐞 **Problèmes connus (`docs/KNOWN_ISSUES.md`)** : tout bug découvert hors périmètre ➜ issue GitHub + ligne `KI-xx` dans le même diff ; une issue corrigée retire sa ligne `KI-xx`.
    * 🎨 **Règles Front React 19 / Next.js 16** :
      - 3 états obligatoires : Loading Skeleton, Error toast/alerte avec retry, Empty state accueillant.
      - Nettoyage strict des ressources dans `useEffect` (timers, event listeners, channels Supabase Realtime).

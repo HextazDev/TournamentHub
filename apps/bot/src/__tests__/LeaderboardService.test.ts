@@ -1,13 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("../lib/supabase", () => ({
-  supabase: { from: vi.fn() },
-}));
+const db = vi.hoisted(() => ({ from: vi.fn<(table: string) => unknown>() }));
+vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { LeaderboardService } from "../services/LeaderboardService";
 
@@ -21,7 +19,7 @@ type Update = { team_id: unknown; payload: Row };
  */
 function mockGroup(fixture: Fixture): Update[] {
   const updates: Update[] = [];
-  vi.mocked(supabase.from).mockImplementation(((table: string) => {
+  db.from.mockImplementation((table: string) => {
     let payload: Row | null = null;
     const filters: Record<string, unknown> = {};
     const result = () => {
@@ -53,7 +51,7 @@ function mockGroup(fixture: Fixture): Update[] {
         Promise.resolve(result()).then(resolve, reject),
     };
     return builder;
-  }) as unknown as typeof supabase.from);
+  });
   return updates;
 }
 
