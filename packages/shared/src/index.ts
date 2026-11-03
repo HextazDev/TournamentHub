@@ -140,6 +140,12 @@ export type GuildAccess =
   | { level: "SERVER"; reason: GuildAdminReason }
   | { level: "TOURNAMENT"; tournamentIds: readonly string[] };
 
+/** Validation de `GuildAccess` reçu d'un tiers (réponse du bot côté web). */
+export const GuildAccessSchema = z.discriminatedUnion("level", [
+  z.object({ level: z.literal("SERVER"), reason: GuildAdminReasonSchema }),
+  z.object({ level: z.literal("TOURNAMENT"), tournamentIds: z.array(z.string().min(1)) }),
+]) satisfies z.ZodType<GuildAccess>;
+
 export const GUILD_ACTIONS = ["MANAGE_SERVER_SETTINGS", "CREATE_TOURNAMENT", "DELETE_TOURNAMENT", "MANAGE_TOURNAMENT"] as const;
 export type GuildAction = (typeof GUILD_ACTIONS)[number];
 
@@ -187,7 +193,7 @@ export const CreateTournamentSchema = z.object({
 });
 
 export const ReportScoreSchema = z.object({
-  match_id: z.string().uuid(),
+  match_id: z.uuid(),
   team1_score: z.number().min(0),
   team2_score: z.number().min(0),
   reported_by_team_id: z.string().optional(),
@@ -225,7 +231,7 @@ export const GroupPointsSettingsSchema = z
     points_loss: GroupPointValueSchema.optional(),
     points_forfeit: GroupPointValueSchema.optional(),
   })
-  .passthrough();
+  .loose();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from "express";
-import { ZodSchema, ZodError } from "zod";
+import { ZodError, type ZodType } from "zod";
 
-export function validateBody(schema: ZodSchema) {
+export function validateBody(schema: ZodType) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
       req.body = schema.parse(req.body);
@@ -10,7 +10,7 @@ export function validateBody(schema: ZodSchema) {
       if (err instanceof ZodError) {
         return res.status(400).json({
           error: "Validation Error",
-          details: err.errors.map((e) => ({
+          details: err.issues.map((e) => ({
             field: e.path.join("."),
             message: e.message,
           })),
@@ -21,7 +21,7 @@ export function validateBody(schema: ZodSchema) {
   };
 }
 
-export function validateQuery(schema: ZodSchema) {
+export function validateQuery(schema: ZodType<Request["query"]>) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
       req.query = schema.parse(req.query);
@@ -30,7 +30,7 @@ export function validateQuery(schema: ZodSchema) {
       if (err instanceof ZodError) {
         return res.status(400).json({
           error: "Query Validation Error",
-          details: err.errors.map((e) => ({
+          details: err.issues.map((e) => ({
             field: e.path.join("."),
             message: e.message,
           })),

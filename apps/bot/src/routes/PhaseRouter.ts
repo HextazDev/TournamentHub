@@ -193,7 +193,7 @@ phaseRouter.put("/:id", async (req, res) => {
       if (!parsedSettings.success) {
         return res.status(400).json({
           error: "Validation Error",
-          details: parsedSettings.error.errors.map((e) => ({
+          details: parsedSettings.error.issues.map((e) => ({
             field: ["settings", ...e.path].join("."),
             message: e.message,
           })),
