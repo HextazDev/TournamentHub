@@ -168,19 +168,23 @@ authentication mechanism is configured; the current web proxy sends no Access
 credentials. If cloudflared runs in a container, its localhost is not the bot:
 attach it to the Compose network and target `bot:8080` instead.
 
-### Existing teams webhook contract
+### Optional teams webhook
 
-The existing `POST /api/webhook/team-update` requires **both**
+Check-ins made through the bot (Discord check-in button, back-office check-in
+toggle) apply the captain role and team nickname directly: no webhook is needed
+for them. The Supabase `teams` database webhook is **optional** and only
+resynchronizes changes made outside the bot (direct database edits).
+
+If you provision it, `POST /api/webhook/team-update` requires **both**
 `Authorization: Bearer <BOT_API_SECRET>` (API middleware) and
 `x-webhook-secret: <WEBHOOK_SECRET or BOT_API_SECRET>` (webhook handler).
-Set these as private headers in a Supabase `teams` UPDATE database webhook, pointing
+Set these as private headers in a Supabase `teams` database webhook, pointing
 to your HTTPS API endpoint, using the Supabase webhook payload. Do not put the
-secret in a query string even though the legacy handler accepts one. The webhook
-is still provisioned manually; this PR does not change its authentication contract.
-Verify unauthenticated requests fail and a real team update synchronizes roles
-on your test Discord server before promotion. A failed Discord update returns a
-failure response, but may leave a partial change; operations must be verified and
-retries handled by the webhook operator.
+secret in a query string even though the legacy handler accepts one. Malformed
+payloads are rejected without touching Discord. A failed Discord update returns
+a failure response, but may leave a partial change (the role is still attempted
+when the nickname is refused); retries are handled by the webhook operator.
+See `apps/bot/TROUBLESHOOTING.md` for the `[CaptainPresence]` log reasons.
 
 ## Staging, production, logs and health
 

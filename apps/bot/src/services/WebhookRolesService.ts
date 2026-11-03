@@ -1,218 +1,60 @@
-import { Client } from "discord.js";
-import { supabase } from "../lib/supabase";
+import type { Client } from "discord.js";
+import { z } from "zod";
 import { logger } from "../utils/logger";
+import { applyPresence, hasPresenceFailure, removePresence, type PresenceReport } from "./CaptainPresenceService";
+
+/**
+ * Webhook Supabase optionnel sur `teams` : resynchronise la présence des capitaines quand une équipe est
+ * modifiée hors du bot (édition directe en base). Les check-ins faits via le bot appliquent déjà la présence
+ * eux-mêmes (DISC-11). Toute opération Discord refusée renvoie un échec (OPS-05).
+ */
+const teamRecordSchema = z.object({
+  id: z.string().min(1),
+  tournament_id: z.string().min(1),
+  name: z.string(),
+  captain_discord_id: z.string().min(1).nullable(),
+  is_checked_in: z.boolean(),
+});
+
+const teamWebhookSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("INSERT"), record: teamRecordSchema }),
+  z.object({ type: z.literal("UPDATE"), record: teamRecordSchema }),
+  z.object({ type: z.literal("DELETE"), old_record: teamRecordSchema }),
+]);
+
+type TeamRecord = z.infer<typeof teamRecordSchema>;
+
+export type WebhookResult = { success: true } | { success: false; error: string };
 
 export class WebhookRolesService {
-  private client: Client;
+  constructor(private readonly client: Client) {}
 
-  constructor(client: Client) {
-    this.client = client;
-  }
+  async handleTeamUpdate(payload: unknown): Promise<WebhookResult> {
+    const parsed = teamWebhookSchema.safeParse(payload);
+    if (!parsed.success) {
+      logger.warn("[WebhookRoles] Invalid team webhook payload", { issues: parsed.error.issues.map((i) => i.path.join(".")) });
+      return { success: false, error: "Invalid webhook payload" };
+    }
 
-  /**
-   * Handle team update webhook from Supabase
-   * This is called by Supabase Database Webhooks when a team is created/updated/deleted
-   */
-  async handleTeamUpdate(payload: any) {
-    try {
-      logger.info(`[WebhookRoles] Received team update webhook:`, {
-        type: payload.type,
-        table: payload.table,
-      });
+    const event = parsed.data;
+    const record = event.type === "DELETE" ? event.old_record : event.record;
+    logger.info(`[WebhookRoles] ${event.type} received`, { teamId: record.id, checkedIn: record.is_checked_in });
 
-      const record = payload.record;
-
-      // Handle different event types
-      switch (payload.type) {
-        case 'INSERT':
-          await this.handleInsert(record);
-          break;
-        case 'UPDATE':
-          await this.handleUpdate(record);
-          break;
-        case 'DELETE':
-          await this.handleDelete(record);
-          break;
-        default:
-          logger.warn(`[WebhookRoles] Unknown event type: ${payload.type}`);
-      }
-
-      return { success: true };
-    } catch (error) {
-      logger.error(`[WebhookRoles] Error handling team update webhook:`, error);
+    const report = await this.sync(event.type, record);
+    if (report && hasPresenceFailure(report)) {
       return { success: false, error: "Discord role synchronization failed" };
     }
+    return { success: true };
   }
 
-  private async handleInsert(record: any) {
-    logger.info(`[WebhookRoles] INSERT - Team: ${record.name}, CheckedIn: ${record.is_checked_in}, Captain: ${record.captain_discord_id}`);
+  private async sync(type: "INSERT" | "UPDATE" | "DELETE", record: TeamRecord): Promise<PresenceReport | null> {
+    const captainId = record.captain_discord_id;
+    if (!captainId) return null;
+    const team = { id: record.id, tournament_id: record.tournament_id, name: record.name, captain_discord_id: captainId };
 
-    if (record.is_checked_in && record.captain_discord_id) {
-      await this.applyPresence(record);
-    } else {
-      logger.info(`[WebhookRoles] INSERT - Skipping presence application (is_checked_in: ${record.is_checked_in})`);
-    }
-  }
-
-  private async handleUpdate(record: any) {
-    // For UPDATE, we need to get the old record to detect changes
-    // But Supabase webhooks only send the new record
-    // We'll check the current state and apply/remove presence accordingly
-
-    logger.info(`[WebhookRoles] UPDATE - Team: ${record.name}, CheckedIn: ${record.is_checked_in}, Captain: ${record.captain_discord_id}`);
-
-    if (record.is_checked_in && record.captain_discord_id) {
-      // Team is checked in, apply presence
-      await this.applyPresence(record);
-    } else {
-      // Team is not checked in, remove presence
-      await this.removePresence(record);
-    }
-  }
-
-  private async handleDelete(record: any) {
-    logger.info(`[WebhookRoles] DELETE - Team: ${record.name}, CheckedIn: ${record.is_checked_in}, Captain: ${record.captain_discord_id}`);
-
-    if (record.is_checked_in && record.captain_discord_id) {
-      await this.removePresence(record);
-    }
-  }
-
-  private async applyPresence(team: any) {
-    logger.info(`[WebhookRoles] applyPresence - Team: ${team.name}, Captain: ${team.captain_discord_id}, Tournament: ${team.tournament_id}`);
-
-    try {
-      const { data: tourney, error } = await supabase
-        .from("tournaments")
-        .select("guild_id, discord_captain_role_id")
-        .eq("id", team.tournament_id)
-        .single();
-
-      if (error || !tourney || !tourney.guild_id) {
-        throw new Error("Tournament lookup failed");
-      }
-
-      logger.info(`[WebhookRoles] Tournament found: ${tourney.guild_id}, Captain Role: ${tourney.discord_captain_role_id}`);
-
-      const guild = await this.client.guilds.fetch(tourney.guild_id).catch(() => null);
-      if (!guild) {
-        throw new Error("Discord guild unavailable");
-      }
-
-      logger.info(`[WebhookRoles] Guild fetched successfully: ${guild.name}`);
-
-      const member = await guild.members.fetch(team.captain_discord_id).catch(() => null);
-      if (!member) {
-        throw new Error("Discord member unavailable");
-      }
-
-      logger.info(`[WebhookRoles] Member fetched successfully: ${member.user.tag}, Manageable: ${member.manageable}`);
-
-      // Apply Nickname
-      const nickname = team.name.substring(0, 32);
-      if (member.nickname !== nickname && member.user.displayName !== nickname) {
-        if (!member.manageable) throw new Error("Discord member is not manageable");
-        await member.setNickname(nickname, "Check-in au Tournoi");
-        logger.info(`[WebhookRoles] Nickname set successfully`);
-      }
-
-      // Apply Role
-      if (tourney.discord_captain_role_id) {
-        const role = guild.roles.cache.get(tourney.discord_captain_role_id);
-        if (role) {
-          logger.info(`[WebhookRoles] Role found: ${role.name} (${role.id}), Has role: ${member.roles.cache.has(role.id)}`);
-
-          if (!member.roles.cache.has(role.id)) {
-            await member.roles.add(role, "Check-in au Tournoi");
-            logger.info(`[WebhookRoles] Role added successfully: ${role.name}`);
-          } else {
-            logger.info(`[WebhookRoles] Member already has the role`);
-          }
-        } else {
-          throw new Error("Configured Discord role not found");
-        }
-      } else {
-        logger.warn(`[WebhookRoles] No captain role configured for tournament`);
-      }
-
-      logger.info(`[WebhookRoles] applyPresence completed for team: ${team.name}`);
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  private async removePresence(team: any) {
-    logger.info(`[WebhookRoles] removePresence - Team: ${team.name}, Captain: ${team.captain_discord_id}, Tournament: ${team.tournament_id}`);
-
-    try {
-      const { data: tourney, error } = await supabase
-        .from("tournaments")
-        .select("guild_id, discord_captain_role_id")
-        .eq("id", team.tournament_id)
-        .single();
-
-      if (error || !tourney || !tourney.guild_id) {
-        throw new Error("Tournament lookup failed");
-      }
-
-      logger.info(`[WebhookRoles] Tournament found: ${tourney.guild_id}, Captain Role: ${tourney.discord_captain_role_id}`);
-
-      const guild = await this.client.guilds.fetch(tourney.guild_id).catch(() => null);
-      if (!guild) {
-        throw new Error("Discord guild unavailable");
-      }
-
-      logger.info(`[WebhookRoles] Guild fetched successfully: ${guild.name}`);
-
-      const member = await guild.members.fetch(team.captain_discord_id).catch(() => null);
-      if (!member) {
-        throw new Error("Discord member unavailable");
-      }
-
-      logger.info(`[WebhookRoles] Member fetched successfully: ${member.user.tag}, Manageable: ${member.manageable}`);
-
-      // Remove Nickname
-      if (member.manageable && member.nickname === team.name.substring(0, 32)) {
-        logger.info(`[WebhookRoles] Current nickname matches team name, removing`);
-        await member.setNickname(null, "Annulation du Check-in / Changement d'équipe");
-        logger.info(`[WebhookRoles] Nickname removed successfully`);
-      } else if (member.nickname === team.name.substring(0, 32)) {
-        throw new Error("Discord member is not manageable");
-      } else {
-        logger.info(`[WebhookRoles] Nickname does not match team name, skipping`);
-      }
-
-      // Remove Role
-      if (tourney.discord_captain_role_id) {
-        const role = guild.roles.cache.get(tourney.discord_captain_role_id);
-        if (role) {
-          logger.info(`[WebhookRoles] Role found: ${role.name} (${role.id}), Has role: ${member.roles.cache.has(role.id)}`);
-
-          if (member.roles.cache.has(role.id)) {
-            await member.roles.remove(role, "Annulation du Check-in / Changement d'équipe");
-            logger.info(`[WebhookRoles] Role removed successfully: ${role.name}`);
-          } else {
-            logger.info(`[WebhookRoles] Member does not have the role`);
-          }
-        } else {
-          throw new Error("Configured Discord role not found");
-        }
-      } else {
-        logger.warn(`[WebhookRoles] No captain role configured for tournament`);
-      }
-
-      logger.info(`[WebhookRoles] removePresence completed for team: ${team.name}`);
-    } catch (error) {
-      throw error;
-    }
-  }
-
-  /**
-   * Verify webhook signature (optional but recommended for security)
-   */
-  verifyWebhookSignature(payload: string, signature: string, secret: string): boolean {
-    // Implement signature verification if needed
-    // For now, we'll trust the webhook as it's coming from Supabase
-    return true;
+    if (type === "DELETE") return record.is_checked_in ? removePresence(this.client, team) : null;
+    if (record.is_checked_in) return applyPresence(this.client, team);
+    // Un INSERT non checké n'a aucune présence à retirer ; un UPDATE peut être un check-out.
+    return type === "UPDATE" ? removePresence(this.client, team) : null;
   }
 }

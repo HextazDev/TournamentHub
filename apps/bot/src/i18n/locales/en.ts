@@ -111,6 +111,7 @@ export const en: typeof fr = {
     alreadyCheckedIn: "You are already checked in! (Team **{teamName}**)",
     dbError: "❌ A database error occurred during your Check-in. Please contact a TO.",
     success: "✅ Check-in confirmed for team **{teamName}**! Good luck.",
+    presenceIncomplete: "⚠️ Your check-in is confirmed, but the bot could not give you the Captain role or your team nickname. Please let a TO know.",
     openMention: "{role}, check-in is open!",
     openNoMention: "Check-in is open!",
     openTitle: "✅ Check-in Open!",

@@ -2,6 +2,8 @@ import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
 import { MAX_FAKE_TEAMS } from "@hub/shared";
+import type { Client } from "discord.js";
+import { applyPresence, removePresence } from "../services/CaptainPresenceService";
 
 export const teamRouter = Router();
 
@@ -207,6 +209,19 @@ teamRouter.patch("/:id/checkin", async (req, res) => {
 
     if (error) throw error;
     if (!updated) return res.status(404).json({ error: "Team not found" });
+
+    // DISC-11 : la présence (pseudo + rôle Capitaine) est appliquée ici, sans dépendre du webhook Supabase.
+    // Un refus Discord est journalisé par CaptainPresenceService et n'annule pas le check-in.
+    if (updated.captain_discord_id) {
+      const client: Client = req.app.locals.discordClient;
+      const team = {
+        id: updated.id,
+        tournament_id: updated.tournament_id,
+        name: updated.name,
+        captain_discord_id: updated.captain_discord_id,
+      };
+      await (is_checked_in ? applyPresence(client, team) : removePresence(client, team));
+    }
 
     res.json(updated);
   } catch (error: any) {
