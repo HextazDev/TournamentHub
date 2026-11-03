@@ -5,6 +5,7 @@ import { SwissGeneratorService } from "./SwissGeneratorService";
 import { LifecycleService } from "./LifecycleService";
 import { tBot, getGuildLanguage, getPhaseLanguage, type BotLocale } from "../i18n";
 import { logger } from "../utils/logger";
+import { isFinishedMatchStatus } from "@hub/shared";
 
 type MatchValidationUpdate =
   | { status: "COMPLETED"; winner_id?: string; loser_id?: string }
@@ -308,7 +309,7 @@ export class ScoreService {
         // Recalculate Swiss standings to make sure they are up-to-date
         await LeaderboardService.calculateSwissStandings(match.phase_id).catch(console.error);
 
-        // Check if all matches in the current round are completed (COMPLETED or BYE)
+        // SCR-08 : la ronde est close quand tous ses matchs sont terminés (COMPLETED, FF ou BYE).
         const { data: roundMatches } = await supabase
           .from("matches")
           .select("status")
@@ -316,7 +317,7 @@ export class ScoreService {
           .eq("round_number", match.round_number);
 
         if (roundMatches) {
-          const isRoundFinished = roundMatches.every(m => m.status === "COMPLETED" || m.status === "BYE");
+          const isRoundFinished = roundMatches.every(m => isFinishedMatchStatus(m.status));
           if (isRoundFinished) {
             const maxRounds = phase.settings?.swiss_rounds_count || 3;
             const currentRound = match.round_number;
