@@ -109,6 +109,7 @@ export const fr = {
     alreadyCheckedIn: "Vous êtes déjà validé ! (Équipe **{teamName}**)",
     dbError: "❌ Une erreur base de données est survenue lors de votre Check-in. Veuillez contacter un TO.",
     success: "✅ Check-in validé pour l'équipe **{teamName}** ! Bonne chance.",
+    presenceIncomplete: "⚠️ Votre check-in est bien validé, mais le bot n'a pas pu vous attribuer le rôle Capitaine ou le pseudo de votre équipe. Prévenez un TO.",
     openMention: "{role}, le check-in est ouvert !",
     openNoMention: "Le check-in est ouvert !",
     openTitle: "✅ Check-in Ouvert !",

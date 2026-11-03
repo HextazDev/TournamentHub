@@ -20,6 +20,7 @@ import { SchedulerRecovery } from "./services/SchedulerRecovery";
 import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
 import { WebhookRolesService } from "./services/WebhookRolesService";
+import { applyPresence, hasPresenceFailure } from "./services/CaptainPresenceService";
 import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
 import { resolveAdminReason } from "./utils/adminAccess";
 import { phaseRouter } from "./routes/PhaseRouter";
@@ -466,10 +467,25 @@ const bootstrap = async () => {
               });
             }
 
-            return interaction.reply({
+            await interaction.reply({
               content: tBot(lang, "checkin.success", { teamName: team.name }),
               ephemeral: true,
             });
+
+            // DISC-11 : présence appliquée directement (sans dépendre du webhook Supabase), après la réponse (DISC-01).
+            const presence = await applyPresence(client, {
+              id: team.id,
+              tournament_id: currentTournament.id,
+              name: team.name,
+              captain_discord_id: captainId,
+            });
+            if (hasPresenceFailure(presence)) {
+              await interaction.followUp({
+                content: tBot(lang, "checkin.presenceIncomplete"),
+                ephemeral: true,
+              });
+            }
+            return;
           } catch (err: any) {
             logger.error("Check-in interaction error", err);
           }
