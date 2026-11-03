@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { ScoreService } from "../services/ScoreService";
+import { LeaderboardService } from "../services/LeaderboardService";
 import { TextChannel } from "discord.js";
 import { getAuthenticatedGuildId, verifyMatchGuild } from "../utils/tenant";
 
@@ -61,6 +62,12 @@ matchRouter.put("/:id/force-score", async (req, res) => {
     } else if (team2_score > team1_score) {
       winnerId = updatedMatch.team2_id;
       loserId = updatedMatch.team1_id;
+    }
+
+    // Poules : le classement persisté (phase_teams, embeds Discord) suit le score forcé (LB-06).
+    // La Suisse est recalculée par progressTeams.
+    if (updatedMatch.group_id) {
+      await LeaderboardService.calculateGroupStandings(updatedMatch.group_id);
     }
 
     await ScoreService.progressTeams(updatedMatch, channel, winnerId, loserId, discordClient);
