@@ -9,6 +9,7 @@ import { useToast } from "@/context/ToastContext";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
+import { GROUP_POINTS_DEFAULTS } from "@hub/shared";
 
 export function StructureClient({
   tournamentId,
@@ -45,7 +46,7 @@ export function StructureClient({
           phase_order: order,
           bracket_size: 8,
           settings: format === "ROUND_ROBIN"
-            ? { points_win: 3, points_draw: 1, points_loss: 0, points_forfeit: 0 }
+            ? { ...GROUP_POINTS_DEFAULTS }
             : (format === "DOUBLE_ELIM" ? { bracket_reset: true } : (format === "SWISS" ? { swiss_rounds_count: 3 } : { third_place_match: false })),
         }),
       });

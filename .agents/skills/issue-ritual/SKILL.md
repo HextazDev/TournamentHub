@@ -115,6 +115,7 @@ Appliquer les modifications dans l'ordre strict des dépendances du monorepo :
 6. apps/web/src/app/        ➜ Pages Next.js, Layouts, Composants
 7. apps/bot/src/__tests__/  ➜ Tests unitaires Vitest
 8. docs/EDGE_CASES.md        ➜ Synchronisation du registre des cas limites (ajout, promotion ✅, purge)
+   docs/KNOWN_ISSUES.md      ➜ Retrait des lignes KI-xx corrigées, ajout des bugs découverts hors périmètre
 ```
 
 ### 3.0 — Discipline d'Ingénierie & TDD Strict (Inspirée de Superpowers)

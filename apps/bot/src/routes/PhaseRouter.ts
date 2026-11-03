@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { GroupPointsSettingsSchema } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
@@ -187,7 +188,19 @@ phaseRouter.put("/:id", async (req, res) => {
     if (phase_order !== undefined) updatePayload.phase_order = phase_order;
     if (bracket_size !== undefined) updatePayload.bracket_size = bracket_size;
     if (max_groups !== undefined) updatePayload.max_groups = max_groups;
-    if (settings !== undefined) updatePayload.settings = settings;
+    if (settings !== undefined) {
+      const parsedSettings = GroupPointsSettingsSchema.safeParse(settings);
+      if (!parsedSettings.success) {
+        return res.status(400).json({
+          error: "Validation Error",
+          details: parsedSettings.error.errors.map((e) => ({
+            field: ["settings", ...e.path].join("."),
+            message: e.message,
+          })),
+        });
+      }
+      updatePayload.settings = parsedSettings.data;
+    }
 
     const { data, error } = await supabase
       .from("phases")

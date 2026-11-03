@@ -1,4 +1,6 @@
+import { resolveGroupPoints } from "@hub/shared";
 import { supabase } from "../lib/supabase";
+import { logger } from "../utils/logger";
 
 // Mutex map: prevents concurrent calculations for the same group
 const groupLocks: Map<string, Promise<void>> = new Map();
@@ -44,16 +46,21 @@ export class LeaderboardService {
 
       if (!phase) return;
 
-      let settings: any = {};
-      try {
-        settings = typeof phase.settings === 'string' ? JSON.parse(phase.settings) : (phase.settings || {});
-      } catch {
-        console.error(`[LeaderboardService] Malformed settings JSON for phase ${group.phase_id}, using defaults.`);
+      let rawSettings: unknown = phase.settings;
+      if (typeof rawSettings === "string") {
+        try {
+          rawSettings = JSON.parse(rawSettings);
+        } catch (parseError) {
+          logger.error(`[LeaderboardService] Malformed settings JSON for phase ${group.phase_id}, using defaults.`, parseError);
+          rawSettings = null;
+        }
       }
-      const pointsWin = settings.points_win ?? 3;
-      const pointsDraw = settings.points_draw ?? 1;
-      const pointsLoss = settings.points_loss ?? 0;
-      const pointsForfeit = settings.points_forfeit ?? 0;
+      const {
+        points_win: pointsWin,
+        points_draw: pointsDraw,
+        points_loss: pointsLoss,
+        points_forfeit: pointsForfeit,
+      } = resolveGroupPoints(rawSettings);
 
       const { data: groupTeams } = await supabase
         .from("phase_teams")
@@ -137,10 +144,10 @@ export class LeaderboardService {
       }
 
       await Promise.all(updatePromises);
-      console.log(`[LeaderboardService] Successfully updated standings for group ${groupId}`);
+      logger.info(`[LeaderboardService] Successfully updated standings for group ${groupId}`);
 
     } catch (error) {
-      console.error(`[LeaderboardService] Error calculating group standings for ${groupId}:`, error);
+      logger.error(`[LeaderboardService] Error calculating group standings for ${groupId}:`, error);
     }
   }
 

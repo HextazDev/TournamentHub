@@ -149,3 +149,56 @@ export const ReportScoreSchema = z.object({
   team2_score: z.number().min(0),
   reported_by_team_id: z.string().optional(),
 });
+
+// ─── Barème de points des poules (phase.settings) ────────────────────────────
+// Source unique partagée par le formulaire web, la route PUT /api/phases/:id,
+// le classement persisté (LeaderboardService) et le classement web (LeaderboardTable).
+
+export const GROUP_POINTS_MIN = -99;
+export const GROUP_POINTS_MAX = 99;
+
+export const GROUP_POINTS_KEYS = ["points_win", "points_draw", "points_loss", "points_forfeit"] as const;
+export type GroupPointsKey = (typeof GROUP_POINTS_KEYS)[number];
+export type GroupPoints = Record<GroupPointsKey, number>;
+
+export const GROUP_POINTS_DEFAULTS: Readonly<GroupPoints> = Object.freeze({
+  points_win: 3,
+  points_draw: 1,
+  points_loss: 0,
+  points_forfeit: 0,
+});
+
+/** Une valeur de points : entier borné (le forfait peut être négatif, à titre de pénalité). */
+export const GroupPointValueSchema = z.number().int().min(GROUP_POINTS_MIN).max(GROUP_POINTS_MAX);
+
+/**
+ * Validation à l'écriture de `phase.settings` : les clés de points présentes doivent être valides,
+ * les autres clés (bracket_reset, swiss_rounds_count…) sont conservées telles quelles.
+ */
+export const GroupPointsSettingsSchema = z
+  .object({
+    points_win: GroupPointValueSchema.optional(),
+    points_draw: GroupPointValueSchema.optional(),
+    points_loss: GroupPointValueSchema.optional(),
+    points_forfeit: GroupPointValueSchema.optional(),
+  })
+  .passthrough();
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Lecture tolérante du barème : chaque clé valide est conservée, chaque clé absente ou invalide
+ * (`""`, `NaN`, chaîne, décimal, hors bornes) retombe sur sa valeur par défaut.
+ */
+export function resolveGroupPoints(settings: unknown): GroupPoints {
+  const source = isPlainObject(settings) ? settings : {};
+  const resolved: GroupPoints = { ...GROUP_POINTS_DEFAULTS };
+  for (const key of GROUP_POINTS_KEYS) {
+    const parsed = GroupPointValueSchema.safeParse(source[key]);
+    if (parsed.success) resolved[key] = parsed.data;
+  }
+  return resolved;
+}
+

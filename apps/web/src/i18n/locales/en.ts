@@ -596,6 +596,7 @@ export const en: typeof fr = {
     matchScoreDesc: "Awards points equal to the match score.",
     forfeit: "Forfeit",
     forfeitDesc: "Awards points when a participant forfeits (can be negative as penalty).",
+    invalidPoints: "Points must be whole numbers between {min} and {max}.",
     updatedNotice: "Settings updated!",
     update: "Update",
     updateAndReturn: "Update + Return",

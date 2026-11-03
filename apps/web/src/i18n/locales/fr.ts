@@ -594,6 +594,7 @@ export const fr = {
     matchScoreDesc: "Attribue des points égaux au score du match.",
     forfeit: "Forfait",
     forfeitDesc: "Attribue des points lorsqu'un participant est forfait dans un match (peut être négatif pour une pénalité).",
+    invalidPoints: "Les points doivent être des nombres entiers compris entre {min} et {max}.",
     updatedNotice: "Paramètres mis à jour !",
     update: "Mettre à jour",
     updateAndReturn: "Mettre à jour + Retour",

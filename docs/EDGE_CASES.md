@@ -49,7 +49,12 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **RR-02** | `generateGroups` | Groupe au nombre impair d'équipes. | Ajout d'un slot virtuel `"BYE"`. Le match contre le BYE est inséré en `COMPLETED` avec `1-0` (et non `BYE`) pour être compté par le classement. | 🛡️ |
 | **RR-03** | `generateGroups` | Distribution des équipes dans plusieurs groupes. | Répartition en serpentin (snake seeding) : `G1, G2, …, Gn, Gn, …, G1`. | 🛡️ |
 | **LB-01** | `calculateGroupStandings` | Appels concurrents pour le même groupe (deux scores validés en même temps). | Mutex par `groupId` : les recalculs sont sérialisés, pas d'écrasement concurrent de `phase_teams`. | 🛡️ |
-| **LB-02** | `calculateGroupStandings` | JSON `phase.settings` malformé. | Log d'erreur et barème par défaut (`3/1/0/0`) : pas de crash. | 🛡️ |
+| **LB-02** | `calculateGroupStandings` | JSON `phase.settings` malformé. | Log d'erreur (`logger.error`) et repli sur le barème par défaut (`3/1/0/0`) : pas de crash (`LeaderboardService.test.ts`). | ✅ |
+| **LB-03** | `resolveGroupPoints` / `calculateGroupStandings` | Settings vides (`{}`), `null`, `NaN`, chaîne ou clé manquante. | Repli clé par clé sur le barème par défaut (`3/1/0/0`), jamais de `0` point indésirable (`groupPoints.test.ts`, `LeaderboardService.test.ts`). | ✅ |
+| **LB-04** | `resolveGroupPoints` / `calculateGroupStandings` | Barème personnalisé défini par l'organisateur (ex. victoire = 2, pénalité forfait = -1). | Valeurs entières respectées et appliquées fidèlement au calcul des points (`groupPoints.test.ts`, `LeaderboardService.test.ts`). | ✅ |
+| **LB-05** | `calculateGroupStandings` / `LeaderboardTable` | Match `FF` en poules. | Une seule sémantique du forfait, identique bot et web. Aujourd'hui : ignoré par le bot, compté `points_loss + points_forfeit` par le web (`KI-01`, [#51](https://github.com/HextazDev/TournamentHub/issues/51)). | ⚠️ |
+| **LB-06** | `LeaderboardService` / `LeaderboardTable` | Classement d'une même phase affiché par le bot (`phase_teams`) et par le web. | Valeurs identiques. Aujourd'hui : le web recalcule à la volée avec des règles différentes (statut `BYE` notamment) (`KI-01`, [#51](https://github.com/HextazDev/TournamentHub/issues/51)). | ⚠️ |
+| **PH-01** | `PUT /api/phases/:id` / `GroupPointsSettingsSchema` | Valeur de points vide (`""`), non numérique, décimale ou hors [-99, 99]. | Validation stricte : rejet `400 Validation Error` sans aucune écriture en base (`PhaseRouter.update.test.ts`, `groupPoints.test.ts`). | ✅ |
 
 ---
 
@@ -61,7 +66,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 | **SCR-02** | `handleSelectMenu` | Un utilisateur qui n'est capitaine d'aucune des deux équipes tente de déclarer un score. | Rejet `Vous n'êtes pas capitaine dans ce match.` | 🛡️ |
 | **SCR-03** | `handleModalSubmit` | Déclaration sur un match qui n'est ni `PENDING` ni `IN_PROGRESS`. | Rejet `Ce match n'est plus en attente de résultat.` | 🛡️ |
 | **SCR-04** | `handleButton` | Un joueur autre que le capitaine adverse clique sur « Valider » ou « Contester ». | Rejet `Seul le capitaine adverse peut valider ou contester ce score.` | 🛡️ |
-| **SCR-05** | `handleButton` | Double-clic sur « Valider », ou validation après une contestation. | **Attendu** : refus si le statut n'est plus `WAITING_VALIDATION`. **Actuel** : aucun contrôle de statut et boutons jamais retirés du message d'origine, donc `progressTeams` peut s'exécuter deux fois (en SWISS : ronde suivante générée en double). | ⚠️ [#45](https://github.com/Hextaz/TournamentHub/issues/45) |
+| **SCR-05** | `handleButton` | Double-clic sur « Valider », ou validation après une contestation. | **Attendu** : refus si le statut n'est plus `WAITING_VALIDATION`. **Actuel** : aucun contrôle de statut et boutons jamais retirés du message d'origine, donc `progressTeams` peut s'exécuter deux fois (en SWISS : ronde suivante générée en double). | ⚠️ [#45](https://github.com/HextazDev/TournamentHub/issues/45) |
 | **SCR-06** | `progressTeams` | Égalité de score dans un bracket à élimination. | Aucune progression automatique. Ping des TO « MATCH NUL » pour arbitrage manuel. | 🛡️ |
 | **SCR-07** | `assignTeamToNextMatch` | Deux matchs parents se terminent simultanément et visent le même match suivant. | Assignation atomique via la RPC `assign_team_to_match`. Le repli non atomique en cas d'erreur RPC reste une fenêtre de course. | 🛡️ RPC / ⚠️ repli |
 | **SCR-08** | `progressTeams` (SWISS) | Dernier match d'une ronde suisse validé. | Génération automatique de la ronde suivante tant que `round < swiss_rounds_count` (3 par défaut), puis annonce de fin de phase. | 🛡️ |
@@ -160,7 +165,7 @@ Ce document consigne l'ensemble des **cas limites**, **invariants de sécurité 
 ## 📌 Dette de Couverture Prioritaire
 
 Les lignes ⚠️ ci-dessus sont des **bugs latents connus**. Ordre de traitement recommandé :
-1. **SCR-05** ([#45](https://github.com/Hextaz/TournamentHub/issues/45)) : double validation de score ➜ double progression, ronde suisse générée en double.
+1. **SCR-05** ([#45](https://github.com/HextazDev/TournamentHub/issues/45)) : double validation de score ➜ double progression, ronde suisse générée en double.
 2. **RR-01** : suppression des groupes avant validation ➜ perte de données sur une entrée invalide.
 3. **REG-06** : roster partiel ➜ passer par une RPC transactionnelle.
 4. **SWS-05** : barème BYE suisse codé en dur.

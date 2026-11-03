@@ -2,6 +2,7 @@
 
 import React from "react";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { resolveGroupPoints } from "@hub/shared";
 
 export interface PhaseTeamStat {
   id: string;
@@ -24,14 +25,16 @@ export interface PhaseTeamStat {
   };
 }
 
-export function LeaderboardTable({ teams, matches, settings }: { teams: PhaseTeamStat[], matches?: any[], settings?: any }) {
+export function LeaderboardTable({ teams, matches, settings }: { teams: PhaseTeamStat[], matches?: any[], settings?: unknown }) {
   const { t } = useTranslation();
 
-  // Config defaults (from backend LeaderboardService)
-  const pointsWin = settings?.points_win ?? 3;
-  const pointsDraw = settings?.points_draw ?? 1;
-  const pointsLoss = settings?.points_loss ?? 0;
-  const pointsForfeit = settings?.points_forfeit ?? 0;
+  // Config defaults (from @hub/shared / LeaderboardService)
+  const {
+    points_win: pointsWin,
+    points_draw: pointsDraw,
+    points_loss: pointsLoss,
+    points_forfeit: pointsForfeit,
+  } = resolveGroupPoints(settings);
 
   // Option: dynamically override stats based on matches array if provided
   const computedTeams = teams.map((t) => {
