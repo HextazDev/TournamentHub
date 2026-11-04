@@ -29,11 +29,33 @@ export interface QueryResult {
 export class FakeSupabase {
   public readonly writes: WriteLog[] = [];
   public readonly staleReads: Record<string, Row[]> = {};
+  public rpcHandler?: (fnName: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> | { data: unknown; error: unknown };
 
   constructor(public readonly tables: Record<string, Row[]>) {}
 
   public from(table: string) {
     return new FakeQuery(this, table);
+  }
+
+  public rpc(fnName: string, args: Record<string, unknown> = {}) {
+    if (this.rpcHandler) {
+      return Promise.resolve(this.rpcHandler(fnName, args));
+    }
+    if (fnName === "assign_team_to_match") {
+      const match = (this.tables.matches ?? []).find(m => m.id === args.p_target_match_id);
+      if (match) {
+        if (!match.team1_id) {
+          match.team1_id = args.p_team_id;
+          return Promise.resolve({ data: [match], error: null });
+        } else if (!match.team2_id && match.team1_id !== args.p_team_id) {
+          match.team2_id = args.p_team_id;
+          return Promise.resolve({ data: [match], error: null });
+        }
+        return Promise.resolve({ data: [], error: null });
+      }
+      return Promise.resolve({ data: null, error: { message: "match not found", code: "404" } });
+    }
+    return Promise.resolve({ data: null, error: null });
   }
 
   public writesTo(table: string, op?: WriteLog["op"]): WriteLog[] {
@@ -65,6 +87,13 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
   public eq(column: string, value: unknown) {
     this.filters.push({ column, value });
+    return this;
+  }
+
+  public match(record: Record<string, unknown>) {
+    for (const [column, value] of Object.entries(record)) {
+      this.filters.push({ column, value });
+    }
     return this;
   }
 
@@ -143,9 +172,10 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
     if (this.op === "insert") {
       const list = Array.isArray(this.payload) ? this.payload : [this.payload];
-      rows.push(...list.map(r => ({ ...r })));
+      const inserted = list.map((r, idx) => ({ id: (r.id as string) || `fake-${this.table}-${rows.length + idx + 1}`, ...r }));
+      rows.push(...inserted);
       this.db.writes.push({ table: this.table, op: "insert", payload: this.payload, filters: [], affected: list.length });
-      return { data: null, error: null };
+      return { data: this.returning ? inserted.map(r => ({ ...r })) : null, error: null };
     }
 
     if (this.op === "delete") {

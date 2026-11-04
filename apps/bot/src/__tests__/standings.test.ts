@@ -3,6 +3,9 @@ import {
   GROUP_POINTS_DEFAULTS,
   compareStandings,
   computeStandings,
+  computeHeadToHead,
+  computeBuchholz,
+  compareStandingsExtended,
   isFinishedMatchStatus,
   type StandingsMatch,
   type TeamStanding,
@@ -145,6 +148,99 @@ describe("compareStandings — ordre du classement", () => {
       { id: "bp-low", ...EMPTY, points: 3, differential: 1, score_for: 1 },
     ];
     expect([...rows].sort(compareStandings).map((r) => r.id)).toEqual(["diff", "bp", "bp-low", "low"]);
+  });
+});
+
+describe("Départages e-sport : Goal Average direct, confrontation directe, Buchholz", () => {
+  it("computeHeadToHead : départage par confrontation directe entre 2 équipes", () => {
+    const matches: StandingsMatch[] = [
+      match("A", "B", 2, 1, "COMPLETED"),
+      match("B", "C", 3, 0, "COMPLETED"),
+    ];
+    // A bat B : A a l'avantage
+    expect(computeHeadToHead("A", "B", matches)).toBeGreaterThan(0);
+    expect(computeHeadToHead("B", "A", matches)).toBeLessThan(0);
+    // A et C n'ont pas joué ensemble : départage neutre (0)
+    expect(computeHeadToHead("A", "C", matches)).toBe(0);
+  });
+
+  it("computeHeadToHead : gère les forfaits FF en confrontation directe", () => {
+    const matches: StandingsMatch[] = [
+      match("A", "B", 1, 0, "FF"), // B forfait contre A
+    ];
+    expect(computeHeadToHead("A", "B", matches)).toBeGreaterThan(0);
+    expect(computeHeadToHead("B", "A", matches)).toBeLessThan(0);
+  });
+
+  it("computeBuchholz : somme des points des adversaires affrontés", () => {
+    const standings = new Map<string, Pick<TeamStanding, "points">>([
+      ["A", { points: 6 }],
+      ["B", { points: 3 }],
+      ["C", { points: 9 }],
+      ["D", { points: 0 }],
+    ]);
+
+    const matches: StandingsMatch[] = [
+      match("A", "B", 2, 0, "COMPLETED"),
+      match("A", "C", 0, 1, "COMPLETED"),
+      match("D", "B", 1, 2, "COMPLETED"),
+    ];
+
+    // A a affronté B (3 pts) et C (9 pts) ➜ Buchholz de A = 3 + 9 = 12
+    expect(computeBuchholz("A", matches, standings)).toBe(12);
+    // D a affronté B (3 pts) ➜ Buchholz de D = 3
+    expect(computeBuchholz("D", matches, standings)).toBe(3);
+  });
+
+  it("computeBuchholz : ignore les matchs BYE et statuts non terminés", () => {
+    const standings = new Map<string, Pick<TeamStanding, "points">>([
+      ["A", { points: 3 }],
+      ["B", { points: 3 }],
+    ]);
+
+    const matches: StandingsMatch[] = [
+      match("A", null, 1, 0, "BYE"),
+      match("A", "B", null, null, "PENDING"),
+    ];
+
+    expect(computeBuchholz("A", matches, standings)).toBe(0);
+  });
+
+  it("compareStandingsExtended : points ➜ diff ➜ confrontation directe ➜ buts marqués", () => {
+    const matches: StandingsMatch[] = [
+      match("A", "B", 2, 1, "COMPLETED"),
+    ];
+
+    // A et B ont mêmes points (3), même différentiel (+1), mêmes buts pour (3)
+    // mais A a battu B lors de leur confrontation directe
+    const rowA = { id: "A", ...EMPTY, points: 3, differential: 1, score_for: 3 };
+    const rowB = { id: "B", ...EMPTY, points: 3, differential: 1, score_for: 3 };
+
+    const sorted = [rowB, rowA].sort((x, y) => compareStandingsExtended(x, y, { matches }));
+    expect(sorted.map((r) => r.id)).toEqual(["A", "B"]);
+  });
+
+  it("compareStandingsExtended : points ➜ diff ➜ Buchholz quand pas de confrontation directe", () => {
+    const standings = new Map<string, Pick<TeamStanding, "points">>([
+      ["A", { points: 3 }],
+      ["B", { points: 3 }],
+      ["OpponentStrong", { points: 9 }],
+      ["OpponentWeak", { points: 1 }],
+    ]);
+
+    const matches: StandingsMatch[] = [
+      match("A", "OpponentStrong", 1, 2, "COMPLETED"),
+      match("B", "OpponentWeak", 1, 2, "COMPLETED"),
+    ];
+
+    // A et B ont mêmes stats, mais l'adversaire de A avait 9 pts et celui de B 1 pt
+    const rowA = { id: "A", ...EMPTY, points: 3, differential: -1, score_for: 1 };
+    const rowB = { id: "B", ...EMPTY, points: 3, differential: -1, score_for: 1 };
+
+    const sorted = [rowB, rowA].sort((x, y) =>
+      compareStandingsExtended(x, y, { matches, buchholzStandings: standings }),
+    );
+    expect(sorted.map((r) => r.id)).toEqual(["A", "B"]);
   });
 });
 
