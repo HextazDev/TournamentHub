@@ -35,16 +35,23 @@ export async function archiveAndInit(req: Request, res: Response) {
     const { data: tournament, error: fetchError } = await supabase.from("tournaments").select("*")
       .eq("id", tournamentId).eq("guild_id", guildId).single();
     if (fetchError || !tournament) return res.status(404).json({ error: "Tournament not found" });
-    const { error: archiveError } = await supabase.from("tournaments").update({ status: "ARCHIVED" })
-      .eq("guild_id", guildId).neq("id", tournamentId).neq("status", "ARCHIVED");
+    const { data: archived, error: archiveError } = await supabase.from("tournaments").update({ status: "ARCHIVED" })
+      .eq("guild_id", guildId).neq("id", tournamentId).neq("status", "ARCHIVED")
+      .select("id, discord_captain_role_id, discord_checkin_channel_id");
     if (archiveError) throw archiveError;
     // SEC-23 / SEC-05 / DISC-08 : les rôles TO des tournois archivés ne donnent plus accès ni ne figurent dans le hub.
     refreshGuildAccess(req.app.locals.discordClient, guildId);
-    const { data: settings, error: settingsError } = await supabase.from("server_settings")
-      .select("captain_role_id").eq("guild_id", guildId).single();
-    if (settingsError) throw settingsError;
-    ArchiveService.backgroundDiscordCleanup(req.app.locals.discordClient, guildId, settings?.captain_role_id)
-      .catch((error: unknown) => logger.error("Discord cleanup failed", error));
+
+    const archivedTournaments = (archived ?? []) as {
+      id: string;
+      discord_captain_role_id: string | null;
+      discord_checkin_channel_id: string | null;
+    }[];
+
+    if (archivedTournaments.length > 0) {
+      ArchiveService.backgroundDiscordCleanup(req.app.locals.discordClient, guildId, archivedTournaments)
+        .catch((error: unknown) => logger.error("Discord cleanup failed", error));
+    }
     SchedulerService.scheduleTournament(tournament);
     return res.status(202).json({ message: "Cleanup and init done", tournament });
   } catch (error) {

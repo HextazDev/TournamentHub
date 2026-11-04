@@ -373,7 +373,6 @@ export const en: typeof fr = {
     title: "🏆 Tournament Management",
     subtitle: "Manage active tournaments and launch new editions.",
     createButton: "Create Tournament",
-    activeNotice: "Tournament {name} is currently active. You can draft a new tournament, but publishing it will archive the active edition.",
     deleteConfirm: "Are you sure you want to delete tournament \"{name}\"? This action is irreversible.",
     deleteTitle: "Delete",
     draft: "Draft",

@@ -42,6 +42,7 @@ vi.mock("../services/CaptainPresenceService", () => ({
   hasPresenceFailure: vi.fn(() => false),
 }));
 
+import { ArchiveService } from "../services/ArchiveService";
 import type { AdminCheck } from "../middleware/auth";
 import { routeGuardKind } from "../middleware/auth";
 import { tournamentRouter } from "../routes/TournamentRouter";
@@ -265,18 +266,24 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining(GUILD), boom);
   });
 
-  it("SEC-21: le TO du tournoi ne déclenche pas l'archivage des autres tournois du serveur", async () => {
-    seed([tournamentRow(T_A, { status: "DRAFT" }), tournamentRow(T_B)]);
+  it("LIFE-01: ouvrir les inscriptions (DRAFT -> REGISTRATION) n'archive pas les autres tournois et n'appelle pas Discord cleanup", async () => {
+    seed([tournamentRow(T_A, { status: "DRAFT" }), tournamentRow(T_B, { status: "ACTIVE" })]);
+    const body = { checkin_start_at: "2026-12-01T10:00:00Z", checkin_end_at: "2026-12-01T11:00:00Z" };
+    const out = await settings(serverTo, body);
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === T_A)?.status).toBe("REGISTRATION");
+    expect(db.current?.tables.tournaments?.find((t) => t.id === T_B)?.status).toBe("ACTIVE");
+    expect(ArchiveService.backgroundDiscordCleanup).not.toHaveBeenCalled();
+  });
+
+  it("SEC-21 / LIFE-01: le TO du tournoi peut passer son tournoi en inscriptions même si d'autres tournois coexistent", async () => {
+    seed([tournamentRow(T_A, { status: "DRAFT" }), tournamentRow(T_B, { status: "ACTIVE" })]);
     const body = { checkin_start_at: "2026-12-01T10:00:00Z", checkin_end_at: "2026-12-01T11:00:00Z" };
     const out = await settings(toOfA, body);
-    expect(out.status).toBe(403);
-    expect(out.body).toMatchObject({ code: "SERVER_LEVEL_REQUIRED" });
-    expect(writes()).toEqual([]);
-
-    seed([tournamentRow(T_A, { status: "DRAFT" }), tournamentRow(T_B, { status: "ARCHIVED" })]);
-    const alone = await settings(toOfA, body);
-    expect(alone.status).toBe(200);
+    expect(out.status).toBe(200);
     expect(db.current?.tables.tournaments?.find((t) => t.id === T_A)?.status).toBe("REGISTRATION");
+    expect(db.current?.tables.tournaments?.find((t) => t.id === T_B)?.status).toBe("ACTIVE");
+    expect(ArchiveService.backgroundDiscordCleanup).not.toHaveBeenCalled();
   });
 });
 
