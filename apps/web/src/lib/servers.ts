@@ -10,12 +10,12 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
 
   // 1. Lecture du modèle RFC 0001 (organizations, organization_members, organization_integrations, integration_access_grants)
   const [orgMembersRes, staffRes, discordIntsRes, grantsRes, settingsRes, adminRes] = await Promise.all([
-    supabaseAdmin.from("organization_members").select("organization_id, role").eq("user_discord_id", viewer.discordId),
-    supabaseAdmin.from("tournament_staff").select("tournament_id, role, tournaments!inner(organization_id, guild_id, status)").eq("user_discord_id", viewer.discordId),
+    supabaseAdmin.from("organization_members").select("organization_id, role").eq("user_id", viewer.discordId),
+    supabaseAdmin.from("tournament_staff").select("tournament_id, role, tournaments!inner(organization_id, guild_id, status)").eq("user_id", viewer.discordId),
     ids.length > 0
       ? supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("external_id", ids)
       : Promise.resolve({ data: [], error: null }),
-    supabaseAdmin.from("integration_access_grants").select("organization_id, reason").eq("user_discord_id", viewer.discordId),
+    supabaseAdmin.from("integration_access_grants").select("organization_id, reason").eq("user_id", viewer.discordId),
     ids.length > 0
       ? supabaseAdmin.from("server_settings").select("*").in("guild_id", ids)
       : Promise.resolve({ data: [], error: null }),

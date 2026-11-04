@@ -43,6 +43,8 @@ export function WebPlayerActions({
   const router = useRouter();
 
   const [teamName, setTeamName] = useState("");
+  const [captainIngameName, setCaptainIngameName] = useState("");
+  const [captainFriendCode, setCaptainFriendCode] = useState("");
   const [team1Score, setTeam1Score] = useState(0);
   const [team2Score, setTeam2Score] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -56,19 +58,26 @@ export function WebPlayerActions({
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!teamName.trim()) return;
+    if (!teamName.trim() || !captainIngameName.trim() || !captainFriendCode.trim()) return;
     setLoading(true);
     try {
       const res = await botApiFetch(`/api/player/tournaments/${tournamentId}/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: teamName.trim(), members: [] }),
+        body: JSON.stringify({
+          name: teamName.trim(),
+          captain_ingame_name: captainIngameName.trim(),
+          captain_friend_code: captainFriendCode.trim(),
+          members: [],
+        }),
       });
       if (!res.ok) {
         throw new Error((await readApiError(res)) ?? t("common.unknown"));
       }
       toast.success(t("playerActions.registeredSuccess"));
       setTeamName("");
+      setCaptainIngameName("");
+      setCaptainFriendCode("");
       router.refresh();
     } catch (err: unknown) {
       toast.error(t("feedback.genericError", { message: getErrorMessage(err) ?? t("common.unknown") }));
@@ -145,16 +154,36 @@ export function WebPlayerActions({
       {showRegistrationBlock && (
         <div className="space-y-4">
           {!captainTeam && isRegistrationOpen ? (
-            <form onSubmit={handleRegister} className="flex flex-col sm:flex-row gap-3">
+            <form onSubmit={handleRegister} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <input
+                type="text"
+                required
+                minLength={1}
+                maxLength={32}
+                value={teamName}
+                onChange={(e) => setTeamName(e.target.value)}
+                placeholder={t("playerActions.teamNamePlaceholder")}
+                className="rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 text-white focus:border-blue-500 focus:outline-none"
+              />
               <input
                 type="text"
                 required
                 minLength={1}
                 maxLength={50}
-                value={teamName}
-                onChange={(e) => setTeamName(e.target.value)}
-                placeholder={t("playerActions.teamNamePlaceholder")}
-                className="flex-1 rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 text-white focus:border-blue-500 focus:outline-none"
+                value={captainIngameName}
+                onChange={(e) => setCaptainIngameName(e.target.value)}
+                placeholder={t("playerActions.captainIngameNamePlaceholder")}
+                className="rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 text-white focus:border-blue-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                required
+                minLength={1}
+                maxLength={25}
+                value={captainFriendCode}
+                onChange={(e) => setCaptainFriendCode(e.target.value)}
+                placeholder={t("playerActions.captainFriendCodePlaceholder")}
+                className="rounded-lg bg-slate-900 border border-slate-700 px-4 py-2.5 text-white focus:border-blue-500 focus:outline-none"
               />
               <button
                 type="submit"

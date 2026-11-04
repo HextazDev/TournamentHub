@@ -746,6 +746,8 @@ export const en: typeof fr = {
     sectionTitle: "Captain Area & Web Registration",
     registerTitle: "Register My Team",
     teamNamePlaceholder: "Your team name",
+    captainIngameNamePlaceholder: "Captain in-game name",
+    captainFriendCodePlaceholder: "Friend code (e.g. SW-1234-5678-9012)",
     registerButton: "Register for Tournament",
     unregisterButton: "Unregister My Team",
     checkinButton: "Confirm Team Check-in",

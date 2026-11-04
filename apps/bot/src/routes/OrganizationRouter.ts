@@ -147,6 +147,7 @@ organizationRouter.get("/:orgId", async (req, res) => {
     ]);
 
     return res.status(200).json({
+      ...auth.org,
       organization: auth.org,
       members: members ?? [],
       integrations: integrations ?? [],

@@ -1,5 +1,4 @@
-import { z } from "zod";
-import { AccessDeniedCodeSchema, OrganizationAccessSchema, type OrganizationAccess } from "@hub/shared";
+import { PermissionResponseSchema, type OrganizationAccess } from "@hub/shared";
 
 // Décision d'accès au back-office côté web (SEC-11 / SEC-17) : seul le bot décide, avec la même source et le
 // même cache que ses routes de mutation. guild_admins / organization_members ne sert qu'à lister les serveurs du hub.
@@ -7,11 +6,6 @@ import { AccessDeniedCodeSchema, OrganizationAccessSchema, type OrganizationAcce
 export type GuildAdminAccess =
   | { allowed: true; access: OrganizationAccess }
   | { allowed: false; reason: "NOT_LOGGED_IN" | "NOT_A_MEMBER" | "NO_RIGHTS" | "BOT_NOT_IN_GUILD" | "CHECK_FAILED" };
-
-const PermissionResponseSchema = z.discriminatedUnion("hasPermission", [
-  z.object({ hasPermission: z.literal(true), access: OrganizationAccessSchema }),
-  z.object({ hasPermission: z.literal(false), reason: AccessDeniedCodeSchema.extract(["NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD"]) }),
-]);
 
 export interface GuildAccessCheckInput {
   guildId: string;

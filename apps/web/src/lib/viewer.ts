@@ -124,7 +124,12 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
       announcement_channel_id: typeof cfg.announcement_channel_id === "string" ? cfg.announcement_channel_id : null,
       checkin_channel_id: typeof cfg.checkin_channel_id === "string" ? cfg.checkin_channel_id : null,
       language: orgRow.language === "en" ? "en" : "fr",
-      invite_url: typeof orgRow.public_contact_url === "string" ? orgRow.public_contact_url : null,
+      invite_url:
+        typeof orgRow.invite_url === "string"
+          ? orgRow.invite_url
+          : typeof orgRow.public_contact_url === "string"
+            ? orgRow.public_contact_url
+            : null,
       updated_at: typeof orgRow.updated_at === "string" ? orgRow.updated_at : new Date().toISOString(),
       organization_id: orgRow.id,
       slug: orgRow.slug,
@@ -167,7 +172,7 @@ export const getReadableTournament = cache(async (guildId: string, tournamentId:
       .from("organization_members")
       .select("role")
       .eq("organization_id", profile.organization_id)
-      .eq("user_discord_id", viewer.discordId)
+      .eq("user_id", viewer.discordId)
       .maybeSingle();
     if (memberRow) memberIds.add(profile.organization_id);
   }

@@ -58,17 +58,23 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
 
     const org = await safeResolveOrg(targetGuildId);
 
-    // Fetch server default settings
-    const { data: serverSettings, error: settingsError } = await supabase
-      .from("server_settings")
-      .select("*")
-      .eq("guild_id", targetGuildId)
-      .maybeSingle();
-    if (settingsError) throw settingsError;
+    // Fetch server default settings only when not resolved as an organization (legacy fallback)
+    let serverSettings: Record<string, unknown> | null = null;
+    if (!org) {
+      const { data: settingsData, error: settingsError } = await supabase
+        .from("server_settings")
+        .select("*")
+        .eq("guild_id", targetGuildId)
+        .maybeSingle();
+      if (settingsError && settingsError.code !== "42P01" && settingsError.code !== "PGRST205") {
+        throw settingsError;
+      }
+      serverSettings = (settingsData as Record<string, unknown> | null) ?? null;
+    }
 
     const discordCfg = org?.discordConfig ?? {};
     const insertPayload: Record<string, unknown> = {
-      guild_id: org ? (org.discordGuildId ?? targetGuildId) : targetGuildId,
+      guild_id: org ? org.discordGuildId : targetGuildId,
       ...(org ? { organization_id: org.id } : {}),
       name,
       description: description || null,
@@ -80,29 +86,29 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       discord_registration_channel_id:
         discord_registration_channel_id ||
         (typeof discordCfg.registration_channel_id === "string" ? discordCfg.registration_channel_id : null) ||
-        serverSettings?.registration_channel_id ||
+        (typeof serverSettings?.registration_channel_id === "string" ? serverSettings.registration_channel_id : null) ||
         null,
       discord_announcement_channel_id:
         discord_announcement_channel_id ||
         (typeof discordCfg.announcement_channel_id === "string" ? discordCfg.announcement_channel_id : null) ||
-        serverSettings?.announcement_channel_id ||
+        (typeof serverSettings?.announcement_channel_id === "string" ? serverSettings.announcement_channel_id : null) ||
         null,
       discord_checkin_channel_id:
         discord_checkin_channel_id ||
         (typeof discordCfg.checkin_channel_id === "string" ? discordCfg.checkin_channel_id : null) ||
-        serverSettings?.checkin_channel_id ||
+        (typeof serverSettings?.checkin_channel_id === "string" ? serverSettings.checkin_channel_id : null) ||
         null,
       discord_captain_role_id:
         discord_captain_role_id ||
         (typeof discordCfg.captain_role_id === "string" ? discordCfg.captain_role_id : null) ||
-        serverSettings?.captain_role_id ||
+        (typeof serverSettings?.captain_role_id === "string" ? serverSettings.captain_role_id : null) ||
         null,
       discord_to_role_id:
         discord_to_role_id ||
         (typeof discordCfg.to_role_id === "string" ? discordCfg.to_role_id : null) ||
-        serverSettings?.to_role_id ||
+        (typeof serverSettings?.to_role_id === "string" ? serverSettings.to_role_id : null) ||
         null,
-      language: requestedLanguage.data ?? org?.language ?? serverSettings?.language ?? "fr",
+      language: requestedLanguage.data ?? org?.language ?? (typeof serverSettings?.language === "string" ? serverSettings.language : undefined) ?? "fr",
     };
 
     const { data: created, error } = await supabase

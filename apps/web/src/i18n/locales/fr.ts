@@ -744,6 +744,8 @@ export const fr = {
     sectionTitle: "Espace Capitaine & Inscription Web",
     registerTitle: "Inscrire mon équipe",
     teamNamePlaceholder: "Nom de votre équipe",
+    captainIngameNamePlaceholder: "Pseudo en jeu du capitaine",
+    captainFriendCodePlaceholder: "Code ami (ex: SW-1234-5678-9012)",
     registerButton: "S'inscrire au tournoi",
     unregisterButton: "Désinscrire mon équipe",
     checkinButton: "Valider le check-in de l'équipe",

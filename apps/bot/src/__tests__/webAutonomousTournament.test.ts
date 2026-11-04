@@ -79,6 +79,33 @@ beforeEach(() => {
 });
 
 describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord", () => {
+  it("INT-02: crée un tournoi pour une organisation Web même lorsque la table server_settings est supprimée (Option 5A)", async () => {
+    db.current!.tableErrors.server_settings = {
+      code: "42P01",
+      message: 'relation "public.server_settings" does not exist',
+    };
+
+    const createRes = await callRoute(tournamentRouter, {
+      method: "POST",
+      path: "/",
+      adminCheck: orgOwnerCheck,
+      body: {
+        organization_id: ORG_ID,
+        name: "Web Cup #2",
+        language: "fr",
+      },
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body).toMatchObject({
+      organization_id: ORG_ID,
+      guild_id: null,
+      name: "Web Cup #2",
+      status: "DRAFT",
+      language: "fr",
+    });
+  });
+
   it("INT-02: ouvre les inscriptions, lance et clôture un tournoi d'une organisation Web sans salon ni bot Discord", async () => {
     const openRes = await callRoute(tournamentRouter, {
       method: "POST",

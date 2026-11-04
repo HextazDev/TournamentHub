@@ -42,6 +42,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           if (orgRes.ok) {
             const orgData = (await orgRes.json()) as {
               language?: string;
+              invite_url?: string;
               public_contact_url?: string;
               discordEnabled?: boolean;
               discordConfig?: Record<string, string | null>;
@@ -56,7 +57,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
               announcement_channel_id: cfg.announcement_channel_id || "",
               registration_channel_id: cfg.registration_channel_id || "",
               language: orgData.language || "fr",
-              invite_url: orgData.public_contact_url || "",
+              invite_url: orgData.invite_url || orgData.public_contact_url || "",
             });
           }
         } catch (orgErr) {
@@ -157,24 +158,58 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
     setSaving(true);
 
     try {
-      const res = await botApiFetch(`/api/server-settings?guildId=${guildId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          guildId: guildId,
-          guild_id: guildId,
-          captain_role_id: settings.captain_role_id,
-          to_role_id: settings.to_role_id,
-          checkin_channel_id: settings.checkin_channel_id,
-          announcement_channel_id: settings.announcement_channel_id,
-          registration_channel_id: settings.registration_channel_id,
-          language: settings.language,
-          invite_url: settings.invite_url.trim(),
-        }),
-      });
+      if (hasOrgRecord) {
+        const [orgRes, intRes] = await Promise.all([
+          botApiFetch(`/api/organizations/${guildId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              language: settings.language,
+              invite_url: settings.invite_url.trim() || null,
+            }),
+          }),
+          botApiFetch(`/api/organizations/${guildId}/integrations/DISCORD`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              enabled: discordEnabled,
+              config: {
+                captain_role_id: settings.captain_role_id || null,
+                to_role_id: settings.to_role_id || null,
+                checkin_channel_id: settings.checkin_channel_id || null,
+                announcement_channel_id: settings.announcement_channel_id || null,
+                registration_channel_id: settings.registration_channel_id || null,
+              },
+            }),
+          }),
+        ]);
 
-      if (!res.ok) {
-        throw new Error((await readApiError(res)) ?? t("common.unknown"));
+        if (!orgRes.ok) {
+          throw new Error((await readApiError(orgRes)) ?? t("common.unknown"));
+        }
+        if (!intRes.ok) {
+          throw new Error((await readApiError(intRes)) ?? t("common.unknown"));
+        }
+      } else {
+        const res = await botApiFetch(`/api/server-settings?guildId=${guildId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            guildId: guildId,
+            guild_id: guildId,
+            captain_role_id: settings.captain_role_id,
+            to_role_id: settings.to_role_id,
+            checkin_channel_id: settings.checkin_channel_id,
+            announcement_channel_id: settings.announcement_channel_id,
+            registration_channel_id: settings.registration_channel_id,
+            language: settings.language,
+            invite_url: settings.invite_url.trim(),
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error((await readApiError(res)) ?? t("common.unknown"));
+        }
       }
 
       setMessage({ type: "success", text: t("adminSettings.savedSuccess") });

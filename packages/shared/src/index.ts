@@ -327,6 +327,15 @@ export const AccessDeniedCodeSchema = z.enum([
 ]);
 export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
 
+export const PermissionResponseSchema = z.discriminatedUnion("hasPermission", [
+  z.object({ hasPermission: z.literal(true), access: OrganizationAccessSchema }),
+  z.object({
+    hasPermission: z.literal(false),
+    reason: z.enum(["NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD"]),
+  }),
+]);
+export type PermissionResponse = z.infer<typeof PermissionResponseSchema>;
+
 /**
  * SEC-19 : code stable d'une réponse 5xx du bot (`{ error: "Internal Server Error", code }`).
  * Le détail de l'erreur reste dans les logs du bot ; le web affiche un message générique traduit.
@@ -487,7 +496,7 @@ export const TournamentSettingsUpdateSchema = z.object({
 export type TournamentSettingsUpdateInput = z.infer<typeof TournamentSettingsUpdateSchema>;
 
 export const ReportScoreSchema = z.object({
-  match_id: z.uuid(),
+  match_id: z.string().uuid(),
   team1_score: z.number().min(0),
   team2_score: z.number().min(0),
   reported_by_team_id: z.string().optional(),
@@ -540,7 +549,7 @@ export const CreateTeamMemberSchema = z.object({
  * `is_checked_in` absent ➜ le bot applique la règle par défaut selon l'état du tournoi.
  */
 export const CreateTeamSchema = z.object({
-  tournament_id: z.uuid(),
+  tournament_id: z.string().uuid(),
   name: z.string().trim().min(1, "Le nom de l'équipe est obligatoire").max(TEAM_NAME_MAX_LENGTH),
   captain_discord_id: DiscordSnowflakeSchema,
   is_checked_in: z.boolean().optional(),
@@ -565,7 +574,7 @@ export type UpdateTeamInput = z.infer<typeof UpdateTeamSchema>;
  * `MAX_FAKE_TEAMS` reste accepté : la route le plafonne. Les clés inconnues (`guildId`) sont retirées.
  */
 export const GenerateFakeTeamsSchema = z.object({
-  tournament_id: z.uuid(),
+  tournament_id: z.string().uuid(),
   count: z.number().int().positive(),
 });
 export type GenerateFakeTeamsInput = z.infer<typeof GenerateFakeTeamsSchema>;
@@ -576,7 +585,7 @@ export type GenerateFakeTeamsInput = z.infer<typeof GenerateFakeTeamsSchema>;
 export const MAX_PHASE_SEEDS = 256;
 
 const PhaseSeedSchema = z.object({
-  team_id: z.uuid(),
+  team_id: z.string().uuid(),
   // Seed négatif = départ en bracket perdant (double élimination) ; 0 n'est pas un emplacement.
   seed: z.number().int().min(-MAX_PHASE_SEEDS).max(MAX_PHASE_SEEDS).refine((seed) => seed !== 0, "Seed invalide"),
 });
@@ -627,7 +636,7 @@ export const GroupPointsSettingsSchema = z
     points_loss: GroupPointValueSchema.optional(),
     points_forfeit: GroupPointValueSchema.optional(),
   })
-  .loose();
+  .passthrough();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

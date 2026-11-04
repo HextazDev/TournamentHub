@@ -9,6 +9,10 @@ import {
   CreateOrganizationSchema,
   WebRegisterTeamSchema,
   WebReportScoreSchema,
+  ReportScoreSchema,
+  CreateTeamSchema,
+  GenerateFakeTeamsSchema,
+  PhaseSeedingSchema,
   MAX_OWNED_ORGANIZATIONS,
   type GuildAccess,
   type GuildAction,
@@ -169,5 +173,40 @@ describe("RFC 0001 (#97): OrganizationAccess, rôles natifs et schémas Web auto
     ).toBe(true);
     expect(WebReportScoreSchema.safeParse({ team1_score: 3, team2_score: 1 }).success).toBe(true);
     expect(WebReportScoreSchema.safeParse({ team1_score: -1, team2_score: 1 }).success).toBe(false);
+  });
+
+  it("valide les UUIDs des schémas partagés avec .safeParse() sans erreur runtime (TYP-01)", () => {
+    const validUuid = "6f1c2a6e-3b7d-4c8e-9f10-112233445566";
+    expect(ReportScoreSchema.safeParse({ match_id: validUuid, team1_score: 2, team2_score: 1 }).success).toBe(true);
+    expect(ReportScoreSchema.safeParse({ match_id: "not-a-uuid", team1_score: 2, team2_score: 1 }).success).toBe(false);
+
+    expect(
+      CreateTeamSchema.safeParse({
+        tournament_id: validUuid,
+        name: "Inklings",
+        captain_discord_id: "000000123456789012",
+      }).success,
+    ).toBe(true);
+    expect(
+      CreateTeamSchema.safeParse({
+        tournament_id: "bad-uuid",
+        name: "Inklings",
+        captain_discord_id: "000000123456789012",
+      }).success,
+    ).toBe(false);
+
+    expect(GenerateFakeTeamsSchema.safeParse({ tournament_id: validUuid, count: 4 }).success).toBe(true);
+    expect(GenerateFakeTeamsSchema.safeParse({ tournament_id: "bad-uuid", count: 4 }).success).toBe(false);
+
+    expect(
+      PhaseSeedingSchema.safeParse({
+        participants: [{ team_id: validUuid, seed: 1 }],
+      }).success,
+    ).toBe(true);
+    expect(
+      PhaseSeedingSchema.safeParse({
+        participants: [{ team_id: "bad-uuid", seed: 1 }],
+      }).success,
+    ).toBe(false);
   });
 });

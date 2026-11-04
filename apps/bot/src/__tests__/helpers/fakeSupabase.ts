@@ -29,6 +29,7 @@ export interface QueryResult {
 export class FakeSupabase {
   public readonly writes: WriteLog[] = [];
   public readonly staleReads: Record<string, Row[]> = {};
+  public readonly tableErrors: Record<string, { code: string; message: string }> = {};
   public rpcHandler?: (fnName: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> | { data: unknown; error: unknown };
 
   constructor(public readonly tables: Record<string, Row[]>) {}
@@ -168,6 +169,9 @@ class FakeQuery implements PromiseLike<QueryResult> {
   }
 
   private execute(): QueryResult {
+    if (this.db.tableErrors[this.table]) {
+      return { data: null, error: this.db.tableErrors[this.table]! };
+    }
     const rows = this.db.tables[this.table] ?? (this.db.tables[this.table] = []);
 
     if (this.op === "insert") {

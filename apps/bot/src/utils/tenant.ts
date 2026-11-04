@@ -8,6 +8,7 @@ export interface ResolvedOrganization {
   slug: string;
   name: string;
   language: "fr" | "en";
+  invite_url?: string | null;
   discordGuildId: string | null;
   discordEnabled: boolean;
   discordConfig: Record<string, unknown>;
@@ -74,6 +75,12 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
     slug: orgRow.slug,
     name: typeof orgRow.name === "string" ? orgRow.name : orgRow.slug,
     language: orgRow.language === "en" ? "en" : "fr",
+    invite_url:
+      typeof orgRow.invite_url === "string"
+        ? orgRow.invite_url
+        : typeof orgRow.public_contact_url === "string"
+          ? orgRow.public_contact_url
+          : null,
     discordGuildId: hasDiscordInt && typeof intRecord.external_id === "string" ? intRecord.external_id : null,
     discordEnabled: hasDiscordInt ? Boolean(intRecord.enabled) : false,
     discordConfig:

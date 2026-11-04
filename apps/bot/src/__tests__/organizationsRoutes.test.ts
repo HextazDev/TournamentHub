@@ -190,4 +190,27 @@ describe("SEC-26 / SEC-28 / SEC-29: Gestion des intégrations et secrets", () =>
     const ownerAccess = await resolveMemberAccess(fakeDiscord, "splatoon-fr", "u-owner");
     expect(ownerAccess.allowed).toBe(true);
   });
+
+  it("GET /:orgId expose les propriétés de l'organisation à la racine ainsi que sous organization (ARC-01)", async () => {
+    const out = await callRoute(organizationRouter, {
+      method: "GET",
+      path: `/${ORG_1}`,
+      headers: { "x-discord-user-id": "u-owner" },
+    });
+
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({
+      id: ORG_1,
+      slug: "splatoon-fr",
+      language: "fr",
+      discordEnabled: true,
+      discordConfig: { to_role_id: "role-to" },
+      organization: {
+        id: ORG_1,
+        slug: "splatoon-fr",
+        language: "fr",
+        discordEnabled: true,
+      },
+    });
+  });
 });
