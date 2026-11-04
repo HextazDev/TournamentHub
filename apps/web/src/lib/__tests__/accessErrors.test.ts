@@ -3,7 +3,7 @@ import { botAccessError, botInternalError, BOT_UNREACHABLE, relayedBotError } fr
 import { t } from "../../i18n";
 
 describe("botAccessError (SEC-18) : erreurs d'accès traduites, jamais le texte brut du bot", () => {
-  it.each(["NOT_LOGGED_IN", "NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD", "CHECK_FAILED", "SERVER_SETTINGS_RESERVED"] as const)(
+  it.each(["NOT_LOGGED_IN", "NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD", "CHECK_FAILED", "SERVER_SETTINGS_RESERVED", "CHANNEL_NOT_ACCESSIBLE"] as const)(
     "traduit le code %s en FR et en EN",
     (code) => {
       const fr = botAccessError({ error: "Insufficient Discord permissions", code }, "fr");

@@ -1,11 +1,11 @@
 "use client";
 
 import { useForm } from "react-hook-form";
-import { botApiFetch, getBotApiUrl } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
 import { CheckinTimeManager } from "./CheckinTimeManager";
 
 import dayjs from "dayjs";
-import { Save, CalendarDays, RefreshCw, MessageSquare, Shield } from "lucide-react";
+import { Save, CalendarDays, RefreshCw, MessageSquare, Shield, AlertTriangle } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "@/i18n/LanguageContext";
@@ -201,10 +201,23 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
                 className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
               >
                 <option value="">{t("adminSettingsPage.noChannel")}</option>
+                {tournament.discord_registration_channel_id &&
+                  !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                    <option value={tournament.discord_registration_channel_id} disabled className="text-amber-400 bg-slate-800">
+                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_registration_channel_id})
+                    </option>
+                  )}
                 {channels.map((ch: any) => (
                   <option key={ch.id} value={ch.id}>#{ch.name}</option>
                 ))}
               </select>
+              {tournament.discord_registration_channel_id &&
+                !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {t("adminSettingsPage.channelInaccessibleNotice")}
+                  </p>
+                )}
             </div>
 
             <div className="space-y-3">
@@ -214,10 +227,23 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
                 className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
               >
                 <option value="">{t("adminSettingsPage.noChannel")}</option>
+                {tournament.discord_announcement_channel_id &&
+                  !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                    <option value={tournament.discord_announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
+                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_announcement_channel_id})
+                    </option>
+                  )}
                 {channels.map((ch: any) => (
                   <option key={ch.id} value={ch.id}>#{ch.name}</option>
                 ))}
               </select>
+              {tournament.discord_announcement_channel_id &&
+                !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {t("adminSettingsPage.channelInaccessibleNotice")}
+                  </p>
+                )}
             </div>
 
             <div className="space-y-3">
@@ -227,10 +253,23 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
                 className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
               >
                 <option value="">{t("adminSettingsPage.noChannel")}</option>
+                {tournament.discord_checkin_channel_id &&
+                  !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                    <option value={tournament.discord_checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
+                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_checkin_channel_id})
+                    </option>
+                  )}
                 {channels.map((ch: any) => (
                   <option key={ch.id} value={ch.id}>#{ch.name}</option>
                 ))}
               </select>
+              {tournament.discord_checkin_channel_id &&
+                !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    {t("adminSettingsPage.channelInaccessibleNotice")}
+                  </p>
+                )}
             </div>
           </div>
         )}

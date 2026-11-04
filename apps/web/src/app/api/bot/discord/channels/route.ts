@@ -36,7 +36,7 @@ export async function GET(request: Request) {
         "X-Discord-User-Id": discordId,
         "X-Guild-Id": guildId,
       },
-      next: { revalidate: 60 } // cache for 1 minute
+      cache: "no-store",
     });
 
     if (!res.ok) {
