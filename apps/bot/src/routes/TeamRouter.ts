@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
-import { CreateTeamSchema, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
+import { CreateTeamSchema, GenerateFakeTeamsSchema, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
 import type { Client } from "discord.js";
 import { applyPresence, hasPresenceFailure, removePresence } from "../services/CaptainPresenceService";
 import { defaultCheckedInOnManualAdd } from "../utils/manualTeamCheckin";
@@ -82,18 +82,20 @@ teamRouter.post("/", async (req, res) => {
 // POST /api/teams/generate-fake — Generate fake teams for testing
 teamRouter.post("/generate-fake", async (req, res) => {
   try {
-    const { tournament_id, count } = req.body;
+    // REG-07 : le corps est une entrée externe, validé (contrôle pur, sans base) avant toute lecture ou écriture.
+    const parsed = GenerateFakeTeamsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
+    }
+    const { tournament_id, count } = parsed.data;
+
     const authGuildId = getAuthenticatedGuildId(req);
     if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    if (!tournament_id || typeof count !== "number" || count <= 0) {
-      return res.status(400).json({ error: "tournament_id and a positive count integer are required" });
-    }
-
     // Plafonner la génération d'équipes fictives pour éviter le DoS / Memory Exhaustion
-    const safeCount = Math.min(Math.max(1, count), MAX_FAKE_TEAMS);
+    const safeCount = Math.min(count, MAX_FAKE_TEAMS);
 
     const fakeTeams = Array.from({ length: safeCount }).map(() => ({
       tournament_id,

@@ -258,6 +258,41 @@ export const UpdateTeamSchema = z.object({
 });
 export type UpdateTeamInput = z.infer<typeof UpdateTeamSchema>;
 
+/**
+ * Corps de `POST /api/teams/generate-fake` (back-office de test, REG-07). Un `count` au-delà de
+ * `MAX_FAKE_TEAMS` reste accepté : la route le plafonne. Les clés inconnues (`guildId`) sont retirées.
+ */
+export const GenerateFakeTeamsSchema = z.object({
+  tournament_id: z.uuid(),
+  count: z.number().int().positive(),
+});
+export type GenerateFakeTeamsInput = z.infer<typeof GenerateFakeTeamsSchema>;
+
+// ─── Placement d'une phase (PUT /api/phases/:id/seeding) ─────────────────────
+
+/** Nombre maximal d'emplacements d'une phase : borne la taille du placement et la valeur absolue d'un seed. */
+export const MAX_PHASE_SEEDS = 256;
+
+const PhaseSeedSchema = z.object({
+  team_id: z.uuid(),
+  // Seed négatif = départ en bracket perdant (double élimination) ; 0 n'est pas un emplacement.
+  seed: z.number().int().min(-MAX_PHASE_SEEDS).max(MAX_PHASE_SEEDS).refine((seed) => seed !== 0, "Seed invalide"),
+});
+
+/**
+ * Corps de `PUT /api/phases/:id/seeding` (PH-02). Tableau vide ➜ la phase est vidée.
+ * Une équipe n'occupe qu'un emplacement et un emplacement (|seed|, `3` et `-3` compris) n'a qu'une équipe.
+ * Les clés inconnues (`guildId`) sont retirées.
+ */
+export const PhaseSeedingSchema = z.object({
+  participants: z
+    .array(PhaseSeedSchema)
+    .max(MAX_PHASE_SEEDS)
+    .refine((list) => new Set(list.map((p) => p.team_id)).size === list.length, "Équipe placée plusieurs fois")
+    .refine((list) => new Set(list.map((p) => Math.abs(p.seed))).size === list.length, "Emplacement attribué plusieurs fois"),
+});
+export type PhaseSeedingInput = z.infer<typeof PhaseSeedingSchema>;
+
 // ─── Barème de points des poules (phase.settings) ────────────────────────────
 // Source unique partagée par le formulaire web, la route PUT /api/phases/:id,
 // le classement persisté (LeaderboardService) et le classement web (LeaderboardTable).
@@ -323,6 +358,19 @@ export const STANDINGS_MATCH_STATUSES = ["COMPLETED", "FF", "BYE"] as const;
  */
 export function isFinishedMatchStatus(status: string): boolean {
   return (STANDINGS_MATCH_STATUSES as readonly string[]).includes(status);
+}
+
+/** Statut d'un match généré et pas encore joué. */
+export const MATCH_INITIAL_STATUS = "PENDING";
+
+/**
+ * Match réel (deux équipes) commencé : statut sorti de `PENDING` (joué, forfait, déclaré, contesté…) ou score non nul.
+ * Un BYE (une seule équipe) n'est jamais commencé. Garde le placement d'une phase (SCR-09). Tout statut
+ * terminé (`isFinishedMatchStatus`) est donc commencé, mais l'inverse est faux (`WAITING_VALIDATION`, `CONTESTED`).
+ */
+export function isMatchStarted(match: StandingsMatch): boolean {
+  if (match.team1_id === null || match.team2_id === null) return false;
+  return match.status !== MATCH_INITIAL_STATUS || (match.team1_score ?? 0) > 0 || (match.team2_score ?? 0) > 0;
 }
 
 /** Champs d'un match lus par le calcul du classement. */

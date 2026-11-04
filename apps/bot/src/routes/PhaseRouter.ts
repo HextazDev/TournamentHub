@@ -1,11 +1,11 @@
 import { Router } from "express";
-import { GroupPointsSettingsSchema } from "@hub/shared";
+import { GroupPointsSettingsSchema, PhaseSeedingSchema, isMatchStarted } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
 import { getAuthenticatedGuildId, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
-import { sendServerError } from "../utils/serverError";
+import { DomainError, sendServerError } from "../utils/serverError";
 
 export const phaseRouter = Router();
 
@@ -69,26 +69,44 @@ phaseRouter.put("/:id/seeding", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
-    const { participants } = req.body;
+    // PH-02 : le corps est une entrée externe, validé avant toute lecture ou suppression.
+    const parsed = PhaseSeedingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
+    }
+    const { participants } = parsed.data;
 
-    // 0. Sécurité : Vérifier si des matchs ont déjà commencé
-    const { data: activeMatches, error: matchCheckErr } = await supabase
+    // SCR-09 : le re-seed supprime les matchs de la phase ; refusé dès qu'un match réel a commencé (même à 0-0).
+    const { data: phaseMatches, error: matchCheckErr } = await supabase
       .from('matches')
       .select('id, status, team1_score, team2_score, team1_id, team2_id')
       .eq('phase_id', phaseId);
 
     if (matchCheckErr) throw matchCheckErr;
-    if (activeMatches && activeMatches.length > 0) {
-      const hasStarted = activeMatches.some((m: any) => {
-        const isRealMatch = m.team1_id !== null && m.team2_id !== null;
-        if (!isRealMatch) return false;
-        return m.status === 'COMPLETED' || m.team1_score > 0 || m.team2_score > 0;
-      });
-      if (hasStarted) return res.status(400).json({ error: 'Impossible de modifier le placement : des matchs ont déjà des scores ou sont terminés.' });
+    if (phaseMatches.some(isMatchStarted)) {
+      return res.status(400).json({ error: 'Impossible de modifier le placement : des matchs ont déjà des scores ou sont terminés.' });
     }
 
     // Use atomic RPC to delete phase_teams + matches, then insert new seeding
-    if (participants && participants.length > 0) {
+    if (participants.length > 0) {
+      // SEC-20 : seules les équipes du tournoi de la phase peuvent y être placées (jamais celles d'un autre tournoi/serveur).
+      const { data: phase, error: phaseLookupErr } = await supabase
+        .from('phases')
+        .select('tournament_id')
+        .eq('id', phaseId)
+        .single();
+      if (phaseLookupErr) throw phaseLookupErr;
+      const teamIds = participants.map((p) => p.team_id);
+      const { data: ownTeams, error: teamsErr } = await supabase
+        .from('teams')
+        .select('id')
+        .in('id', teamIds)
+        .eq('tournament_id', phase.tournament_id);
+      if (teamsErr) throw teamsErr;
+      if (ownTeams.length !== teamIds.length) {
+        throw new DomainError(400, "Le placement contient une équipe qui n'est pas inscrite à ce tournoi.");
+      }
+
       const { error: rpcError } = await supabase.rpc('regenerate_phase_seeding', {
         p_phase_id: phaseId,
         p_participants: participants
