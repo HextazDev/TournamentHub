@@ -20,7 +20,15 @@ const formSchema = z.object({
 
 type FormValues = z.infer<typeof formSchema>;
 
-export function TournamentsClient({ guildId, tournaments }: { guildId: string; tournaments: Tournament[] }) {
+interface TournamentsClientProps {
+  guildId: string;
+  tournaments: Tournament[];
+  /** SEC-21 : un TO de tournoi ne crée ni ne supprime de tournoi (le bot et la route web le refusent aussi). */
+  canCreate: boolean;
+  canDelete: boolean;
+}
+
+export function TournamentsClient({ guildId, tournaments, canCreate, canDelete }: TournamentsClientProps) {
   const router = useRouter();
   const { toast } = useToast();
   const { t, locale } = useTranslation();
@@ -100,13 +108,15 @@ export function TournamentsClient({ guildId, tournaments }: { guildId: string; t
           <h1 className="text-3xl font-bold text-white mb-2">{t("adminTournaments.title")}</h1>
           <p className="text-slate-400">{t("adminTournaments.subtitle")}</p>
         </div>
-        <button
-          onClick={() => setShowCreateModal(true)}
-          className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2 transition-colors"
-        >
-          <Plus className="w-5 h-5" />
-          {t("adminTournaments.createButton")}
-        </button>
+        {canCreate && (
+          <button
+            onClick={() => setShowCreateModal(true)}
+            className="bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-xl font-medium flex items-center gap-2 transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+            {t("adminTournaments.createButton")}
+          </button>
+        )}
       </div>
 
       {activePublishedTournament && (
@@ -134,13 +144,15 @@ export function TournamentsClient({ guildId, tournaments }: { guildId: string; t
                     </span>
                     <h2 className="text-2xl font-bold text-white leading-tight">{tournament.name}</h2>
                   </div>
-                  <button
-                    onClick={() => setTournamentToDelete({ id: tournament.id, name: tournament.name })}
-                    title={t("adminTournaments.deleteTitle")}
-                    className="p-2 ml-4 bg-slate-700/50 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-lg transition-colors shrink-0 cursor-pointer"
-                  >
-                    <Trash2 className="w-5 h-5" />
-                  </button>
+                  {canDelete && (
+                    <button
+                      onClick={() => setTournamentToDelete({ id: tournament.id, name: tournament.name })}
+                      title={t("adminTournaments.deleteTitle")}
+                      className="p-2 ml-4 bg-slate-700/50 hover:bg-red-500/20 text-slate-400 hover:text-red-400 rounded-lg transition-colors shrink-0 cursor-pointer"
+                    >
+                      <Trash2 className="w-5 h-5" />
+                    </button>
+                  )}
                 </div>
                 {tournament.description && (
                   <p className="text-slate-400 mb-4 line-clamp-2">{tournament.description}</p>
@@ -166,19 +178,21 @@ export function TournamentsClient({ guildId, tournaments }: { guildId: string; t
           <Trophy className="w-16 h-16 text-slate-600 mx-auto mb-4" />
           <h2 className="text-xl font-bold text-slate-300 mb-2">{t("adminTournaments.noActiveTitle")}</h2>
           <p className="text-slate-500 max-w-md mx-auto mb-6">
-            {t("adminTournaments.noActiveDesc")}
+            {t(canCreate ? "adminTournaments.noActiveDesc" : "adminTournaments.noManagedDesc")}
           </p>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 mx-auto transition-colors"
-          >
-            <Plus className="w-5 h-5" />
-            {t("adminTournaments.createDraftButton")}
-          </button>
+          {canCreate && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 mx-auto transition-colors"
+            >
+              <Plus className="w-5 h-5" />
+              {t("adminTournaments.createDraftButton")}
+            </button>
+          )}
         </div>
       )}
 
-      {showCreateModal && (
+      {canCreate && showCreateModal && (
         <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 animate-in fade-in">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden">
             <div className="p-6 border-b border-slate-800 flex justify-between items-center">

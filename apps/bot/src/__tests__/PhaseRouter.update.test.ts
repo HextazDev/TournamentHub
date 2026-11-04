@@ -51,6 +51,11 @@ function put(body: unknown) {
 beforeAll(async () => {
   const app = express();
   app.use(express.json());
+  // Comme en production derrière requireGuildAdmin : un TO du serveur (niveau SERVER).
+  app.use((req, _res, next) => {
+    req.adminCheck = { discordId: "to", guildId: "guild-1", access: { level: "SERVER", reason: "TO_ROLE" } };
+    next();
+  });
   app.use("/api/phases", phaseRouter);
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());

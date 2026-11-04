@@ -13,7 +13,14 @@ import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
 import { sendServerError } from "./utils/serverError";
-import { authMiddleware, guildPermissionsHandler, requireGuildAction, requireGuildAdmin } from "./middleware/auth";
+import {
+  authMiddleware,
+  guildPermissionsHandler,
+  requireGuildAction,
+  requireGuildAdmin,
+  requireTournamentScope,
+  tournamentFrom,
+} from "./middleware/auth";
 import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
@@ -69,7 +76,15 @@ app.use("/api", authMiddleware);
 // Inject client globally
 app.locals.discordClient = client;
 
+// SEC-21 : niveau SERVER exigé par défaut. Le montage ouvert aux TO de tournoi n'est utilisé que là où chaque
+// route déclare requireTournamentScope ou requireServerLevel (vérifié par tournamentScopeRoutes.test.ts).
 const guildAdminGuard = requireGuildAdmin(client);
+const tournamentLevelGuard = requireGuildAdmin(client, { tournamentLevel: true });
+// Listes Discord : un TO de tournoi doit désigner un de ses tournois ; le niveau SERVER peut s'en dispenser.
+const discordListGuard = [
+  tournamentLevelGuard,
+  requireTournamentScope(tournamentFrom.query("tournamentId"), { optionalForServer: true }),
+];
 // SEC-16 : l'auto-setup Discord reste hors de portée du rôle TO (comme /api/server-settings, gardé par son routeur).
 const serverSettingsGuard = [guildAdminGuard, requireGuildAction("MANAGE_SERVER_SETTINGS")];
 
@@ -113,7 +128,7 @@ app.post("/api/webhook/team-update", async (req, res) => {
 });
 
 // Endpoint: Fetch Roles for the connected Discord Guild
-app.get("/api/discord/roles", guildAdminGuard, async (req, res) => {
+app.get("/api/discord/roles", ...discordListGuard, async (req, res) => {
   const guildId = (req.query.guildId || req.body?.guildId) as string;
   if (!guildId) {
     return res.status(400).json({ error: "Missing guildId parameter." });
@@ -169,7 +184,7 @@ const getGuild = async (res: any, guildId: string): Promise<any> => {
 app.get("/api/discord/permissions", guildPermissionsHandler(client));
 
 // Endpoint: Fetch Channels for Check-in configurations
-app.get("/api/discord/channels", guildAdminGuard, async (req, res) => {
+app.get("/api/discord/channels", ...discordListGuard, async (req, res) => {
   try {
     const guildId = (req.query.guildId || req.body?.guildId) as string;
     const guild = await getGuild(res, guildId);
@@ -191,7 +206,7 @@ app.get("/api/discord/channels", guildAdminGuard, async (req, res) => {
 });
 
 // Endpoint: Fetch Guild Members for Manual Input Combobox
-app.get("/api/discord/members", guildAdminGuard, async (req, res) => {
+app.get("/api/discord/members", ...discordListGuard, async (req, res) => {
   try {
     const guildId = (req.query.guildId || req.body?.guildId) as string;
     const guild = await getGuild(res, guildId);
@@ -262,14 +277,20 @@ app.post("/api/discord/auto-setup", ...serverSettingsGuard, async (req, res) => 
 });
 
 // Lifecycle routes: authenticate the guild before loading or changing a tournament.
-app.post('/api/discord/sync-schedule', guildAdminGuard, syncSchedule);
+app.post(
+  '/api/discord/sync-schedule',
+  tournamentLevelGuard,
+  requireTournamentScope(tournamentFrom.body("tournament_id")),
+  syncSchedule,
+);
 app.post('/api/tournaments/archive-and-init', guildAdminGuard, archiveAndInit);
 
 // Mutation routes: protected by authMiddleware + requireGuildAdmin (live Discord perm check)
-app.use('/api/phases', guildAdminGuard, phaseRouter);
-app.use('/api/matches', guildAdminGuard, matchRouter);
-app.use('/api/tournaments', guildAdminGuard, tournamentRouter);
-app.use('/api/teams', guildAdminGuard, teamRouter);
+// archive-and-init (monté plus haut) reste au niveau SERVER : il archive tous les autres tournois du serveur.
+app.use('/api/phases', tournamentLevelGuard, phaseRouter);
+app.use('/api/matches', tournamentLevelGuard, matchRouter);
+app.use('/api/tournaments', tournamentLevelGuard, tournamentRouter);
+app.use('/api/teams', tournamentLevelGuard, teamRouter);
 // La garde MANAGE_SERVER_SETTINGS (SEC-16) est appliquée par le routeur lui-même.
 app.use('/api/server-settings', guildAdminGuard, serverSettingsRouter);
 
@@ -313,6 +334,12 @@ const bootstrap = async () => {
       if (oldRole.permissions.bitfield === newRole.permissions.bitfield) return;
       invalidateGuildAccess(newRole.guild.id);
       await GuildRegistryService.syncGuildAdmins(newRole.guild);
+    });
+
+    // SEC-23 : un rôle supprimé (rôle TO du serveur ou d'un tournoi) ne donne plus accès, sans attendre le TTL.
+    client.on('roleDelete', async (role) => {
+      invalidateGuildAccess(role.guild.id);
+      await GuildRegistryService.syncGuildAdmins(role.guild);
     });
 
     // Cycle de vie des serveurs : la ligne server_settings rend le serveur visible sur le web (DISC-07).

@@ -91,6 +91,7 @@ describe("SEC-19 — refus métier typés DomainError", () => {
     tables({ phases: { tournaments: { id: "t-1", discord_category_id: null }, groups: [] } });
     const out = await callRoute(phaseRouter, {
       method: "POST", path: "/p-1/sync", body: { guildId: "111" }, locals: { discordClient },
+      adminCheck: { discordId: "to", guildId: "111", access: { level: "SERVER", reason: "TO_ROLE" } },
     });
     expect(out.status).toBe(409);
     expect(out.body).toEqual({ error: "Tournament does not have an active Discord Category. Please launch the tournament first." });

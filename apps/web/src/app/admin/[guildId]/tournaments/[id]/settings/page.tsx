@@ -1,4 +1,6 @@
-import { getManagedTournament } from "@/lib/viewer";
+import { canPerform } from "@hub/shared";
+import { getGuildAdminAccess, getManagedTournament } from "@/lib/viewer";
+import { discordListQuery } from "@/lib/accessRules";
 import { notFound } from "next/navigation";
 import { SettingsClient } from "./SettingsClient";
 import { getServerSession } from "next-auth/next";
@@ -12,6 +14,9 @@ export default async function TournamentSettingsPage({
   const { guildId, id: tournamentId } = await params;
   const tournament = await getManagedTournament(guildId, tournamentId);
   if (!tournament) notFound();
+  // SEC-22 : les rôles du tournoi (TO, Capitaine) restent réservés au niveau SERVER.
+  const access = await getGuildAdminAccess(guildId);
+  const canManageRoles = access.allowed && canPerform(access.access, "MANAGE_TOURNAMENT_ROLES", tournamentId);
 
 
   // Fetch Discord data server-side using BOT_API_SECRET and user session headers
@@ -35,8 +40,8 @@ export default async function TournamentSettingsPage({
       };
 
       const [channelsRes, rolesRes] = await Promise.all([
-        fetch(`${botApiUrl}/api/discord/channels?guildId=${guildId}`, { headers }),
-        fetch(`${botApiUrl}/api/discord/roles?guildId=${guildId}`, { headers })
+        fetch(`${botApiUrl}/api/discord/channels?${discordListQuery(guildId, tournamentId)}`, { headers }),
+        fetch(`${botApiUrl}/api/discord/roles?${discordListQuery(guildId, tournamentId)}`, { headers })
       ]);
 
       if (channelsRes.ok) {
@@ -55,5 +60,13 @@ export default async function TournamentSettingsPage({
     }
   }
 
-  return <SettingsClient tournament={tournament} guildId={guildId} initialChannels={channels} initialRoles={roles} />;
+  return (
+    <SettingsClient
+      tournament={tournament}
+      guildId={guildId}
+      canManageRoles={canManageRoles}
+      initialChannels={channels}
+      initialRoles={roles}
+    />
+  );
 }

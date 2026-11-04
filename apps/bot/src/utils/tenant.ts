@@ -2,10 +2,46 @@ import { Request } from "express";
 import { supabase } from "../lib/supabase";
 
 /**
- * Extract the authenticated guildId attached by requireGuildAdmin middleware
+ * Serveur authentifié par requireGuildAdmin, utilisé par toutes les routes avant leurs vérifications verify*Guild.
+ * SEC-21 (fermé par défaut) : pour un TO de tournoi, il n'existe qu'une fois sa portée vérifiée par
+ * requireTournamentScope. Une route qui oublie cette garde répond donc 403 au lieu de s'ouvrir à ce niveau.
  */
 export function getAuthenticatedGuildId(req: Request): string | null {
-  return req.adminCheck?.guildId ?? null;
+  const check = req.adminCheck;
+  if (!check) return null;
+  if (check.access.level === "SERVER" || req.tournamentScope) return check.guildId;
+  return null;
+}
+
+/** Tournoi vérifié par requireTournamentScope (URL, corps ou base), seule source autorisée pour les créations. */
+export function getTournamentScope(req: Request): string | null {
+  return req.tournamentScope?.tournamentId ?? null;
+}
+
+export type TournamentResourceKind = "phase" | "match" | "team";
+
+export type TournamentLookup = { ok: true; tournamentId: string | null } | { ok: false };
+
+async function readTournamentId(table: "phases" | "teams", id: string): Promise<TournamentLookup> {
+  const { data, error } = await supabase.from(table).select("tournament_id").eq("id", id).maybeSingle();
+  if (error) return error.code === "22P02" ? { ok: true, tournamentId: null } : { ok: false };
+  const row = data as { tournament_id: string | null } | null;
+  return { ok: true, tournamentId: row?.tournament_id ?? null };
+}
+
+/**
+ * Tournoi propriétaire d'une phase, d'un match ou d'une équipe, lu en base (jamais depuis le corps) — SEC-21.
+ * `tournamentId: null` : ressource inconnue ; `ok: false` : lecture impossible.
+ */
+export async function resolveResourceTournament(kind: TournamentResourceKind, id: string): Promise<TournamentLookup> {
+  if (kind === "phase") return readTournamentId("phases", id);
+  if (kind === "team") return readTournamentId("teams", id);
+
+  const { data, error } = await supabase.from("matches").select("phase_id").eq("id", id).maybeSingle();
+  if (error) return error.code === "22P02" ? { ok: true, tournamentId: null } : { ok: false };
+  const match = data as { phase_id: string | null } | null;
+  if (!match?.phase_id) return { ok: true, tournamentId: null };
+  return readTournamentId("phases", match.phase_id);
 }
 
 /**

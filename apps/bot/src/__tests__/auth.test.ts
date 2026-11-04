@@ -38,10 +38,15 @@ function req(partial: Partial<Request> & { headers?: Record<string, string> }): 
 
 function settings(toRoleId: string | null, error: { message: string } | null = null) {
   vi.mocked(supabase.from).mockImplementation((() => {
+    // Aucun tournoi n'a de rôle TO ici : l'accès de niveau TOURNAMENT est couvert par tournamentAccess.test.ts.
+    const tournaments = { data: [], error: null };
     const b = {
       select: () => b,
       eq: () => b,
+      neq: () => b,
+      not: () => b,
       maybeSingle: () => Promise.resolve({ data: toRoleId === null && error ? null : { to_role_id: toRoleId }, error }),
+      then: (resolve: (v: unknown) => unknown) => Promise.resolve(tournaments).then(resolve),
     };
     return b;
   }) as unknown as typeof supabase.from);

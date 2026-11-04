@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { getBotApiUrl, botApiFetch } from '@/utils/api';
+import { discordListQuery } from "@/lib/accessRules";
 
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle, UserPlus, Trash2, Search, Pencil, Sparkles } from "lucide-react";
@@ -48,7 +49,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
   useEffect(() => {
     if (!guildId) return;
     if (isAdding && members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?guildId=${guildId}`)
+      fetch(`${getBotApiUrl()}/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) setMembers(data);
@@ -269,7 +270,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
 
     if (!guildId) return;
     if (members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?guildId=${guildId}`)
+      fetch(`${getBotApiUrl()}/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) {

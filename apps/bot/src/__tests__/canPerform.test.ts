@@ -34,6 +34,27 @@ describe("canPerform (SEC-15 / SEC-16)", () => {
     expect(canPerform(scoped, "MANAGE_SERVER_SETTINGS")).toBe(false);
   });
 
+  it("SEC-22: un TO de tournoi ne modifie pas les rôles de son tournoi (ni d'un autre)", () => {
+    const scoped: GuildAccess = { level: "TOURNAMENT", tournamentIds: ["t1", "t2"] };
+    expect(canPerform(scoped, "MANAGE_TOURNAMENT_ROLES", "t1")).toBe(false);
+    expect(canPerform(scoped, "MANAGE_TOURNAMENT_ROLES", "t3")).toBe(false);
+    expect(canPerform(scoped, "MANAGE_TOURNAMENT_ROLES")).toBe(false);
+  });
+
+  it.each(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE"] as const)(
+    "SEC-22: le niveau SERVER (%s) modifie les rôles d'un tournoi",
+    (reason) => {
+      expect(canPerform(server(reason), "MANAGE_TOURNAMENT_ROLES", "t1")).toBe(true);
+    },
+  );
+
+  it("SEC-21: un accès TOURNAMENT sans aucun tournoi n'autorise rien", () => {
+    const empty: GuildAccess = { level: "TOURNAMENT", tournamentIds: [] };
+    for (const action of GUILD_ACTIONS) {
+      expect(canPerform(empty, action, "t1")).toBe(false);
+    }
+  });
+
   it("refuse une action inconnue (fermé par défaut)", () => {
     expect(canPerform(server("SERVER_OWNER"), "DROP_EVERYTHING" as GuildAction)).toBe(false);
   });
@@ -46,6 +67,8 @@ describe("canPerform (SEC-15 / SEC-16)", () => {
       "BOT_NOT_IN_GUILD",
       "CHECK_FAILED",
       "SERVER_SETTINGS_RESERVED",
+      "SERVER_LEVEL_REQUIRED",
+      "TOURNAMENT_ROLES_RESERVED",
     ]);
   });
 });

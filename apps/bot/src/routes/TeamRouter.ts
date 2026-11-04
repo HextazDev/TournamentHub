@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
-import { getAuthenticatedGuildId, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, getTournamentScope, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
+import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { CreateTeamSchema, GenerateFakeTeamsSchema, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
 import type { Client } from "discord.js";
 import { applyPresence, hasPresenceFailure, removePresence } from "../services/CaptainPresenceService";
@@ -11,18 +12,24 @@ const UNIQUE_VIOLATION = "23505";
 
 export const teamRouter = Router();
 
+// SEC-21 : chaque route déclare sa garde de portée (montage ouvert aux TO de tournoi).
+const bodyTournamentScope = requireTournamentScope(tournamentFrom.body("tournament_id"));
+const teamScope = requireTournamentScope(tournamentFrom.team("id"));
+
 // POST /api/teams — Create a team with its members (ajout manuel par un TO)
-teamRouter.post("/", async (req, res) => {
+teamRouter.post("/", bodyTournamentScope, async (req, res) => {
   try {
     // REG-09 : le corps est une entrée externe, validé (contrôle pur, sans base) avant toute lecture ou écriture.
     const parsed = CreateTeamSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
-    const { tournament_id, name, captain_discord_id, is_checked_in, members } = parsed.data;
+    const { name, captain_discord_id, is_checked_in, members } = parsed.data;
+    // Le tournoi vient de la garde de portée, jamais directement du corps (SEC-21).
+    const tournament_id = getTournamentScope(req);
 
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -80,17 +87,19 @@ teamRouter.post("/", async (req, res) => {
 });
 
 // POST /api/teams/generate-fake — Generate fake teams for testing
-teamRouter.post("/generate-fake", async (req, res) => {
+teamRouter.post("/generate-fake", bodyTournamentScope, async (req, res) => {
   try {
     // REG-07 : le corps est une entrée externe, validé (contrôle pur, sans base) avant toute lecture ou écriture.
     const parsed = GenerateFakeTeamsSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
-    const { tournament_id, count } = parsed.data;
+    const { count } = parsed.data;
+    // Le tournoi vient de la garde de portée, jamais directement du corps (SEC-21).
+    const tournament_id = getTournamentScope(req);
 
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -153,7 +162,7 @@ teamRouter.post("/generate-fake", async (req, res) => {
 });
 
 // PUT /api/teams/:id — Update a team (name, captain, replace all members)
-teamRouter.put("/:id", async (req, res) => {
+teamRouter.put("/:id", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -200,7 +209,7 @@ teamRouter.put("/:id", async (req, res) => {
 });
 
 // PATCH /api/teams/:id/checkin — Toggle check-in status
-teamRouter.patch("/:id/checkin", async (req, res) => {
+teamRouter.patch("/:id/checkin", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -244,7 +253,7 @@ teamRouter.patch("/:id/checkin", async (req, res) => {
 });
 
 // DELETE /api/teams/:id — Delete a team
-teamRouter.delete("/:id", async (req, res) => {
+teamRouter.delete("/:id", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);

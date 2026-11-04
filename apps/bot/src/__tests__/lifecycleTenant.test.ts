@@ -6,7 +6,11 @@ const verify = vi.hoisted(() => vi.fn());
 const cleanup = vi.hoisted(() => vi.fn());
 const schedule = vi.hoisted(() => vi.fn());
 vi.mock("../lib/supabase", () => ({ supabase: db }));
-vi.mock("../utils/tenant", () => ({ verifyTournamentGuild: verify, getAuthenticatedGuildId: (req: Request) => req.adminCheck?.guildId ?? null }));
+vi.mock("../utils/tenant", () => ({
+  verifyTournamentGuild: verify,
+  getAuthenticatedGuildId: (req: Request) => req.adminCheck?.guildId ?? null,
+  getTournamentScope: (req: Request) => req.tournamentScope?.tournamentId ?? null,
+}));
 vi.mock("../services/ArchiveService", () => ({ ArchiveService: { backgroundDiscordCleanup: cleanup } }));
 vi.mock("../services/SchedulerService", () => ({ SchedulerService: { scheduleTournament: schedule } }));
 vi.mock("../utils/logger", () => ({ logger: { error: vi.fn() } }));
@@ -32,7 +36,7 @@ describe("SEC-14 lifecycle tenant isolation", () => {
   });
   it("rejects cross-guild schedule before reading or scheduling", async () => {
     verify.mockResolvedValue(false);
-    const req = { body: { tournament_id: "b-tournament" }, adminCheck: { guildId: "a" } } as Request;
+    const req = { body: { tournament_id: "b-tournament" }, tournamentScope: { tournamentId: "b-tournament" }, adminCheck: { guildId: "a" } } as Request;
     const res = response();
     await syncSchedule(req, res as unknown as Response);
     expect(res.statusCode).toBe(403);
