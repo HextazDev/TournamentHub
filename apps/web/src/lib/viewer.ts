@@ -137,12 +137,7 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
     };
   }
 
-  const { data, error } = await supabaseAdmin.from("server_settings").select("*").eq("guild_id", guildIdOrSlug).maybeSingle();
-  if (error) {
-    // Si server_settings a été supprimée par la migration RFC 0001 (Option 5A), retourner null.
-    return null;
-  }
-  return data as ServerProfile | null;
+  return null;
 });
 
 /** Tournoi lisible par le visiteur (public, ou privé dont il est membre), sinon null ➜ 404. */

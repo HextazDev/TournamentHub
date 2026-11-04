@@ -15,13 +15,18 @@ import { en } from "../i18n/locales/en";
 
 type Row = { data: unknown; error: { code?: string; message: string } | null };
 
-/** Chaque table renvoie la réponse fournie à `.single()`, quel que soit le filtre. */
+/** Chaque table renvoie la réponse fournie à `.single()` ou `.maybeSingle()`, quel que soit le filtre. */
 function mockTables(rows: Record<string, Row>) {
   vi.mocked(supabase.from).mockImplementation(((table: string) => {
     const builder = {
       select: () => builder,
       eq: () => builder,
       single: () => Promise.resolve(rows[table] ?? { data: null, error: { code: "PGRST116", message: "no rows" } }),
+      maybeSingle: () => {
+        const row = rows[table];
+        if (row && row.error) return Promise.resolve(row);
+        return Promise.resolve(row ?? { data: null, error: null });
+      },
     };
     return builder;
   }) as unknown as typeof supabase.from);
@@ -76,13 +81,23 @@ describe("getGuildLanguage", () => {
   it("prefers the tournament language over the server language", async () => {
     mockTables({
       tournaments: { data: { language: "en" }, error: null },
-      server_settings: { data: { language: "fr" }, error: null },
+      organizations: { data: { id: "org-1", slug: "org-1", language: "fr" }, error: null },
+      organization_integrations: {
+        data: { organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true },
+        error: null,
+      },
     });
     expect(await getGuildLanguage("guild-1", "tourney-1")).toBe("en");
   });
 
   it("falls back to the server language when the tournament is unknown", async () => {
-    mockTables({ server_settings: { data: { language: "en" }, error: null } });
+    mockTables({
+      organizations: { data: { id: "org-1", slug: "org-1", language: "en" }, error: null },
+      organization_integrations: {
+        data: { organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true },
+        error: null,
+      },
+    });
     expect(await getGuildLanguage("guild-1", "missing-tourney")).toBe("en");
     expect(logger.warn).not.toHaveBeenCalled();
   });
@@ -90,7 +105,7 @@ describe("getGuildLanguage", () => {
   it("I18N-05: logs a warning instead of silently swallowing a database failure", async () => {
     mockTables({
       tournaments: { data: null, error: { code: "08006", message: "connection failure" } },
-      server_settings: { data: null, error: { code: "08006", message: "connection failure" } },
+      organizations: { data: null, error: { code: "08006", message: "connection failure" } },
     });
     expect(await getGuildLanguage("guild-1", "tourney-1")).toBe("fr");
     expect(logger.warn).toHaveBeenCalledTimes(2);

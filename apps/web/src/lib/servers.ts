@@ -1,5 +1,5 @@
 import { cache } from "react";
-import { GuildDirectoryReasonSchema, type GuildDirectoryReason, type ServerSettings } from "@hub/shared";
+import { GuildDirectoryReasonSchema, type GuildDirectoryReason } from "@hub/shared";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { splitServers, type GuildSummary, type ManageScope, type ManageState, type SetupFields } from "@/lib/accessRules";
 import type { Viewer } from "@/lib/viewer";
@@ -9,29 +9,24 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
   const ids = viewer.guilds.map((g) => g.id);
 
   // 1. Lecture du modèle RFC 0001 (organizations, organization_members, organization_integrations, integration_access_grants)
-  const [orgMembersRes, staffRes, discordIntsRes, grantsRes, settingsRes, adminRes] = await Promise.all([
+  const [orgMembersRes, staffRes, discordIntsRes, grantsRes] = await Promise.all([
     supabaseAdmin.from("organization_members").select("organization_id, role").eq("user_id", viewer.discordId),
     supabaseAdmin.from("tournament_staff").select("tournament_id, role, tournaments!inner(organization_id, guild_id, status)").eq("user_id", viewer.discordId),
     ids.length > 0
       ? supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("external_id", ids)
       : Promise.resolve({ data: [], error: null }),
     supabaseAdmin.from("integration_access_grants").select("organization_id, reason").eq("user_id", viewer.discordId),
-    ids.length > 0
-      ? supabaseAdmin.from("server_settings").select("*").in("guild_id", ids)
-      : Promise.resolve({ data: [], error: null }),
-    supabaseAdmin.from("guild_admins").select("guild_id, reason").eq("discord_id", viewer.discordId),
   ]);
 
   const settings = new Map<string, SetupFields & { bot_present: boolean }>();
-  if (!settingsRes.error && settingsRes.data) {
-    for (const s of settingsRes.data as ServerSettings[]) {
-      settings.set(s.guild_id, s);
-    }
-  }
+  const orgIdToGuildId = new Map<string, string>();
 
   for (const row of (discordIntsRes.data ?? []) as Record<string, unknown>[]) {
     const extId = typeof row.external_id === "string" ? row.external_id : null;
     if (!extId) continue;
+    if (typeof row.organization_id === "string") {
+      orgIdToGuildId.set(row.organization_id, extId);
+    }
     const cfg = (typeof row.config === "object" && row.config !== null ? row.config : {}) as Record<string, unknown>;
     const enabled = Boolean(row.enabled);
     settings.set(extId, {
@@ -45,10 +40,32 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
   }
 
   const directory = new Map<string, GuildDirectoryReason>();
-  if (!adminRes.error && adminRes.data) {
-    for (const row of adminRes.data) {
+  if (!grantsRes.error && grantsRes.data) {
+    for (const row of grantsRes.data as { organization_id?: string; reason?: string }[]) {
+      const orgId = typeof row.organization_id === "string" ? row.organization_id : null;
+      if (!orgId) continue;
+      const guildId = orgIdToGuildId.get(orgId);
+      if (!guildId) continue;
       const reason = GuildDirectoryReasonSchema.safeParse(row.reason);
-      if (reason.success && typeof row.guild_id === "string") directory.set(row.guild_id, reason.data);
+      if (reason.success) {
+        const existing = directory.get(guildId);
+        if (!existing || (existing === "TOURNAMENT_TO_ROLE" && reason.data !== "TOURNAMENT_TO_ROLE")) {
+          directory.set(guildId, reason.data);
+        }
+      }
+    }
+  }
+
+  if (!orgMembersRes.error && orgMembersRes.data) {
+    for (const m of orgMembersRes.data as { organization_id?: string; role?: string }[]) {
+      if (typeof m.organization_id === "string") {
+        const guildId = orgIdToGuildId.get(m.organization_id);
+        if (guildId && !directory.has(guildId)) {
+          if (m.role === "OWNER") directory.set(guildId, "SERVER_OWNER");
+          else if (m.role === "ADMIN") directory.set(guildId, "ADMINISTRATOR");
+          else if (m.role === "TO") directory.set(guildId, "TO_ROLE");
+        }
+      }
     }
   }
 

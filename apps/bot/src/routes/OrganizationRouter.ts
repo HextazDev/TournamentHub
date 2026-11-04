@@ -45,7 +45,12 @@ async function resolveCallerOrgAccess(req: Request, orgIdentifier: string) {
   const org = await resolveOrganization(orgIdentifier);
   if (!org) return { ok: false as const, status: 404, code: "NO_RIGHTS", error: "Organization not found" };
 
-  if (req.adminCheck && (req.adminCheck.guildId === org.id || req.adminCheck.guildId === org.slug)) {
+  if (
+    req.adminCheck &&
+    (req.adminCheck.guildId === org.id ||
+      req.adminCheck.guildId === org.slug ||
+      req.adminCheck.guildId === org.discordGuildId)
+  ) {
     return { ok: true as const, callerId, org, access: req.adminCheck.access };
   }
 

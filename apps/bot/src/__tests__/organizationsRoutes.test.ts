@@ -213,4 +213,23 @@ describe("SEC-26 / SEC-28 / SEC-29: Gestion des intégrations et secrets", () =>
       },
     });
   });
+
+  it("PERF-02: réutilise le cache req.adminCheck lorsque req.adminCheck.guildId correspond au discordGuildId de l'organisation", async () => {
+    const out = await callRoute(organizationRouter, {
+      method: "GET",
+      path: `/${ORG_1}`,
+      adminCheck: {
+        discordId: "u-not-in-members",
+        guildId: "guild-1",
+        access: { level: "SERVER", reason: "SERVER_OWNER" },
+      },
+      headers: { "x-discord-user-id": "u-not-in-members" },
+    });
+
+    expect(out.status).toBe(200);
+    expect(out.body).toMatchObject({
+      id: ORG_1,
+      slug: "splatoon-fr",
+    });
+  });
 });

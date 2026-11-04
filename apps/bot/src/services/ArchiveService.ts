@@ -1,6 +1,7 @@
 import { Client, TextChannel } from "discord.js";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
+import { resolveOrganization } from "../utils/tenant";
 
 const BATCH_SIZE = 5;
 const DELAY_BETWEEN_BATCHES_MS = 100;
@@ -62,12 +63,12 @@ export class ArchiveService {
       }[];
       const activeTournamentIds = activeTournaments.map((t) => t.id);
 
-      // Fetch server settings for fallback role/channel
-      const { data: settings } = await supabase
-        .from("server_settings")
-        .select("captain_role_id, checkin_channel_id")
-        .eq("guild_id", guildId)
-        .single();
+      // Fetch organization Discord settings for fallback role/channel
+      const org = await resolveOrganization(guildId);
+      const serverCaptainRoleId =
+        typeof org?.discordConfig?.captain_role_id === "string" ? org.discordConfig.captain_role_id : null;
+      const serverCheckinChannelId =
+        typeof org?.discordConfig?.checkin_channel_id === "string" ? org.discordConfig.checkin_channel_id : null;
 
       // Collect active captains (who must keep their role)
       const activeCaptainDiscordIds = new Set<string>();
@@ -94,7 +95,7 @@ export class ArchiveService {
       // Collect captain roles to clean from archived tournaments
       const captainRolesToClean = new Set<string>();
       for (const t of archivedTournaments) {
-        const roleId = t.discord_captain_role_id || settings?.captain_role_id;
+        const roleId = t.discord_captain_role_id || serverCaptainRoleId;
         if (roleId) {
           captainRolesToClean.add(roleId);
         }
@@ -126,14 +127,14 @@ export class ArchiveService {
       // Collect active checkin channels (must NOT be locked)
       const activeCheckinChannels = new Set<string>();
       for (const t of activeTournaments) {
-        const chanId = t.discord_checkin_channel_id || settings?.checkin_channel_id;
+        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
         if (chanId) activeCheckinChannels.add(chanId);
       }
 
       // Collect archived checkin channels that can be locked
       const checkinChannelsToLock = new Set<string>();
       for (const t of archivedTournaments) {
-        const chanId = t.discord_checkin_channel_id || settings?.checkin_channel_id;
+        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
         if (chanId && !activeCheckinChannels.has(chanId)) {
           checkinChannelsToLock.add(chanId);
         }

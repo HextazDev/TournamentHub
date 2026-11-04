@@ -180,7 +180,7 @@ async function computeOrganizationAccess(
 }
 
 async function computeAccess(client: DiscordClientLike, guildIdOrOrg: string, discordId: string): Promise<MemberAccessDecision> {
-  const org = await resolveOrganization(guildIdOrOrg);
+  const org = await resolveOrganization(guildIdOrOrg).catch(() => null);
   if (org) {
     return computeOrganizationAccess(client, org, discordId);
   }

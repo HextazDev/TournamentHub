@@ -4,7 +4,15 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 
 function resolveKey(rawKey?: string): Buffer {
-  const source = rawKey ?? process.env.INTEGRATION_ENCRYPTION_KEY ?? process.env.BOT_API_SECRET ?? "dev-integration-key";
+  const configured = rawKey ?? process.env.INTEGRATION_ENCRYPTION_KEY ?? process.env.BOT_API_SECRET;
+  if (!configured) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "SEC-01: Aucune clé de chiffrement valide configurée en production (INTEGRATION_ENCRYPTION_KEY ou BOT_API_SECRET requis)"
+      );
+    }
+  }
+  const source = configured ?? "dev-integration-key";
   if (/^[0-9a-fA-F]{64}$/.test(source)) {
     return Buffer.from(source, "hex");
   }

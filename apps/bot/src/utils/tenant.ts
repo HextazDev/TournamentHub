@@ -24,7 +24,8 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
   let orgRow: Record<string, unknown> | null = null;
 
   if (UUID_REGEX.test(identifier)) {
-    const { data } = await supabase.from("organizations").select("*").eq("id", identifier).maybeSingle();
+    const { data, error } = await supabase.from("organizations").select("*").eq("id", identifier).maybeSingle();
+    if (error && error.code !== "PGRST116") throw error;
     const candidate = data as Record<string, unknown> | null;
     if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
       orgRow = candidate;
@@ -32,7 +33,8 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
   }
 
   if (!orgRow) {
-    const { data } = await supabase.from("organizations").select("*").eq("slug", identifier).maybeSingle();
+    const { data, error } = await supabase.from("organizations").select("*").eq("slug", identifier).maybeSingle();
+    if (error && error.code !== "PGRST116") throw error;
     const candidate = data as Record<string, unknown> | null;
     if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
       orgRow = candidate;
@@ -40,15 +42,17 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
   }
 
   if (!orgRow) {
-    const { data: intData } = await supabase
+    const { data: intData, error: intError } = await supabase
       .from("organization_integrations")
       .select("*")
       .eq("provider", "DISCORD")
       .eq("external_id", identifier)
       .maybeSingle();
+    if (intError && intError.code !== "PGRST116") throw intError;
     const intRow = intData as Record<string, unknown> | null;
     if (intRow && typeof intRow.organization_id === "string") {
-      const { data } = await supabase.from("organizations").select("*").eq("id", intRow.organization_id).maybeSingle();
+      const { data, error } = await supabase.from("organizations").select("*").eq("id", intRow.organization_id).maybeSingle();
+      if (error && error.code !== "PGRST116") throw error;
       const candidate = data as Record<string, unknown> | null;
       if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
         orgRow = candidate;

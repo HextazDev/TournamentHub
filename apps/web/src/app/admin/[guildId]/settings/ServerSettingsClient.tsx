@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { botApiFetch } from '@/utils/api';
-import { supabase } from "@/lib/supabase";
 import { Save, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
@@ -62,24 +61,6 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           }
         } catch (orgErr) {
           console.error(orgErr);
-        }
-
-        const { data: dbSettings, error: dbError } = await supabase
-          .from("server_settings")
-          .select("*")
-          .eq("guild_id", guildId)
-          .single();
-
-        if (dbSettings && !dbError) {
-          setSettings({
-            captain_role_id: dbSettings.captain_role_id || "",
-            to_role_id: dbSettings.to_role_id || "",
-            checkin_channel_id: dbSettings.checkin_channel_id || "",
-            announcement_channel_id: dbSettings.announcement_channel_id || "",
-            registration_channel_id: dbSettings.registration_channel_id || "",
-            language: dbSettings.language || "fr",
-            invite_url: dbSettings.invite_url || "",
-          });
         }
 
         try {
@@ -275,9 +256,10 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium text-slate-400">{t("adminSettings.captainRole")}</label>
+              <label htmlFor="captain_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.captainRole")}</label>
               {discordRoles.length > 0 ? (
                 <select
+                  id="captain_role_id"
                   name="captain_role_id"
                   value={settings.captain_role_id}
                   onChange={handleChange}
@@ -290,6 +272,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 </select>
               ) : (
                 <input
+                  id="captain_role_id"
                   type="text"
                   name="captain_role_id"
                   value={settings.captain_role_id}
@@ -301,9 +284,10 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             </div>
 
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium text-slate-400">{t("adminSettings.toRole")}</label>
+              <label htmlFor="to_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.toRole")}</label>
               {discordRoles.length > 0 ? (
                 <select
+                  id="to_role_id"
                   name="to_role_id"
                   value={settings.to_role_id}
                   onChange={handleChange}
@@ -316,6 +300,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 </select>
               ) : (
                 <input
+                  id="to_role_id"
                   type="text"
                   name="to_role_id"
                   value={settings.to_role_id}
@@ -334,10 +319,11 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium text-slate-400">{t("adminSettings.checkinChannel")}</label>
+              <label htmlFor="checkin_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.checkinChannel")}</label>
               {discordChannels.length > 0 ? (
                 <>
                   <select
+                    id="checkin_channel_id"
                     name="checkin_channel_id"
                     value={settings.checkin_channel_id}
                     onChange={handleChange}
@@ -364,6 +350,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 </>
               ) : (
                 <input
+                  id="checkin_channel_id"
                   type="text"
                   name="checkin_channel_id"
                   value={settings.checkin_channel_id}
@@ -375,10 +362,11 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             </div>
 
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium text-slate-400">{t("adminSettings.announcementChannel")}</label>
+              <label htmlFor="announcement_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.announcementChannel")}</label>
               {discordChannels.length > 0 ? (
                 <>
                   <select
+                    id="announcement_channel_id"
                     name="announcement_channel_id"
                     value={settings.announcement_channel_id}
                     onChange={handleChange}
@@ -405,6 +393,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 </>
               ) : (
                 <input
+                  id="announcement_channel_id"
                   type="text"
                   name="announcement_channel_id"
                   value={settings.announcement_channel_id}
@@ -416,10 +405,11 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             </div>
 
             <div className="flex flex-col gap-2 md:col-span-2">
-              <label className="text-sm font-medium text-slate-400">{t("adminSettings.registrationChannel")}</label>
+              <label htmlFor="registration_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.registrationChannel")}</label>
               {discordChannels.length > 0 ? (
                 <>
                   <select
+                    id="registration_channel_id"
                     name="registration_channel_id"
                     value={settings.registration_channel_id}
                     onChange={handleChange}
@@ -446,6 +436,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 </>
               ) : (
                 <input
+                  id="registration_channel_id"
                   type="text"
                   name="registration_channel_id"
                   value={settings.registration_channel_id}
@@ -482,7 +473,9 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           <p className="text-xs text-slate-400">{t("adminSettings.botLanguageDesc")}</p>
           <div className="max-w-xs">
             <select
+              id="server_language"
               name="language"
+              aria-label={t("adminSettings.botLanguage")}
               value={settings.language}
               onChange={handleChange}
               className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"

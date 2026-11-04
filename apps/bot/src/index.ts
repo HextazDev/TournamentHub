@@ -201,7 +201,7 @@ const bootstrap = async () => {
       await GuildRegistryService.syncGuildAdmins(role.guild);
     });
 
-    // Cycle de vie des serveurs : la ligne server_settings rend le serveur visible sur le web (DISC-07).
+    // Cycle de vie des serveurs : enregistrement dans organizations et organization_integrations (DISC-07).
     client.on("guildCreate", async (guild) => {
       if (await GuildRegistryService.registerGuild(guild)) {
         await GuildRegistryService.syncGuildAdmins(guild);

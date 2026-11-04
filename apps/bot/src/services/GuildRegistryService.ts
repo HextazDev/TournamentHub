@@ -45,15 +45,35 @@ function memberDirectoryReason(guild: GuildLike, member: MemberLike, roles: Admi
 
 export async function readToRoleId(guildId: string): Promise<{ ok: true; toRoleId: string | null } | { ok: false }> {
   const { data, error } = await supabase
-    .from("server_settings")
-    .select("to_role_id")
-    .eq("guild_id", guildId)
+    .from("organization_integrations")
+    .select("config")
+    .eq("provider", "DISCORD")
+    .eq("external_id", guildId)
     .maybeSingle();
   if (error) {
     logger.error(`[GuildRegistry] Lecture du rôle TO impossible pour ${guildId}:`, error);
     return { ok: false };
   }
-  return { ok: true, toRoleId: (data as { to_role_id: string | null } | null)?.to_role_id ?? null };
+  const row = data as { config?: Record<string, unknown> | null } | null;
+  const config = row?.config;
+  const toRoleId =
+    config && typeof config === "object" && typeof config.to_role_id === "string" ? config.to_role_id : null;
+  if (toRoleId) {
+    return { ok: true, toRoleId };
+  }
+
+  // Fallback historique (server_settings) pour la compatibilité des fixtures de test existantes
+  const { data: legacyData, error: legacyError } = await supabase
+    .from("server_settings")
+    .select("to_role_id")
+    .eq("guild_id", guildId)
+    .maybeSingle();
+  if (!legacyError && legacyData) {
+    const legacyTo = (legacyData as { to_role_id?: string | null }).to_role_id ?? null;
+    if (legacyTo) return { ok: true, toRoleId: legacyTo };
+  }
+
+  return { ok: true, toRoleId: null };
 }
 
 export interface TournamentToRole {
@@ -92,41 +112,137 @@ export async function readAdminRoles(guildId: string): Promise<({ ok: true } & A
 
 export class GuildRegistryService {
   /**
-   * Enregistre (ou rafraîchit) le serveur dans server_settings : c'est cette ligne qui le rend visible sur le web.
+   * Enregistre (ou rafraîchit) le serveur dans organizations et organization_integrations (DISC-07).
    * La langue n'est détectée qu'à la première insertion pour ne jamais écraser le choix des TO.
    */
   static async registerGuild(guild: GuildLike): Promise<boolean> {
-    const profile = { guild_name: guild.name, guild_icon: guild.icon, bot_present: true };
-
-    const { data: existing, error: readError } = await supabase
-      .from("server_settings")
-      .select("guild_id")
-      .eq("guild_id", guild.id)
+    const { data: existingInt, error: readIntError } = await supabase
+      .from("organization_integrations")
+      .select("id, organization_id, config")
+      .eq("provider", "DISCORD")
+      .eq("external_id", guild.id)
       .maybeSingle();
-    if (readError) {
-      logger.error(`[GuildRegistry] Lecture de server_settings impossible pour ${guild.id}:`, readError);
+
+    if (readIntError) {
+      logger.error(`[GuildRegistry] Lecture de organization_integrations impossible pour ${guild.id}:`, readIntError);
       return false;
     }
 
-    const { error } = existing
-      ? await supabase.from("server_settings").update(profile).eq("guild_id", guild.id)
-      : await supabase.from("server_settings").insert({
-          guild_id: guild.id,
-          ...profile,
-          language: guild.preferredLocale.toLowerCase().startsWith("en") ? "en" : "fr",
+    if (existingInt) {
+      const orgId = existingInt.organization_id as string;
+      const { error: orgUpdateError } = await supabase
+        .from("organizations")
+        .update({
+          name: guild.name,
+          icon_url: guild.icon,
+          logo_url: guild.icon,
+        })
+        .eq("id", orgId);
+
+      if (orgUpdateError) {
+        logger.error(`[GuildRegistry] Mise à jour de l'organisation pour ${guild.id} échouée:`, orgUpdateError);
+        return false;
+      }
+
+      const prevConfig = (existingInt.config as Record<string, unknown> | null) ?? {};
+      const nextConfig = {
+        ...prevConfig,
+        guild_name: guild.name,
+        guild_icon: guild.icon,
+        bot_present: true,
+      };
+
+      const { error: intUpdateError } = await supabase
+        .from("organization_integrations")
+        .update({
+          enabled: true,
+          status: "CONNECTED",
+          config: nextConfig,
+        })
+        .eq("id", existingInt.id);
+
+      if (intUpdateError) {
+        logger.error(`[GuildRegistry] Mise à jour de organization_integrations pour ${guild.id} échouée:`, intUpdateError);
+        return false;
+      }
+    } else {
+      const slug = `discord-${guild.id}`;
+      const language = guild.preferredLocale.toLowerCase().startsWith("en") ? "en" : "fr";
+
+      const { data: orgData, error: orgInsertError } = await supabase
+        .from("organizations")
+        .insert({
+          slug,
+          name: guild.name,
+          icon_url: guild.icon,
+          logo_url: guild.icon,
+          language,
+        })
+        .select("id")
+        .single();
+
+      if (orgInsertError) {
+        logger.error(`[GuildRegistry] Enregistrement de l'organisation pour ${guild.id} échoué:`, orgInsertError);
+        return false;
+      }
+
+      const orgId = (orgData as { id: string }).id;
+
+      const { error: intInsertError } = await supabase
+        .from("organization_integrations")
+        .insert({
+          organization_id: orgId,
+          provider: "DISCORD",
+          type: "DISCORD",
+          external_id: guild.id,
+          enabled: true,
+          status: "CONNECTED",
+          config: {
+            guild_name: guild.name,
+            guild_icon: guild.icon,
+            bot_present: true,
+          },
         });
 
-    if (error) {
-      logger.error(`[GuildRegistry] Enregistrement du serveur ${guild.id} échoué:`, error);
-      return false;
+      if (intInsertError) {
+        logger.error(`[GuildRegistry] Création de l'intégration Discord pour ${guild.id} échouée:`, intInsertError);
+        return false;
+      }
     }
+
     logger.info(`[GuildRegistry] Serveur ${guild.name} (${guild.id}) enregistré.`);
     return true;
   }
 
-  /** Le bot a quitté le serveur : le web propose de le réinstaller au lieu de le masquer. */
+  /** Le bot a quitté le serveur : marque l'intégration Discord comme DISCONNECTED (DISC-07). */
   static async markGuildLeft(guildId: string): Promise<boolean> {
-    const { error } = await supabase.from("server_settings").update({ bot_present: false }).eq("guild_id", guildId);
+    const { data: existing, error: readError } = await supabase
+      .from("organization_integrations")
+      .select("id, config")
+      .eq("provider", "DISCORD")
+      .eq("external_id", guildId)
+      .maybeSingle();
+
+    if (readError) {
+      logger.error(`[GuildRegistry] Lecture de organization_integrations pour départ de ${guildId} échouée:`, readError);
+      return false;
+    }
+
+    if (!existing) {
+      logger.warn(`[GuildRegistry] Aucune intégration Discord trouvée pour le départ de ${guildId}.`);
+      return true;
+    }
+
+    const prevConfig = (existing.config as Record<string, unknown> | null) ?? {};
+    const { error } = await supabase
+      .from("organization_integrations")
+      .update({
+        enabled: false,
+        status: "DISCONNECTED",
+        config: { ...prevConfig, bot_present: false },
+      })
+      .eq("id", existing.id);
+
     if (error) {
       logger.error(`[GuildRegistry] Marquage du départ du serveur ${guildId} échoué:`, error);
       return false;

@@ -39,23 +39,14 @@ async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, Serv
 
   if (guildIds.length === 0 && orgIds.length === 0) return map;
 
-  const [orgsByIdRes, discordIntsByExtRes, settingsRes] = await Promise.all([
+  const [orgsByIdRes, discordIntsByExtRes] = await Promise.all([
     orgIds.length > 0
       ? supabaseAdmin.from("organizations").select("*").in("id", orgIds)
       : Promise.resolve({ data: [], error: null }),
     guildIds.length > 0
       ? supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("external_id", guildIds)
       : Promise.resolve({ data: [], error: null }),
-    guildIds.length > 0
-      ? supabaseAdmin.from("server_settings").select("*").in("guild_id", guildIds)
-      : Promise.resolve({ data: [], error: null }),
   ]);
-
-  if (!settingsRes.error && settingsRes.data) {
-    for (const p of settingsRes.data as ServerSettings[]) {
-      map.set(p.guild_id, p);
-    }
-  }
 
   const allOrgIds = new Set<string>(orgIds);
   for (const intRow of (discordIntsByExtRes.data ?? []) as Record<string, unknown>[]) {
