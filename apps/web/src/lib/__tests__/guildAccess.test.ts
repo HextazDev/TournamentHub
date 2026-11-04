@@ -51,6 +51,11 @@ describe("checkGuildAdminAccess (SEC-11 / SEC-17)", () => {
   describe("fermé par défaut : toute incertitude donne CHECK_FAILED, jamais un accès", () => {
     const denied = { allowed: false, reason: "CHECK_FAILED" };
 
+    it("SEC-24 : le motif d'annuaire TOURNAMENT_TO_ROLE n'ouvre jamais le niveau SERVER", async () => {
+      const fetchImpl = botReplies(200, { hasPermission: true, access: { level: "SERVER", reason: "TOURNAMENT_TO_ROLE" } });
+      expect(await checkGuildAdminAccess({ ...base, fetchImpl })).toEqual(denied);
+    });
+
     it("secret absent", async () => {
       const fetchImpl = botReplies(200, { hasPermission: true, access: { level: "SERVER", reason: "SERVER_OWNER" } });
       expect(await checkGuildAdminAccess({ ...base, botApiSecret: undefined, fetchImpl })).toEqual(denied);

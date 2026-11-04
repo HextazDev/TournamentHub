@@ -1,5 +1,5 @@
 import { PermissionFlagsBits } from "discord.js";
-import type { GuildAdminReason } from "@hub/shared";
+import type { GuildDirectoryReason } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { resolveAdminReason } from "../utils/adminAccess";
@@ -22,13 +22,25 @@ export interface GuildLike {
   members: { fetch(): Promise<Map<string, MemberLike> | { values(): IterableIterator<MemberLike> }> };
 }
 
-function memberAdminReason(guild: GuildLike, member: MemberLike, toRoleId: string | null): GuildAdminReason | null {
-  return resolveAdminReason({
+/** Rôles qui donnent accès au panel : rôle TO du serveur et rôles TO des tournois non archivés. */
+export interface AdminRoles {
+  toRoleId: string | null;
+  tournamentRoles: TournamentToRole[];
+}
+
+/**
+ * Motif d'annuaire d'un membre (DISC-08) : motif serveur d'abord (même règle que resolveMemberAccess),
+ * sinon TOURNAMENT_TO_ROLE s'il porte le rôle TO d'un tournoi non archivé.
+ */
+function memberDirectoryReason(guild: GuildLike, member: MemberLike, roles: AdminRoles): GuildDirectoryReason | null {
+  const serverReason = resolveAdminReason({
     isOwner: guild.ownerId === member.id,
     hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
     hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
-    hasToRole: !!toRoleId && member.roles.cache.has(toRoleId),
+    hasToRole: !!roles.toRoleId && member.roles.cache.has(roles.toRoleId),
   });
+  if (serverReason) return serverReason;
+  return roles.tournamentRoles.some((role) => member.roles.cache.has(role.roleId)) ? "TOURNAMENT_TO_ROLE" : null;
 }
 
 export async function readToRoleId(guildId: string): Promise<{ ok: true; toRoleId: string | null } | { ok: false }> {
@@ -69,6 +81,13 @@ export async function readTournamentToRoles(guildId: string): Promise<{ ok: true
     ok: true,
     roles: rows.flatMap((row) => (row.discord_to_role_id ? [{ tournamentId: row.id, roleId: row.discord_to_role_id }] : [])),
   };
+}
+
+/** Lecture groupée des rôles d'accès ; `ok: false` si l'une des lectures échoue (rien n'est alors purgé). */
+export async function readAdminRoles(guildId: string): Promise<({ ok: true } & AdminRoles) | { ok: false }> {
+  const [settings, tournaments] = await Promise.all([readToRoleId(guildId), readTournamentToRoles(guildId)]);
+  if (!settings.ok || !tournaments.ok) return { ok: false };
+  return { ok: true, toRoleId: settings.toRoleId, tournamentRoles: tournaments.roles };
 }
 
 export class GuildRegistryService {
@@ -117,8 +136,8 @@ export class GuildRegistryService {
   }
 
   /** Recalcule les droits d'un membre (changement de rôles, de permissions ou départ). */
-  static async syncMemberAdmin(guild: GuildLike, member: MemberLike, toRoleId: string | null): Promise<boolean> {
-    const reason = memberAdminReason(guild, member, toRoleId);
+  static async syncMemberAdmin(guild: GuildLike, member: MemberLike, roles: AdminRoles): Promise<boolean> {
+    const reason = memberDirectoryReason(guild, member, roles);
     const { error } = reason
       ? await supabase
           .from("guild_admins")
@@ -144,18 +163,19 @@ export class GuildRegistryService {
   }
 
   /**
-   * Reconstruit guild_admins pour tout le serveur (démarrage du bot, changement du rôle TO).
+   * Reconstruit guild_admins pour tout le serveur (démarrage du bot, changement du rôle TO du serveur ou d'un
+   * tournoi, archivage, rôle supprimé).
    * Les admins qui ont perdu leurs droits sont purgés ; rien n'est supprimé si la lecture initiale échoue.
    */
   static async syncGuildAdmins(guild: GuildLike): Promise<boolean> {
-    const settings = await readToRoleId(guild.id);
-    if (!settings.ok) return false;
+    const roles = await readAdminRoles(guild.id);
+    if (!roles.ok) return false;
 
     const members = await guild.members.fetch();
-    const records: { guild_id: string; discord_id: string; reason: GuildAdminReason }[] = [];
+    const records: { guild_id: string; discord_id: string; reason: GuildDirectoryReason }[] = [];
     for (const member of members.values()) {
       if (member.user.bot) continue;
-      const reason = memberAdminReason(guild, member, settings.toRoleId);
+      const reason = memberDirectoryReason(guild, member, roles);
       if (reason) records.push({ guild_id: guild.id, discord_id: member.id, reason });
     }
 

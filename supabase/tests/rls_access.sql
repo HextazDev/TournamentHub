@@ -19,6 +19,21 @@ INSERT INTO matches (phase_id, team1_id) VALUES
   ('00000000-0000-0000-0000-0000000001b2', '00000000-0000-0000-0000-0000000002b2');
 INSERT INTO server_settings (guild_id) VALUES ('g-public');
 INSERT INTO guild_admins (guild_id, discord_id, reason) VALUES ('g-public', '1', 'TO_ROLE');
+-- SEC-24 : le motif d'annuaire TOURNAMENT_TO_ROLE est accepté pour service_role.
+INSERT INTO guild_admins (guild_id, discord_id, reason) VALUES ('g-public', '2', 'TOURNAMENT_TO_ROLE');
+DO $$
+BEGIN
+  INSERT INTO guild_admins (guild_id, discord_id, reason) VALUES ('g-public', '3', 'UNKNOWN_REASON');
+  RAISE EXCEPTION 'SEC-24: motif guild_admins inconnu accepté';
+EXCEPTION WHEN check_violation THEN NULL;
+END $$;
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.guild_admins'::regclass AND contype = 'c') <> 1
+     OR NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'public.guild_admins'::regclass AND conname = 'guild_admins_reason_check') THEN
+    RAISE EXCEPTION 'SEC-24: contrainte guild_admins_reason_check absente ou dupliquée';
+  END IF;
+END $$;
 
 SET LOCAL ROLE anon;
 
@@ -69,6 +84,12 @@ DO $$
 BEGIN
   INSERT INTO guild_admins (guild_id, discord_id, reason) VALUES ('g-public', '9', 'TO_ROLE');
   RAISE EXCEPTION 'SEC-12: insertion dans guild_admins autorisée';
+EXCEPTION WHEN insufficient_privilege THEN NULL;
+END $$;
+DO $$
+BEGIN
+  INSERT INTO guild_admins (guild_id, discord_id, reason) VALUES ('g-public', '8', 'TOURNAMENT_TO_ROLE');
+  RAISE EXCEPTION 'SEC-24: insertion TOURNAMENT_TO_ROLE via la clé publique autorisée';
 EXCEPTION WHEN insufficient_privilege THEN NULL;
 END $$;
 DO $$

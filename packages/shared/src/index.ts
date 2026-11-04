@@ -132,6 +132,14 @@ export const GuildAdminReasonSchema = z.enum(["SERVER_OWNER", "ADMINISTRATOR", "
 export type GuildAdminReason = z.infer<typeof GuildAdminReasonSchema>;
 
 /**
+ * Motif d'une ligne de l'annuaire guild_admins (serveurs affichés dans le hub). TOURNAMENT_TO_ROLE : le membre ne
+ * porte que le rôle TO d'un tournoi non archivé. Ce motif n'est jamais un motif d'accès SERVER (SEC-24) :
+ * GuildAccessSchema le refuse, et seul le bot décide de l'accès (SEC-17).
+ */
+export const GuildDirectoryReasonSchema = z.enum([...GuildAdminReasonSchema.options, "TOURNAMENT_TO_ROLE"]);
+export type GuildDirectoryReason = z.infer<typeof GuildDirectoryReasonSchema>;
+
+/**
  * Accès d'un membre au back-office d'un serveur (SEC-11) :
  * - SERVER : propriétaire, Administrateur, Gérer le serveur ou rôle TO du serveur (server_settings.to_role_id) ;
  * - TOURNAMENT : rôle TO propre à certains tournois (tournaments.discord_to_role_id), limité à ces tournois.

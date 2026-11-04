@@ -90,6 +90,8 @@ export const fr = {
     actionInstall: "Installer le bot",
     actionSetup: "Terminer la configuration",
     actionManage: "Gérer",
+    actionMyTournaments: "Mes tournois",
+    scopeTournament: "TO de tournoi",
     installHint: "Après l'installation, rechargez cette page : le serveur passera à l'étape suivante.",
   },
   discover: {

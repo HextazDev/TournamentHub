@@ -1,5 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { canPerform, GUILD_ACTIONS, AccessDeniedCodeSchema, type GuildAccess, type GuildAction } from "@hub/shared";
+import {
+  canPerform,
+  GUILD_ACTIONS,
+  AccessDeniedCodeSchema,
+  GuildAccessSchema,
+  GuildDirectoryReasonSchema,
+  type GuildAccess,
+  type GuildAction,
+} from "@hub/shared";
 
 const server = (reason: "SERVER_OWNER" | "ADMINISTRATOR" | "MANAGE_GUILD" | "TO_ROLE"): GuildAccess => ({
   level: "SERVER",
@@ -70,5 +78,13 @@ describe("canPerform (SEC-15 / SEC-16)", () => {
       "SERVER_LEVEL_REQUIRED",
       "TOURNAMENT_ROLES_RESERVED",
     ]);
+  });
+});
+
+describe("SEC-24: motif d'annuaire TOURNAMENT_TO_ROLE", () => {
+  it("est un motif d'annuaire (guild_admins), jamais un motif d'accès SERVER", () => {
+    expect(GuildDirectoryReasonSchema.parse("TOURNAMENT_TO_ROLE")).toBe("TOURNAMENT_TO_ROLE");
+    expect(GuildDirectoryReasonSchema.options).toEqual(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE", "TOURNAMENT_TO_ROLE"]);
+    expect(GuildAccessSchema.safeParse({ level: "SERVER", reason: "TOURNAMENT_TO_ROLE" }).success).toBe(false);
   });
 });
