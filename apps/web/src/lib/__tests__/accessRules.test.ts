@@ -6,6 +6,7 @@ import {
   discordListQuery,
   managedTournamentIds,
   panelCapabilities,
+  panelEntryPath,
   serverSetupChecklist,
   splitServers,
   tournamentNextStep,
@@ -69,7 +70,7 @@ describe("splitServers", () => {
       ["with-bot", { ...complete, bot_present: true }],
       ["bot-left", { ...complete, bot_present: false }],
     ]);
-    const { memberServers } = splitServers([g("with-bot"), g("bot-left"), g("unknown")], settings, new Set());
+    const { memberServers } = splitServers([g("with-bot"), g("bot-left"), g("unknown")], settings, new Map());
     expect(memberServers.map((s) => s.id)).toEqual(["with-bot"]);
   });
 
@@ -83,7 +84,7 @@ describe("splitServers", () => {
     const { managedServers } = splitServers(
       [g("ready", "8"), g("setup", "0", true), g("left", "32"), g("no-bot", "8"), g("to-role"), g("member-only")],
       settings,
-      new Set(["to-role"]),
+      new Map([["to-role", "TO_ROLE"]]),
     );
     expect(managedServers.map((s) => [s.guild.id, s.state])).toEqual([
       ["setup", "setup"],
@@ -92,6 +93,40 @@ describe("splitServers", () => {
       ["no-bot", "install"],
       ["to-role", "install"],
     ]);
+    expect(managedServers.every((s) => s.scope === "server")).toBe(true);
+  });
+
+  it("SEC-24: un TO de tournoi voit le serveur dans le panel avec une portée limitée à ses tournois", () => {
+    const settings = new Map([
+      ["t-only", { ...complete, bot_present: true }],
+      ["both", { ...complete, bot_present: true }],
+    ]);
+    const { managedServers } = splitServers(
+      [g("t-only"), g("both", "8")],
+      settings,
+      new Map([
+        ["t-only", "TOURNAMENT_TO_ROLE"],
+        ["both", "TOURNAMENT_TO_ROLE"],
+      ]),
+    );
+    expect(managedServers.map((s) => [s.guild.id, s.scope])).toEqual([
+      ["both", "server"],
+      ["t-only", "tournament"],
+    ]);
+  });
+});
+
+describe("panelEntryPath (SEC-24)", () => {
+  it("un TO de tournoi arrive toujours sur la liste filtrée de ses tournois, jamais sur les paramètres serveur", () => {
+    for (const state of ["install", "setup", "ready"] as const) {
+      expect(panelEntryPath("g1", state, "tournament")).toBe("/admin/g1/tournaments");
+    }
+  });
+
+  it("le niveau serveur garde son parcours : configuration, puis tableau de bord", () => {
+    expect(panelEntryPath("g1", "setup", "server")).toBe("/admin/g1/settings");
+    expect(panelEntryPath("g1", "ready", "server")).toBe("/admin/g1");
+    expect(panelEntryPath("g1", "install", "server")).toBeNull();
   });
 });
 

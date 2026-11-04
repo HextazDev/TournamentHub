@@ -1,5 +1,5 @@
 // Règles d'accès et de guidage pures (sans I/O) : partagées par les pages serveur et testées unitairement.
-import { canPerform, type GuildAccess } from "@hub/shared";
+import { canPerform, type GuildAccess, type GuildDirectoryReason } from "@hub/shared";
 
 const ADMINISTRATOR = BigInt(0x8);
 const MANAGE_GUILD = BigInt(0x20);
@@ -74,24 +74,30 @@ export type ManageState = "install" | "setup" | "ready";
 
 const MANAGE_ORDER: Record<ManageState, number> = { setup: 0, ready: 1, install: 2 };
 
+/** Portée affichée dans le hub : tout le serveur, ou seulement les tournois dont on porte le rôle TO (SEC-24). */
+export type ManageScope = "server" | "tournament";
+
 /**
  * Sépare les serveurs Discord du visiteur en deux vues :
  * - memberServers (« Mes serveurs ») : membre + bot présent, quels que soient les droits ;
- * - managedServers (panel organisateur) : droits de gestion (OAuth ou rôle TO via guild_admins), bot présent ou non.
+ * - managedServers (panel organisateur) : droits de gestion (OAuth, ou annuaire guild_admins), bot présent ou non.
+ * L'annuaire ne fait que lister : l'accès réel reste décidé par le bot (SEC-17 / SEC-24).
  */
 export function splitServers<G extends GuildSummary>(
   guilds: G[],
   settings: ReadonlyMap<string, SetupFields & { bot_present: boolean }>,
-  adminOf: ReadonlySet<string>,
-): { memberServers: G[]; managedServers: { guild: G; state: ManageState }[] } {
+  directory: ReadonlyMap<string, GuildDirectoryReason>,
+): { memberServers: G[]; managedServers: { guild: G; state: ManageState; scope: ManageScope }[] } {
   const byName = (a: G, b: G) => a.name.localeCompare(b.name);
   const memberServers = guilds.filter((g) => settings.get(g.id)?.bot_present === true).sort(byName);
   const managedServers = guilds
-    .filter((g) => canManageFromOAuth(g) || adminOf.has(g.id))
+    .filter((g) => canManageFromOAuth(g) || directory.has(g.id))
     .map((guild) => {
       const profile = settings.get(guild.id);
       const state: ManageState = !profile?.bot_present ? "install" : isServerSetupComplete(profile) ? "ready" : "setup";
-      return { guild, state };
+      const scope: ManageScope =
+        !canManageFromOAuth(guild) && directory.get(guild.id) === "TOURNAMENT_TO_ROLE" ? "tournament" : "server";
+      return { guild, state, scope };
     })
     .sort((a, b) => MANAGE_ORDER[a.state] - MANAGE_ORDER[b.state] || byName(a.guild, b.guild));
   return { memberServers, managedServers };
@@ -164,4 +170,14 @@ export function discordListQuery(guildId: string, tournamentId?: string): string
   const params = new URLSearchParams({ guildId });
   if (tournamentId) params.set("tournamentId", tournamentId);
   return params.toString();
+}
+
+/**
+ * Entrée du panel depuis le hub. Un TO de tournoi va toujours sur la liste filtrée de ses tournois (jamais sur les
+ * paramètres serveur, qui lui sont refusés) ; `null` : pas de lien, il faut d'abord installer le bot.
+ */
+export function panelEntryPath(guildId: string, state: ManageState, scope: ManageScope): string | null {
+  if (scope === "tournament") return `/admin/${guildId}/tournaments`;
+  if (state === "install") return null;
+  return state === "setup" ? `/admin/${guildId}/settings` : `/admin/${guildId}`;
 }

@@ -6,6 +6,7 @@ import { FakeSupabase } from "./helpers/fakeSupabase";
 
 const db = vi.hoisted(() => ({ current: null as FakeSupabase | null }));
 const access = vi.hoisted(() => ({ invalidateGuildAccess: vi.fn() }));
+const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 vi.mock("../lib/supabase", () => ({
   supabase: {
     from: (table: string) => {
@@ -14,7 +15,7 @@ vi.mock("../lib/supabase", () => ({
     },
   },
 }));
-vi.mock("../utils/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+vi.mock("../utils/logger", () => ({ logger: log }));
 // L'appartenance au serveur (SEC-01) est couverte ailleurs : ici, tout appartient au même serveur.
 vi.mock("../utils/tenant", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/tenant")>()),
@@ -200,6 +201,19 @@ describe("SEC-21: portée d'un TO de tournoi sur les routes réelles", () => {
   });
 });
 
+describe("SEC-25: lancement, clôture et synchronisation visent le serveur authentifié", () => {
+  it.each([
+    ["launch", tournamentRouter, `/${T_A}/launch`, "launchTournament"],
+    ["close", tournamentRouter, `/${T_A}/close`, "closeTournament"],
+    ["sync", phaseRouter, "/phase-a/sync", "syncPhaseChannels"],
+  ] as const)("%s : un guildId du corps n'est jamais relu", async (_name, router, path, method) => {
+    const { LifecycleService } = await import("../services/LifecycleService");
+    const out = await callRoute(router, { method: "POST", path, adminCheck: serverTo, body: { guildId: { evil: true } } });
+    expect(out.status).toBe(200);
+    expect(vi.mocked(LifecycleService[method])).toHaveBeenCalledWith(expect.any(String), GUILD, undefined);
+  });
+});
+
 describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournaments/:id/settings)", () => {
   const settings = (adminCheck: AdminCheck, body: Record<string, unknown>) =>
     callRoute(tournamentRouter, { method: "PUT", path: `/${T_A}/settings`, adminCheck, body: { guildId: GUILD, ...body } });
@@ -230,6 +244,25 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     expect(out.status).toBe(200);
     expect(db.current?.tables.tournaments?.find((t) => t.id === T_A)?.discord_to_role_id).toBe("555555555555555555");
     expect(access.invalidateGuildAccess).toHaveBeenCalledWith(GUILD);
+  });
+
+  it("DISC-08: la resynchronisation de guild_admins ne retarde jamais la réponse (synchro bloquée ou en échec)", async () => {
+    const body = { guildId: GUILD, discord_to_role_id: "555555555555555555", discord_captain_role_id: CAPTAIN_A };
+    const fetchGuild = vi.fn(() => new Promise(() => undefined));
+    const hanging = await callRoute(tournamentRouter, {
+      method: "PUT", path: `/${T_A}/settings`, adminCheck: serverTo, body, locals: { discordClient: { guilds: { fetch: fetchGuild } } },
+    });
+    expect(hanging.status).toBe(200);
+    expect(fetchGuild).toHaveBeenCalledWith(GUILD);
+
+    const boom = new Error("Unknown Guild");
+    const failing = await callRoute(tournamentRouter, {
+      method: "PUT", path: `/${T_A}/settings`, adminCheck: serverTo, body: { ...body, discord_to_role_id: "666666666666666666" },
+      locals: { discordClient: { guilds: { fetch: () => Promise.reject(boom) } } },
+    });
+    expect(failing.status).toBe(200);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining(GUILD), boom);
   });
 
   it("SEC-21: le TO du tournoi ne déclenche pas l'archivage des autres tournois du serveur", async () => {

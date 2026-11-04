@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ExternalLink, ShieldCheck } from "lucide-react";
 import { getViewer, type DiscordGuildSummary } from "@/lib/viewer";
 import { loadServerOverview } from "@/lib/servers";
-import { buildBotInviteUrl, type ManageState } from "@/lib/accessRules";
+import { buildBotInviteUrl, panelEntryPath, type ManageScope, type ManageState } from "@/lib/accessRules";
 import { GuildAvatar } from "@/components/GuildAvatar";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
@@ -20,9 +20,18 @@ const STATE_LABEL: Record<ManageState, TranslationKey> = {
   ready: "adminHub.stateReady",
 };
 
-function PrimaryAction({ guild, state, locale }: { guild: DiscordGuildSummary; state: ManageState; locale: Locale }) {
+function PrimaryAction({ guild, state, scope, locale }: { guild: DiscordGuildSummary; state: ManageState; scope: ManageScope; locale: Locale }) {
   const className = "inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold transition-colors w-full sm:w-auto";
-  if (state === "install") {
+  const entry = panelEntryPath(guild.id, state, scope);
+  // SEC-24 : un TO de tournoi va directement sur ses tournois.
+  if (scope === "tournament" && entry) {
+    return (
+      <Link href={entry} className={`${className} bg-blue-600 hover:bg-blue-500 text-white`}>
+        {t(locale, "adminHub.actionMyTournaments")}
+      </Link>
+    );
+  }
+  if (!entry) {
     const clientId = process.env.DISCORD_CLIENT_ID;
     if (!clientId) return null;
     return (
@@ -33,13 +42,13 @@ function PrimaryAction({ guild, state, locale }: { guild: DiscordGuildSummary; s
   }
   if (state === "setup") {
     return (
-      <Link href={`/admin/${guild.id}/settings`} className={`${className} bg-amber-600 hover:bg-amber-500 text-white`}>
+      <Link href={entry} className={`${className} bg-amber-600 hover:bg-amber-500 text-white`}>
         {t(locale, "adminHub.actionSetup")}
       </Link>
     );
   }
   return (
-    <Link href={`/admin/${guild.id}`} className={`${className} bg-blue-600 hover:bg-blue-500 text-white`}>
+    <Link href={entry} className={`${className} bg-blue-600 hover:bg-blue-500 text-white`}>
       {t(locale, "adminHub.actionManage")}
     </Link>
   );
@@ -80,7 +89,7 @@ export default async function AdminHubPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {managedServers.map(({ guild, state }) => (
+            {managedServers.map(({ guild, state, scope }) => (
               <div key={guild.id} className="bg-[#151722] rounded-2xl border border-slate-800/50 p-6 flex flex-col gap-4">
                 <div className="flex items-center gap-4 min-w-0">
                   <GuildAvatar id={guild.id} name={guild.name} icon={guild.icon} />
@@ -91,11 +100,16 @@ export default async function AdminHubPage() {
                     <span className={`inline-block mt-1 text-xs font-semibold px-2 py-0.5 rounded ${STATE_STYLE[state]}`}>
                       {t(locale, STATE_LABEL[state])}
                     </span>
+                    {scope === "tournament" && (
+                      <span className="inline-block mt-1 ml-2 text-xs font-semibold px-2 py-0.5 rounded bg-purple-500/20 text-purple-300">
+                        {t(locale, "adminHub.scopeTournament")}
+                      </span>
+                    )}
                   </div>
                 </div>
-                {state === "install" && <p className="text-xs text-slate-500">{t(locale, "adminHub.installHint")}</p>}
+                {state === "install" && scope === "server" && <p className="text-xs text-slate-500">{t(locale, "adminHub.installHint")}</p>}
                 <div className="mt-auto">
-                  <PrimaryAction guild={guild} state={state} locale={locale} />
+                  <PrimaryAction guild={guild} state={state} scope={scope} locale={locale} />
                 </div>
               </div>
             ))}

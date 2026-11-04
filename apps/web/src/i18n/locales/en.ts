@@ -92,6 +92,8 @@ export const en: typeof fr = {
     actionInstall: "Install the bot",
     actionSetup: "Finish setup",
     actionManage: "Manage",
+    actionMyTournaments: "My tournaments",
+    scopeTournament: "Tournament TO",
     installHint: "Once installed, reload this page: the server will move to the next step.",
   },
   discover: {

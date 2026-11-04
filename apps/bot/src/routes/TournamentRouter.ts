@@ -8,7 +8,7 @@ import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant"
 import { canPerform, LocaleSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
-import { invalidateGuildAccess } from "../services/MemberAccessService";
+import { refreshGuildAccess } from "../services/AccessRefreshService";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
@@ -81,8 +81,8 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
 
     if (error) throw error;
 
-    // SEC-05 : un rôle TO de tournoi ouvre l'accès au panel ; les décisions en cache du serveur sont recalculées.
-    if (created?.discord_to_role_id) invalidateGuildAccess(targetGuildId);
+    // SEC-05 / DISC-08 : un rôle TO de tournoi ouvre l'accès au panel ; cache invalidé, annuaire resynchronisé.
+    if (created?.discord_to_role_id) refreshGuildAccess(req.app.locals.discordClient, targetGuildId);
     res.status(201).json(created);
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.create");
@@ -214,9 +214,10 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       }
     }
 
-    // SEC-05 : nouveau rôle TO de tournoi, ou autres tournois archivés : l'accès des membres est recalculé.
+    // SEC-05 / DISC-08 : nouveau rôle TO de tournoi, ou autres tournois archivés : cache invalidé tout de suite,
+    // annuaire guild_admins resynchronisé en arrière-plan (la réponse n'attend pas le chargement des membres).
     if (data.discord_to_role_id !== currentTournament.discord_to_role_id || transitionToRegistration) {
-      invalidateGuildAccess(currentTournament.guild_id);
+      refreshGuildAccess(req.app.locals.discordClient, currentTournament.guild_id);
     }
 
     res.json(data);
@@ -265,10 +266,9 @@ tournamentRouter.post("/:id/launch", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    const { guildId } = req.body;
+    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
     const discordClient = req.app.locals.discordClient;
-
-    const targetGuildId = guildId || authGuildId;
+    const targetGuildId = authGuildId;
     await LifecycleService.launchTournament(tournamentId, targetGuildId, discordClient);
     res.json({ success: true, message: "Tournament launched successfully." });
   } catch (error: unknown) {
@@ -285,10 +285,9 @@ tournamentRouter.post("/:id/close", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    const { guildId } = req.body;
+    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
     const discordClient = req.app.locals.discordClient;
-
-    const targetGuildId = guildId || authGuildId;
+    const targetGuildId = authGuildId;
     await LifecycleService.closeTournament(tournamentId, targetGuildId, discordClient);
     res.json({ success: true, message: "Tournament closed successfully." });
   } catch (error: unknown) {

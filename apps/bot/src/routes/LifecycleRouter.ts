@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, getTournamentScope, verifyTournamentGuild } from "../utils/tenant";
-import { invalidateGuildAccess } from "../services/MemberAccessService";
+import { refreshGuildAccess } from "../services/AccessRefreshService";
 import { SchedulerService } from "../services/SchedulerService";
 import { ArchiveService } from "../services/ArchiveService";
 import { logger } from "../utils/logger";
@@ -38,8 +38,8 @@ export async function archiveAndInit(req: Request, res: Response) {
     const { error: archiveError } = await supabase.from("tournaments").update({ status: "ARCHIVED" })
       .eq("guild_id", guildId).neq("id", tournamentId).neq("status", "ARCHIVED");
     if (archiveError) throw archiveError;
-    // SEC-23 / SEC-05 : les rôles TO des tournois archivés ne donnent plus accès, sans attendre le TTL du cache.
-    invalidateGuildAccess(guildId);
+    // SEC-23 / SEC-05 / DISC-08 : les rôles TO des tournois archivés ne donnent plus accès ni ne figurent dans le hub.
+    refreshGuildAccess(req.app.locals.discordClient, guildId);
     const { data: settings, error: settingsError } = await supabase.from("server_settings")
       .select("captain_role_id").eq("guild_id", guildId).single();
     if (settingsError) throw settingsError;

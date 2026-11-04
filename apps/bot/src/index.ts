@@ -1,11 +1,4 @@
-import {
-  Client,
-  GatewayIntentBits,
-  Collection,
-  ChannelType,
-  Events,
-  PermissionFlagsBits,
-} from "discord.js";
+import { Client, GatewayIntentBits, Collection, Events } from "discord.js";
 import express from "express";
 import { botEnvironment } from "./config/runtime";
 import { createHealthRouter } from "./routes/HealthRouter";
@@ -30,13 +23,15 @@ import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
 import { WebhookRolesService } from "./services/WebhookRolesService";
 import { applyPresence, hasPresenceFailure } from "./services/CaptainPresenceService";
-import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
+import { GuildRegistryService, readAdminRoles } from "./services/GuildRegistryService";
 import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
 import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
 import { archiveAndInit, syncSchedule } from "./routes/LifecycleRouter";
+import { discordListHandlers } from "./routes/DiscordListRouter";
+import { autoSetupHandler } from "./routes/DiscordSetupRouter";
 
 // Importer les commandes locales
 import * as adminTransferCommand from "./commands/admin-transfer";
@@ -81,6 +76,8 @@ app.locals.discordClient = client;
 const guildAdminGuard = requireGuildAdmin(client);
 const tournamentLevelGuard = requireGuildAdmin(client, { tournamentLevel: true });
 // Listes Discord : un TO de tournoi doit désigner un de ses tournois ; le niveau SERVER peut s'en dispenser.
+// SEC-25 : les listes ne lisent que le serveur authentifié (req.adminCheck), jamais un guildId de query ou de corps.
+const discordLists = discordListHandlers(client);
 const discordListGuard = [
   tournamentLevelGuard,
   requireTournamentScope(tournamentFrom.query("tournamentId"), { optionalForServer: true }),
@@ -128,35 +125,7 @@ app.post("/api/webhook/team-update", async (req, res) => {
 });
 
 // Endpoint: Fetch Roles for the connected Discord Guild
-app.get("/api/discord/roles", ...discordListGuard, async (req, res) => {
-  const guildId = (req.query.guildId || req.body?.guildId) as string;
-  if (!guildId) {
-    return res.status(400).json({ error: "Missing guildId parameter." });
-  }
-
-  try {
-    const guild = await client.guilds.fetch(guildId).catch(() => null);
-    if (!guild) {
-      return res
-        .status(404)
-        .json({ error: "Guild not found. Ensure bot is in the server." });
-    }
-
-    const rolesInfo = guild.roles.cache
-      .filter((role) => role.name !== "@everyone")
-      .map((role) => ({
-        id: role.id,
-        name: role.name,
-        color: role.hexColor,
-      }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-    return res.status(200).json(rolesInfo);
-  } catch (error) {
-    logger.error("Error fetching roles:", error);
-    return res.status(500).json({ error: "Failed to fetch roles." });
-  }
-});
+app.get("/api/discord/roles", ...discordListGuard, discordLists.roles);
 
 // Endpoint: Ordonne au client Discord de créer/supprimer des salons/rôles!
 app.post("/api/discord/publish-phase", guildAdminGuard, async (_req, res) => {
@@ -167,114 +136,18 @@ app.post("/api/discord/publish-phase", guildAdminGuard, async (_req, res) => {
   }
 });
 
-const getGuild = async (res: any, guildId: string): Promise<any> => {
-  if (!guildId) {
-    res.status(400).json({ error: "Missing guildId parameter" });
-    return null;
-  }
-  const guild = await client.guilds.fetch(guildId).catch(() => null);
-  if (!guild) {
-    res.status(404).json({ error: "Guild not found. Ensure bot is in the server." });
-    return null;
-  }
-  return guild;
-};
 
 // Endpoint: décision d'accès au back-office pour le web (SEC-11 / SEC-13), partagée avec requireGuildAdmin.
 app.get("/api/discord/permissions", guildPermissionsHandler(client));
 
 // Endpoint: Fetch Channels for Check-in configurations
-app.get("/api/discord/channels", ...discordListGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const channelsInfo = guild.channels.cache
-      .filter((channel: any) => channel.isTextBased())
-      .map((channel: any) => ({
-        id: channel.id,
-        name: channel.name,
-      }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-    return res.status(200).json(channelsInfo);
-  } catch (error) {
-    logger.error("Error fetching channels:", error);
-    return res.status(500).json({ error: "Failed to fetch channels." });
-  }
-});
+app.get("/api/discord/channels", ...discordListGuard, discordLists.channels);
 
 // Endpoint: Fetch Guild Members for Manual Input Combobox
-app.get("/api/discord/members", ...discordListGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const members = await guild.members.fetch({ limit: 1000 });
-
-    const membersInfo = Array.from(members.values())
-      .filter((member: any) => !member.user.bot)
-      .map((member: any) => ({
-        id: member.user.id,
-        username: member.user.username,
-        displayName: member.displayName,
-      }))
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
-
-    return res.status(200).json(membersInfo);
-  } catch (error) {
-    logger.error("Error fetching members:", error);
-    return res.status(500).json({ error: "Failed to fetch members." });
-  }
-});
+app.get("/api/discord/members", ...discordListGuard, discordLists.members);
 
 // Endpoint: Auto-setup for Checkin requirements
-app.post("/api/discord/auto-setup", ...serverSettingsGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const lang = await getGuildLanguage(guildId);
-    const captainRole = await guild.roles.create({
-      name: tBot(lang, "autoSetup.captainRoleName"),
-      color: 0xffa500,
-      reason: tBot(lang, "autoSetup.auditReason"),
-    });
-
-    const checkinChannel = await guild.channels.create({
-      name: tBot(lang, "autoSetup.checkinChannelName"),
-      type: ChannelType.GuildText,
-      reason: tBot(lang, "autoSetup.auditReason"),
-      permissionOverwrites: [
-        {
-          id: guild.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: captainRole.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-          ],
-        },
-      ],
-    });
-
-    return res.status(200).json({
-      message: "Setup généré avec succès !",
-      captain_role_id: captainRole.id,
-      checkin_channel_id: checkinChannel.id,
-    });
-  } catch (error) {
-    logger.error("Erreur durant l'auto-setup Discord:", error);
-    return res
-      .status(500)
-      .json({ error: "Échec de l'auto-setup sur Discord." });
-  }
-});
+app.post("/api/discord/auto-setup", ...serverSettingsGuard, autoSetupHandler(client));
 
 // Lifecycle routes: authenticate the guild before loading or changing a tournament.
 app.post(
@@ -324,9 +197,9 @@ const bootstrap = async () => {
         [...newRoleIds].some(id => !oldRoleIds.has(id));
       if (!rolesChanged && !oldMember.partial) return;
 
-      const settings = await readToRoleId(newMember.guild.id);
-      if (!settings.ok) return;
-      await GuildRegistryService.syncMemberAdmin(newMember.guild, newMember, settings.toRoleId);
+      const roles = await readAdminRoles(newMember.guild.id);
+      if (!roles.ok) return;
+      await GuildRegistryService.syncMemberAdmin(newMember.guild, newMember, roles);
     });
 
     // Un rôle peut gagner ou perdre Administrateur / Gérer le serveur sans qu'aucun membre ne change de rôle.

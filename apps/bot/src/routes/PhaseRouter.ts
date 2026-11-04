@@ -248,12 +248,9 @@ phaseRouter.post("/:id/sync", phaseScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
-    const { guildId } = req.body;
+    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
     const discordClient = req.app.locals.discordClient;
-
-    if (!guildId) return res.status(400).json({ error: "Missing guildId" });
-
-    await LifecycleService.syncPhaseChannels(phaseId, guildId, discordClient);
+    await LifecycleService.syncPhaseChannels(phaseId, authGuildId, discordClient);
     res.status(200).json({ message: 'Salons Discord générés avec succès' });
   } catch (error: unknown) {
     sendServerError(res, error, "PhaseRouter.sync");
