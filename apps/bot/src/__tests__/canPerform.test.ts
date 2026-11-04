@@ -77,6 +77,7 @@ describe("canPerform (SEC-15 / SEC-16)", () => {
       "SERVER_SETTINGS_RESERVED",
       "SERVER_LEVEL_REQUIRED",
       "TOURNAMENT_ROLES_RESERVED",
+      "CHANNEL_NOT_ACCESSIBLE",
     ]);
   });
 });

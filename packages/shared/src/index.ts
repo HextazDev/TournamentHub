@@ -179,6 +179,8 @@ export const AccessDeniedCodeSchema = z.enum([
   "SERVER_LEVEL_REQUIRED",
   // SEC-22 : modification des rôles d'un tournoi refusée au TO de ce tournoi.
   "TOURNAMENT_ROLES_RESERVED",
+  // SEC-21 (#88) : salon Discord inaccessible au membre demandeur ou au bot.
+  "CHANNEL_NOT_ACCESSIBLE",
 ]);
 export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
 

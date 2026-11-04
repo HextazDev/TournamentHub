@@ -6,6 +6,7 @@ import { ServerSettingsUpdateSchema } from "@hub/shared";
 import { GuildRegistryService, readToRoleId } from "../services/GuildRegistryService";
 import { invalidateGuildAccess } from "../services/MemberAccessService";
 import { requireGuildAction } from "../middleware/auth";
+import { ChannelAccessService } from "../services/ChannelAccessService";
 
 export const serverSettingsRouter = Router();
 
@@ -28,6 +29,43 @@ serverSettingsRouter.put("/", async (req, res) => {
   const previous = await readToRoleId(authGuildId);
   if (!previous.ok) {
     return res.status(503).json({ error: "Lecture des paramètres impossible, réessayez." });
+  }
+
+  // SEC-21 (#88) : un salon serveur spécifié ou modifié doit être accessible au membre demandeur et au bot.
+  const { data: currentSettings } = await supabase
+    .from("server_settings")
+    .select("registration_channel_id, announcement_channel_id, checkin_channel_id")
+    .eq("guild_id", authGuildId)
+    .maybeSingle();
+
+  const discordId = req.adminCheck?.discordId ?? (req.headers["x-discord-user-id"] as string | undefined);
+  const channelChanged = (requested: unknown, current: string | null | undefined) =>
+    requested !== undefined && (requested || null) !== (current || null) && typeof requested === "string" && requested.trim().length > 0;
+
+  const modifiedChannels: string[] = [];
+  if (channelChanged(parsed.data.registration_channel_id, currentSettings?.registration_channel_id)) {
+    modifiedChannels.push(parsed.data.registration_channel_id!);
+  }
+  if (channelChanged(parsed.data.announcement_channel_id, currentSettings?.announcement_channel_id)) {
+    modifiedChannels.push(parsed.data.announcement_channel_id!);
+  }
+  if (channelChanged(parsed.data.checkin_channel_id, currentSettings?.checkin_channel_id)) {
+    modifiedChannels.push(parsed.data.checkin_channel_id!);
+  }
+
+  if (modifiedChannels.length > 0) {
+    if (!discordId || !req.app.locals.discordClient) {
+      return res.status(403).json({ error: "Access denied: missing Discord client or user", code: "CHANNEL_NOT_ACCESSIBLE" });
+    }
+    const channelCheck = await ChannelAccessService.validateChannelAccess({
+      client: req.app.locals.discordClient,
+      guildId: authGuildId,
+      discordId,
+      channelIds: modifiedChannels,
+    });
+    if (!channelCheck.ok) {
+      return res.status(403).json({ error: channelCheck.error, code: channelCheck.code ?? "CHANNEL_NOT_ACCESSIBLE" });
+    }
   }
 
   // Les clés absentes (langue, invitation) ne sont pas envoyées : l'upsert conserve leur valeur actuelle.

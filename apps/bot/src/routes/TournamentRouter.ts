@@ -8,6 +8,7 @@ import { canPerform, LocaleSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { refreshGuildAccess } from "../services/AccessRefreshService";
+import { ChannelAccessService } from "../services/ChannelAccessService";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
@@ -129,6 +130,37 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
         roleChanged(discord_captain_role_id, currentTournament.discord_captain_role_id))
     ) {
       return res.status(403).json({ error: "Tournament roles are reserved to server managers", code: "TOURNAMENT_ROLES_RESERVED" });
+    }
+
+    // SEC-21 (#88) : un salon spécifié ou modifié doit être accessible au membre demandeur et au bot.
+    const discordId = req.adminCheck?.discordId ?? (req.headers["x-discord-user-id"] as string | undefined);
+    const channelChanged = (requested: unknown, current: string | null) =>
+      requested !== undefined && (requested || null) !== current && typeof requested === "string" && requested.trim().length > 0;
+
+    const modifiedChannels: string[] = [];
+    if (channelChanged(discord_registration_channel_id, currentTournament.discord_registration_channel_id)) {
+      modifiedChannels.push(discord_registration_channel_id);
+    }
+    if (channelChanged(discord_announcement_channel_id, currentTournament.discord_announcement_channel_id)) {
+      modifiedChannels.push(discord_announcement_channel_id);
+    }
+    if (channelChanged(discord_checkin_channel_id, currentTournament.discord_checkin_channel_id)) {
+      modifiedChannels.push(discord_checkin_channel_id);
+    }
+
+    if (modifiedChannels.length > 0) {
+      if (!discordId || !req.app.locals.discordClient) {
+        return res.status(403).json({ error: "Access denied: missing Discord client or user", code: "CHANNEL_NOT_ACCESSIBLE" });
+      }
+      const channelCheck = await ChannelAccessService.validateChannelAccess({
+        client: req.app.locals.discordClient,
+        guildId: authGuildId,
+        discordId,
+        channelIds: modifiedChannels,
+      });
+      if (!channelCheck.ok) {
+        return res.status(403).json({ error: channelCheck.error, code: channelCheck.code ?? "CHANNEL_NOT_ACCESSIBLE" });
+      }
     }
 
     let newStatus = currentTournament.status;

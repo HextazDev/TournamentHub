@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { botApiFetch } from '@/utils/api';
 import { supabase } from "@/lib/supabase";
-import { Save, Loader2, RefreshCw } from "lucide-react";
+import { Save, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 import { DiscordInviteUrlSchema } from "@hub/shared";
@@ -58,7 +58,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             const roles = await rolesRes.json();
             setDiscordRoles(roles);
           }
-        } catch (e) {
+        } catch {
           setApiError(t("adminSettings.botError"));
         }
 
@@ -68,7 +68,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             const channels = await channelsRes.json();
             setDiscordChannels(channels);
           }
-        } catch (e) {}
+        } catch {}
 
       } catch (err) {
         console.error(err);
@@ -216,17 +216,32 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             <div className="flex flex-col gap-2">
               <label className="text-sm font-medium text-slate-400">{t("adminSettings.checkinChannel")}</label>
               {discordChannels.length > 0 ? (
-                <select
-                  name="checkin_channel_id"
-                  value={settings.checkin_channel_id}
-                  onChange={handleChange}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="">{t("adminSettings.selectChannel")}</option>
-                  {discordChannels.map((ch) => (
-                    <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    name="checkin_channel_id"
+                    value={settings.checkin_channel_id}
+                    onChange={handleChange}
+                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="">{t("adminSettings.selectChannel")}</option>
+                    {settings.checkin_channel_id &&
+                      !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
+                        <option value={settings.checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettings.channelInaccessibleOption")} (#{settings.checkin_channel_id})
+                        </option>
+                      )}
+                    {discordChannels.map((ch) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {settings.checkin_channel_id &&
+                    !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettings.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </>
               ) : (
                 <input
                   type="text"
@@ -242,17 +257,32 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             <div className="flex flex-col gap-2">
               <label className="text-sm font-medium text-slate-400">{t("adminSettings.announcementChannel")}</label>
               {discordChannels.length > 0 ? (
-                <select
-                  name="announcement_channel_id"
-                  value={settings.announcement_channel_id}
-                  onChange={handleChange}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="">{t("adminSettings.selectChannel")}</option>
-                  {discordChannels.map((ch) => (
-                    <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    name="announcement_channel_id"
+                    value={settings.announcement_channel_id}
+                    onChange={handleChange}
+                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="">{t("adminSettings.selectChannel")}</option>
+                    {settings.announcement_channel_id &&
+                      !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
+                        <option value={settings.announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettings.channelInaccessibleOption")} (#{settings.announcement_channel_id})
+                        </option>
+                      )}
+                    {discordChannels.map((ch) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {settings.announcement_channel_id &&
+                    !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettings.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </>
               ) : (
                 <input
                   type="text"
@@ -268,17 +298,32 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             <div className="flex flex-col gap-2 md:col-span-2">
               <label className="text-sm font-medium text-slate-400">{t("adminSettings.registrationChannel")}</label>
               {discordChannels.length > 0 ? (
-                <select
-                  name="registration_channel_id"
-                  value={settings.registration_channel_id}
-                  onChange={handleChange}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="">{t("adminSettings.selectRegistrationChannel")}</option>
-                  {discordChannels.map((ch) => (
-                    <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                  ))}
-                </select>
+                <>
+                  <select
+                    name="registration_channel_id"
+                    value={settings.registration_channel_id}
+                    onChange={handleChange}
+                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                  >
+                    <option value="">{t("adminSettings.selectRegistrationChannel")}</option>
+                    {settings.registration_channel_id &&
+                      !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
+                        <option value={settings.registration_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettings.channelInaccessibleOption")} (#{settings.registration_channel_id})
+                        </option>
+                      )}
+                    {discordChannels.map((ch) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {settings.registration_channel_id &&
+                    !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettings.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </>
               ) : (
                 <input
                   type="text"
