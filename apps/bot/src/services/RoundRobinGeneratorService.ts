@@ -1,5 +1,6 @@
 import { supabase } from "../lib/supabase";
 import { DomainError } from "../utils/serverError";
+import { LeaderboardService } from "./LeaderboardService";
 
 export class RoundRobinGeneratorService {
   static async generateGroups(phaseId: string, groupCount: number = 1) {
@@ -91,8 +92,13 @@ export class RoundRobinGeneratorService {
 
       for (let r = 1; r <= totalRounds; r++) {
         for (let i = 0; i < matchesPerRound; i++) {
-          const t1 = teamIds[i];
-          const t2 = teamIds[teamIds.length - 1 - i];
+          let t1 = teamIds[i];
+          let t2 = teamIds[teamIds.length - 1 - i];
+
+          // Alternance domicile / extérieur de Berger : le match du pivot alterne à chaque ronde
+          if (r % 2 === 0 && i === 0) {
+            [t1, t2] = [t2, t1];
+          }
 
           if (t1 === "BYE" && t2 === "BYE") continue;
 
@@ -131,7 +137,6 @@ export class RoundRobinGeneratorService {
     }
 
     // Recalculate standings for all groups (handles BYE wins)
-    const { LeaderboardService } = require("./LeaderboardService");
     for (const g of groups) {
       if (g.teams.length >= 2) {
         await LeaderboardService.calculateGroupStandings(g.group_id).catch((e: any) =>

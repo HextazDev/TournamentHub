@@ -556,3 +556,103 @@ export function compareStandings(
   return b.score_for - a.score_for;
 }
 
+/**
+ * Confrontation directe entre 2 équipes (Head-to-Head).
+ * Renvoie un nombre > 0 si teamA a l'avantage sur teamB,
+ * < 0 si teamB a l'avantage, ou 0 en cas d'égalité ou si aucun match joué.
+ */
+export function computeHeadToHead(
+  teamAId: string,
+  teamBId: string,
+  matches: readonly StandingsMatch[],
+): number {
+  let netWins = 0;
+  let netScore = 0;
+
+  for (const m of matches) {
+    if (!isStandingsStatus(m.status)) continue;
+    const isTeam1A = m.team1_id === teamAId && m.team2_id === teamBId;
+    const isTeam2A = m.team2_id === teamAId && m.team1_id === teamBId;
+    if (!isTeam1A && !isTeam2A) continue;
+
+    const sA = (isTeam1A ? m.team1_score : m.team2_score) ?? 0;
+    const sB = (isTeam1A ? m.team2_score : m.team1_score) ?? 0;
+
+    if (sA > sB) netWins += 1;
+    else if (sB > sA) netWins -= 1;
+
+    netScore += sA - sB;
+  }
+
+  if (netWins !== 0) return netWins;
+  return netScore;
+}
+
+/**
+ * Calcul du score Buchholz (somme des points de tous les adversaires réels affrontés).
+ * Ignore les matchs BYE et statuts non terminés.
+ */
+export function computeBuchholz(
+  teamId: string,
+  matches: readonly StandingsMatch[],
+  standings: Map<string, Pick<TeamStanding, "points">>,
+): number {
+  let buchholz = 0;
+  const facedOpponents = new Set<string>();
+
+  for (const m of matches) {
+    if (!isStandingsStatus(m.status)) continue;
+    if (m.status === "BYE" || m.team1_id === null || m.team2_id === null) continue;
+
+    let oppId: string | null = null;
+    if (m.team1_id === teamId && m.team2_id) oppId = m.team2_id;
+    else if (m.team2_id === teamId && m.team1_id) oppId = m.team1_id;
+
+    if (oppId && !facedOpponents.has(oppId)) {
+      facedOpponents.add(oppId);
+      const oppStanding = standings.get(oppId);
+      if (oppStanding) {
+        buchholz += oppStanding.points;
+      }
+    }
+  }
+
+  return buchholz;
+}
+
+export interface TiebreakOptions {
+  matches?: readonly StandingsMatch[];
+  buchholzStandings?: Map<string, Pick<TeamStanding, "points">>;
+}
+
+/**
+ * Ordre étendu du classement avec critères de départage e-sport :
+ * 1. Points décroissants
+ * 2. Différence de score (Goal Average direct) décroissante
+ * 3. Confrontation directe (Head-to-Head) si match joué entre les 2 équipes
+ * 4. Score Buchholz décroissant (en ronde suisse) si disponible
+ * 5. Buts / scores marqués décroissants
+ */
+export function compareStandingsExtended(
+  a: Pick<TeamStanding, "points" | "differential" | "score_for"> & { id: string },
+  b: Pick<TeamStanding, "points" | "differential" | "score_for"> & { id: string },
+  options?: TiebreakOptions,
+): number {
+  if (b.points !== a.points) return b.points - a.points;
+  if (b.differential !== a.differential) return b.differential - a.differential;
+
+  if (options?.matches) {
+    const h2h = computeHeadToHead(a.id, b.id, options.matches);
+    if (h2h !== 0) return -h2h; // si a a l'avantage (h2h > 0), a doit être placé avant b (négatif)
+  }
+
+  if (options?.buchholzStandings && options?.matches) {
+    const bBuchholz = computeBuchholz(b.id, options.matches, options.buchholzStandings);
+    const aBuchholz = computeBuchholz(a.id, options.matches, options.buchholzStandings);
+    if (bBuchholz !== aBuchholz) return bBuchholz - aBuchholz;
+  }
+
+  return b.score_for - a.score_for;
+}
+
+
