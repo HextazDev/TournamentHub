@@ -7,6 +7,7 @@ import Navbar from "@/components/Navbar";
 import { LanguageProvider } from "@/i18n/LanguageContext";
 import { cookies, headers } from "next/headers";
 import { Locale } from "@/i18n/types";
+import { resolvePublicSupabaseConfig } from "@/lib/config";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -43,12 +44,20 @@ export default async function RootLayout({
     }
   }
 
+  const publicSupabaseConfig = resolvePublicSupabaseConfig(process.env);
+  const serializedPublicConfig = JSON.stringify(publicSupabaseConfig).replace(/</g, "\\u003c");
+
   return (
     <html
       lang={initialLocale}
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-[#0a0a0f] text-slate-200">
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.__HUB_PUBLIC_CONFIG__=${serializedPublicConfig};`,
+          }}
+        />
         <AuthProvider>
           <LanguageProvider initialLocale={initialLocale}>
             <ToastProvider>

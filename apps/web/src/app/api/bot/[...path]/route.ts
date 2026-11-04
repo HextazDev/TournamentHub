@@ -4,6 +4,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isBotProxyPathAllowed } from "@/lib/botProxyAllowlist";
 import { BOT_UNREACHABLE, botAccessError, botInternalError } from "@/lib/accessErrors";
 import { getServerLocale } from "@/i18n/server";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 /**
  * Proxy navigateur ➜ bot. Le secret BOT_API_SECRET et l'identité Discord (issue de la session serveur) sont
@@ -29,7 +30,7 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
   }
 
   const url = new URL(request.url);
-  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080";
+  const botApiUrl = resolveServerBotApiUrl();
   const targetUrl = `${botApiUrl}/api/${path}${url.search}`;
 
   // Seuls les en-têtes nécessaires sont transmis : aucun cookie ni jeton du navigateur n'atteint le bot.
