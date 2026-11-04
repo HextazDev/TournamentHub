@@ -12,6 +12,7 @@ vi.mock("../services/RegistrationService", () => ({
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
   verifyTournamentGuild: () => Promise.resolve(true),
+  resolveOrganization: () => Promise.resolve(null),
 }));
 
 import { supabase } from "../lib/supabase";

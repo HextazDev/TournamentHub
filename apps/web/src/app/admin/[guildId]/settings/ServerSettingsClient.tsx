@@ -28,12 +28,41 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
 
   const [discordRoles, setDiscordRoles] = useState<{ id: string; name: string }[]>([]);
   const [discordChannels, setDiscordChannels] = useState<{ id: string; name: string }[]>([]);
+  const [discordEnabled, setDiscordEnabled] = useState(true);
+  const [hasOrgRecord, setHasOrgRecord] = useState(false);
+  const [togglingDiscord, setTogglingDiscord] = useState(false);
   const [apiError, setApiError] = useState("");
 
   useEffect(() => {
     async function loadData() {
       setLoading(true);
       try {
+        try {
+          const orgRes = await fetch(`/api/bot/organizations/${guildId}`);
+          if (orgRes.ok) {
+            const orgData = (await orgRes.json()) as {
+              language?: string;
+              public_contact_url?: string;
+              discordEnabled?: boolean;
+              discordConfig?: Record<string, string | null>;
+            };
+            setHasOrgRecord(true);
+            setDiscordEnabled(Boolean(orgData.discordEnabled));
+            const cfg = orgData.discordConfig ?? {};
+            setSettings({
+              captain_role_id: cfg.captain_role_id || "",
+              to_role_id: cfg.to_role_id || "",
+              checkin_channel_id: cfg.checkin_channel_id || "",
+              announcement_channel_id: cfg.announcement_channel_id || "",
+              registration_channel_id: cfg.registration_channel_id || "",
+              language: orgData.language || "fr",
+              invite_url: orgData.public_contact_url || "",
+            });
+          }
+        } catch (orgErr) {
+          console.error(orgErr);
+        }
+
         const { data: dbSettings, error: dbError } = await supabase
           .from("server_settings")
           .select("*")
@@ -79,6 +108,37 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
   // Ne dépend que du serveur : la session NextAuth est relue à chaque retour sur l'onglet, et la relancer
   // ici rechargeait la base par-dessus les modifications non enregistrées.
   }, [guildId, t]);
+
+  const handleToggleDiscord = async () => {
+    setTogglingDiscord(true);
+    setMessage({ type: "", text: "" });
+    try {
+      const nextState = !discordEnabled;
+      const res = await botApiFetch(`/api/organizations/${guildId}/integrations/DISCORD`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: nextState,
+          config: {
+            captain_role_id: settings.captain_role_id || null,
+            to_role_id: settings.to_role_id || null,
+            checkin_channel_id: settings.checkin_channel_id || null,
+            announcement_channel_id: settings.announcement_channel_id || null,
+            registration_channel_id: settings.registration_channel_id || null,
+          },
+        }),
+      });
+      if (!res.ok) {
+        throw new Error((await readApiError(res)) ?? t("common.unknown"));
+      }
+      setDiscordEnabled(nextState);
+      setMessage({ type: "success", text: t("adminSettings.savedSuccess") });
+    } catch (err: unknown) {
+      setMessage({ type: "error", text: t("adminSettings.saveError", { message: getErrorMessage(err) ?? t("common.unknown") }) });
+    } finally {
+      setTogglingDiscord(false);
+    }
+  };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     setSettings((prev) => ({
@@ -149,6 +209,31 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
       </div>
 
       <form onSubmit={handleSave} className="bg-slate-800 p-8 rounded-2xl border border-slate-700 shadow-xl space-y-6">
+        {/* INTÉGRATIONS OPTIONNELLES (RFC 0001) */}
+        {hasOrgRecord && (
+          <div className="space-y-4 pb-4 border-b border-slate-700">
+            <h2 className="text-xl font-semibold text-slate-200">{t("organizations.integrationsTitle")}</h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900/70 p-4 rounded-xl border border-slate-700">
+              <div>
+                <h3 className="text-sm font-bold text-white">{t("organizations.discordIntegrationTitle")}</h3>
+                <p className="text-xs text-slate-400 mt-1">{t("organizations.discordIntegrationDesc")}</p>
+              </div>
+              <button
+                type="button"
+                disabled={togglingDiscord}
+                onClick={handleToggleDiscord}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${
+                  discordEnabled
+                    ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30"
+                    : "bg-slate-800 text-slate-300 border border-slate-600 hover:bg-slate-700"
+                }`}
+              >
+                {discordEnabled ? t("organizations.integrationEnabled") : t("organizations.integrationDisabled")}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* RÔLES */}
         <div className="space-y-6">
           <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.rolesSection")}</h2>

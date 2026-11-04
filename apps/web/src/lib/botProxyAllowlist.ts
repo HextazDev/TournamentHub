@@ -7,6 +7,8 @@ const ALLOWED = [
   /^server-settings$/,
   new RegExp(`^tournaments(/${SEGMENT}(/(settings|visibility|launch|close|registrations|checkin/stop))?)?$`),
   new RegExp(`^(teams|phases|matches)(/${SEGMENT})*$`),
+  new RegExp(`^organizations(/${SEGMENT}(/(members(/${SEGMENT})?|tournaments/${SEGMENT}/staff(/${SEGMENT})?|integrations(/${SEGMENT})?))?)?$`),
+  new RegExp(`^player/(tournaments/${SEGMENT}/(register|checkin)|matches/${SEGMENT}/report-score)$`),
 ];
 const BLOCKED = /^tournaments\/archive-and-init$/;
 

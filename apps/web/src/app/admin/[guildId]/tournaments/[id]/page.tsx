@@ -35,6 +35,8 @@ export default async function TournamentDashboard({ params }: { params: Promise<
   const phases = phasesRes.data;
   const participantsCount = teamsRes.count ?? 0;
 
+  const discordEnabled = profile?.discord_enabled !== false;
+
   const nextStep = tournamentNextStep(
     {
       status: tournament.status,
@@ -42,8 +44,14 @@ export default async function TournamentDashboard({ params }: { params: Promise<
       checkin_start_at: tournament.checkin_start_at ?? null,
       checkin_end_at: tournament.checkin_end_at ?? null,
       discord_registration_channel_id: tournament.discord_registration_channel_id ?? null,
+      checkin_mode: (tournament as { checkin_mode?: "ENABLED" | "DISABLED" | null }).checkin_mode ?? "ENABLED",
     },
-    { phasesCount: phases?.length ?? 0, teamsCount: participantsCount, serverSetupComplete: isServerSetupComplete(profile) },
+    {
+      phasesCount: phases?.length ?? 0,
+      teamsCount: participantsCount,
+      serverSetupComplete: isServerSetupComplete(profile),
+      discordEnabled,
+    },
   );
 
   // États Configuration pour Carte 4
@@ -105,6 +113,7 @@ export default async function TournamentDashboard({ params }: { params: Promise<
               isRegistrationOpen={!!tournament.is_registration_open}
               hasRegistrationChannel={!!tournament.discord_registration_channel_id}
               hasStartedOrCheckin={hasStartedOrCheckin}
+              discordEnabled={discordEnabled}
             />
           </div>
         </div>

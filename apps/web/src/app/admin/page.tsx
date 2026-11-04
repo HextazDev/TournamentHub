@@ -5,6 +5,7 @@ import { getViewer, type DiscordGuildSummary } from "@/lib/viewer";
 import { loadServerOverview } from "@/lib/servers";
 import { buildBotInviteUrl, panelEntryPath, type ManageScope, type ManageState } from "@/lib/accessRules";
 import { GuildAvatar } from "@/components/GuildAvatar";
+import { CreateOrganizationModal } from "@/components/admin/CreateOrganizationModal";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
 import type { Locale, TranslationKey } from "@/i18n/types";
@@ -76,9 +77,12 @@ export default async function AdminHubPage() {
   return (
     <div className="w-full min-h-[calc(100vh-4rem)] bg-[#0a0a0f] p-4 sm:p-8 pt-12 text-slate-200">
       <div className="max-w-[1600px] mx-auto">
-        <div className="mb-10">
-          <h1 className="text-4xl font-extrabold text-white tracking-tight">{t(locale, "adminHub.title")}</h1>
-          <p className="text-slate-400 mt-3 text-lg max-w-2xl">{t(locale, "adminHub.subtitle")}</p>
+        <div className="mb-10 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-4xl font-extrabold text-white tracking-tight">{t(locale, "adminHub.title")}</h1>
+            <p className="text-slate-400 mt-3 text-lg max-w-2xl">{t(locale, "adminHub.subtitle")}</p>
+          </div>
+          <CreateOrganizationModal />
         </div>
 
         {managedServers.length === 0 ? (

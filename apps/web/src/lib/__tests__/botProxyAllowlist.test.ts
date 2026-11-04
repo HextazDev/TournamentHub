@@ -15,6 +15,17 @@ describe("isBotProxyPathAllowed", () => {
       "teams/generate-fake",
       "phases/abc/seeding",
       "matches/abc/force-score",
+      "organizations",
+      "organizations/splat-fr",
+      "organizations/splat-fr/members",
+      "organizations/splat-fr/members/123456789012345678",
+      "organizations/splat-fr/tournaments/t1/staff",
+      "organizations/splat-fr/tournaments/t1/staff/123456789012345678",
+      "organizations/splat-fr/integrations",
+      "organizations/splat-fr/integrations/DISCORD",
+      "player/tournaments/t1/register",
+      "player/tournaments/t1/checkin",
+      "player/matches/m1/report-score",
     ]) {
       expect(isBotProxyPathAllowed(path), path).toBe(true);
     }

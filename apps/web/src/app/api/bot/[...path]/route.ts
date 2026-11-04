@@ -43,12 +43,21 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
   const textBody = hasBody ? await request.text() : "";
   if (textBody) headers.set("Content-Type", "application/json");
 
-  // requireGuildAdmin lit aussi guildId dans la query ou le corps ; l'en-tête sert de repli (DELETE, GET).
-  let guildId = url.searchParams.get("guildId") || url.searchParams.get("guild_id");
+  // requireGuildAdmin lit aussi guildId / organizationId dans la query ou le corps ; l'en-tête sert de repli (DELETE, GET).
+  let guildId =
+    url.searchParams.get("guildId") ||
+    url.searchParams.get("guild_id") ||
+    url.searchParams.get("organizationId") ||
+    url.searchParams.get("organization_id");
   if (!guildId && textBody) {
     try {
-      const body = JSON.parse(textBody) as { guildId?: unknown; guild_id?: unknown };
-      const candidate = body.guildId ?? body.guild_id;
+      const body = JSON.parse(textBody) as {
+        guildId?: unknown;
+        guild_id?: unknown;
+        organizationId?: unknown;
+        organization_id?: unknown;
+      };
+      const candidate = body.guildId ?? body.guild_id ?? body.organizationId ?? body.organization_id;
       if (typeof candidate === "string") guildId = candidate;
     } catch {
       return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });

@@ -160,6 +160,13 @@ describe("tournamentNextStep", () => {
     expect(tournamentNextStep(disabled, ctx)).toBe("waitParticipants");
     expect(tournamentNextStep(disabled, { ...ctx, teamsCount: 2 })).toBe("placementAndLaunch");
   });
+
+  it("INT-02: si discordEnabled === false, saute serverSetup et registrationChannel pour un tournoi Web autonome", () => {
+    const webTournament = { ...base, discord_registration_channel_id: null };
+    const ctx = { phasesCount: 0, teamsCount: 0, serverSetupComplete: false, discordEnabled: false };
+    expect(tournamentNextStep(webTournament, ctx)).toBe("structure");
+    expect(tournamentNextStep(webTournament, { ...ctx, phasesCount: 1 })).toBe("openRegistrations");
+  });
 });
 
 describe("buildBotInviteUrl", () => {

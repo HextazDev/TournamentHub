@@ -28,6 +28,10 @@ import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
 import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
+import { organizationRouter } from "./routes/OrganizationRouter";
+import { playerRouter } from "./routes/PlayerRouter";
+import { IntegrationBus } from "./services/IntegrationBus";
+import { discordIntegrationPlugin } from "./services/integrations/DiscordIntegrationPlugin";
 import { archiveAndInit, syncSchedule } from "./routes/LifecycleRouter";
 import { discordListHandlers } from "./routes/DiscordListRouter";
 import { autoSetupHandler } from "./routes/DiscordSetupRouter";
@@ -71,6 +75,9 @@ app.use("/api", authMiddleware);
 // Inject client globally
 app.locals.discordClient = client;
 
+// Enregistrement du plugin d'intégration Discord dans le bus d'intégrations (INT-01).
+IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
 // SEC-21 : niveau SERVER exigé par défaut. Le montage ouvert aux TO de tournoi n'est utilisé que là où chaque
 // route déclare requireTournamentScope ou requireServerLevel (vérifié par tournamentScopeRoutes.test.ts).
 const guildAdminGuard = requireGuildAdmin(client);
@@ -92,7 +99,7 @@ const schedulerRecovery = new SchedulerRecovery(
 );
 app.use(createHealthRouter(() => client.isReady(), async () => {
   if (!schedulerRecovery.isReady()) return false;
-  const { error } = await supabase.from("server_settings").select("guild_id").limit(1)
+  const { error } = await supabase.from("tournaments").select("id").limit(1)
     .abortSignal(AbortSignal.timeout(3000));
   return !error;
 }));
@@ -142,6 +149,9 @@ app.use('/api/tournaments', tournamentLevelGuard, tournamentRouter);
 app.use('/api/teams', tournamentLevelGuard, teamRouter);
 // La garde MANAGE_SERVER_SETTINGS (SEC-16) est appliquée par le routeur lui-même.
 app.use('/api/server-settings', guildAdminGuard, serverSettingsRouter);
+// Routes RFC 0001 : organisations (création Web sans Discord + gestion) et actions joueurs Web (INT-02, SEC-30).
+app.use('/api/organizations', organizationRouter);
+app.use('/api/player', playerRouter);
 
 // 3. Connect DB and Start Systems
 let server: http.Server;

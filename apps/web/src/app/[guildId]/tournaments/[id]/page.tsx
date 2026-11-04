@@ -1,7 +1,8 @@
 export const dynamic = 'force-dynamic';
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getReadableTournament } from "@/lib/viewer";
+import { getReadableTournament, getViewer } from "@/lib/viewer";
+import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Monitor, Users } from "lucide-react";
 import { cookies } from "next/headers";
@@ -14,7 +15,7 @@ export default async function PublicTournamentOverview({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id } = await params;
-  const tournament = await getReadableTournament(guildId, id);
+  const [tournament, viewer] = await Promise.all([getReadableTournament(guildId, id), getViewer()]);
   if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
@@ -22,10 +23,19 @@ export default async function PublicTournamentOverview({
   // Parallel fetching
   const [
     { data: phases },
-    { data: teams }
+    { data: teams },
+    { data: captainTeamRow },
   ] = await Promise.all([
     supabaseAdmin.from("phases").select("id").eq("tournament_id", id),
-    supabaseAdmin.from("teams").select("id").eq("tournament_id", id).eq("is_checked_in", true)
+    supabaseAdmin.from("teams").select("id").eq("tournament_id", id).eq("is_checked_in", true),
+    viewer.discordId
+      ? supabaseAdmin
+          .from("teams")
+          .select("id, name, is_checked_in")
+          .eq("tournament_id", id)
+          .eq("captain_discord_id", viewer.discordId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
   ]);
 
   const totalTeams = teams?.length || 0;
@@ -70,8 +80,53 @@ export default async function PublicTournamentOverview({
     })
     .slice(0, 4);
 
+  const now = new Date();
+  const checkinStart = tournament.checkin_start_at ? new Date(tournament.checkin_start_at) : null;
+  const checkinEnd = tournament.checkin_end_at ? new Date(tournament.checkin_end_at) : null;
+  const canCheckinNow =
+    tournament.status === "REGISTRATION" &&
+    (!checkinStart || now >= checkinStart) &&
+    (!checkinEnd || now <= checkinEnd);
+
+  const captainPendingRaw = captainTeamRow
+    ? matches.find(
+        (m) =>
+          m.status === "PENDING" &&
+          (m.team1_id === captainTeamRow.id || m.team2_id === captainTeamRow.id) &&
+          m.team1_id &&
+          m.team2_id,
+      )
+    : null;
+
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
+      <WebPlayerActions
+        tournamentId={id}
+        status={tournament.status}
+        isRegistrationOpen={Boolean(tournament.is_registration_open)}
+        canCheckinNow={canCheckinNow}
+        viewerDiscordId={viewer.discordId}
+        captainTeam={
+          captainTeamRow
+            ? {
+                id: String(captainTeamRow.id),
+                name: String(captainTeamRow.name),
+                is_checked_in: Boolean(captainTeamRow.is_checked_in),
+              }
+            : null
+        }
+        pendingMatch={
+          captainPendingRaw
+            ? {
+                id: String(captainPendingRaw.id),
+                round_number: typeof captainPendingRaw.round_number === "number" ? captainPendingRaw.round_number : null,
+                team1_name: String(captainPendingRaw.team1?.name ?? t(locale, "common.tbd")),
+                team2_name: String(captainPendingRaw.team2?.name ?? t(locale, "common.tbd")),
+              }
+            : null
+        }
+      />
+
       {/* Recent Matches Section - Split into two columns like Toornament overview */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div>

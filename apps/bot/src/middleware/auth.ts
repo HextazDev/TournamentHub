@@ -1,7 +1,13 @@
 import { Request, Response, NextFunction, type RequestHandler } from "express";
 import type { ParamsDictionary } from "express-serve-static-core";
 import { timingSafeEqual } from "crypto";
-import { canPerform, type AccessDeniedCode, type GuildAccess, type GuildAction } from "@hub/shared";
+import {
+  canPerform,
+  type AccessDeniedCode,
+  type GuildAccess,
+  type OrganizationAccess,
+  type OrganizationAction,
+} from "@hub/shared";
 import { logger } from "../utils/logger";
 import { resolveMemberAccess, type DiscordClientLike, type MemberAccessDecision } from "../services/MemberAccessService";
 import { resolveResourceTournament, type TournamentResourceKind } from "../utils/tenant";
@@ -9,7 +15,7 @@ import { resolveResourceTournament, type TournamentResourceKind } from "../utils
 export interface AdminCheck {
   discordId: string;
   guildId: string;
-  access: GuildAccess;
+  access: GuildAccess | OrganizationAccess;
 }
 
 /** Tournoi dont l'accès a été vérifié par requireTournamentScope pour cette requête (SEC-21). */
@@ -93,9 +99,14 @@ export function requireGuildAdmin(discordClient: DiscordClientLike, options: Gui
     const guildId = firstString(
       req.body?.guildId,
       req.body?.guild_id,
+      req.body?.organizationId,
+      req.body?.organization_id,
       req.query?.guildId,
       req.query?.guild_id,
+      req.query?.organizationId,
+      req.query?.organization_id,
       req.headers["x-guild-id"],
+      req.headers["x-organization-id"],
     );
 
     if (!discordId) {
@@ -233,19 +244,25 @@ export function requireTournamentScope<P extends ParamsDictionary>(
   });
 }
 
-const ACTION_DENIED_CODE: Record<GuildAction, AccessDeniedCode> = {
+const ACTION_DENIED_CODE: Record<OrganizationAction, AccessDeniedCode> = {
   MANAGE_SERVER_SETTINGS: "SERVER_SETTINGS_RESERVED",
+  MANAGE_ORG_SETTINGS: "SERVER_SETTINGS_RESERVED",
+  MANAGE_INTEGRATIONS: "SERVER_SETTINGS_RESERVED",
+  MANAGE_ORG_MEMBERS: "SERVER_SETTINGS_RESERVED",
+  TRANSFER_OWNERSHIP: "SERVER_SETTINGS_RESERVED",
   CREATE_TOURNAMENT: "NO_RIGHTS",
   DELETE_TOURNAMENT: "NO_RIGHTS",
   MANAGE_TOURNAMENT: "NO_RIGHTS",
   MANAGE_TOURNAMENT_ROLES: "TOURNAMENT_ROLES_RESERVED",
+  SCORE_MATCH: "NO_RIGHTS",
+  VIEW_PRIVATE_TOURNAMENT: "NO_RIGHTS",
 };
 
 /**
  * À placer après requireGuildAdmin : restreint une route à une action précise (canPerform, SEC-16).
  * Sans adminCheck (garde mal montée), la requête est refusée.
  */
-export function requireGuildAction(action: GuildAction) {
+export function requireGuildAction(action: OrganizationAction) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.adminCheck || !canPerform(req.adminCheck.access, action)) {
       return deny(res, 403, ACTION_DENIED_CODE[action], "Action reserved to server managers");
@@ -260,7 +277,7 @@ export function requireGuildAction(action: GuildAction) {
  */
 export function guildPermissionsHandler(discordClient: DiscordClientLike) {
   return async (req: Request, res: Response) => {
-    const guildId = typeof req.query.guildId === "string" ? req.query.guildId : "";
+    const guildId = firstString(req.query.guildId, req.query.organizationId) ?? "";
     const userId = typeof req.query.userId === "string" ? req.query.userId : "";
     if (!guildId || !userId) return res.status(400).json({ error: "Missing parameters" });
 

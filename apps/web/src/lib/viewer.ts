@@ -69,10 +69,75 @@ export const getGuildAdminAccess = cache(async (guildId: string): Promise<GuildA
   });
 });
 
-export const getServerProfile = cache(async (guildId: string): Promise<ServerSettings | null> => {
-  const { data, error } = await supabaseAdmin.from("server_settings").select("*").eq("guild_id", guildId).maybeSingle();
-  if (error) throw new Error(`server_settings read failed: ${error.message}`);
-  return data as ServerSettings | null;
+export type ServerProfile = ServerSettings & {
+  organization_id?: string;
+  slug?: string;
+  discord_enabled?: boolean;
+};
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<ServerProfile | null> => {
+  let orgRow: Record<string, unknown> | null = null;
+
+  if (UUID_REGEX.test(guildIdOrSlug)) {
+    const { data } = await supabaseAdmin.from("organizations").select("*").eq("id", guildIdOrSlug).maybeSingle();
+    if (data) orgRow = data as Record<string, unknown>;
+  }
+  if (!orgRow) {
+    const { data } = await supabaseAdmin.from("organizations").select("*").eq("slug", guildIdOrSlug).maybeSingle();
+    if (data) orgRow = data as Record<string, unknown>;
+  }
+  if (!orgRow) {
+    const { data: intRow } = await supabaseAdmin
+      .from("organization_integrations")
+      .select("organization_id")
+      .eq("provider", "DISCORD")
+      .eq("external_id", guildIdOrSlug)
+      .maybeSingle();
+    if (intRow?.organization_id) {
+      const { data } = await supabaseAdmin.from("organizations").select("*").eq("id", intRow.organization_id).maybeSingle();
+      if (data) orgRow = data as Record<string, unknown>;
+    }
+  }
+
+  if (orgRow && typeof orgRow.id === "string" && typeof orgRow.slug === "string") {
+    const { data: discordInt } = await supabaseAdmin
+      .from("organization_integrations")
+      .select("*")
+      .eq("organization_id", orgRow.id)
+      .eq("provider", "DISCORD")
+      .maybeSingle();
+
+    const cfg = (discordInt?.config ?? {}) as Record<string, unknown>;
+    const discordEnabled = Boolean(discordInt?.enabled);
+    const externalGuildId = typeof discordInt?.external_id === "string" ? discordInt.external_id : orgRow.slug;
+
+    return {
+      guild_id: externalGuildId,
+      guild_name: typeof orgRow.name === "string" ? orgRow.name : orgRow.slug,
+      guild_icon: typeof orgRow.icon_url === "string" ? orgRow.icon_url : null,
+      bot_present: discordEnabled && Boolean(cfg.bot_present ?? true),
+      to_role_id: typeof cfg.to_role_id === "string" ? cfg.to_role_id : null,
+      captain_role_id: typeof cfg.captain_role_id === "string" ? cfg.captain_role_id : null,
+      registration_channel_id: typeof cfg.registration_channel_id === "string" ? cfg.registration_channel_id : null,
+      announcement_channel_id: typeof cfg.announcement_channel_id === "string" ? cfg.announcement_channel_id : null,
+      checkin_channel_id: typeof cfg.checkin_channel_id === "string" ? cfg.checkin_channel_id : null,
+      language: orgRow.language === "en" ? "en" : "fr",
+      invite_url: typeof orgRow.public_contact_url === "string" ? orgRow.public_contact_url : null,
+      updated_at: typeof orgRow.updated_at === "string" ? orgRow.updated_at : new Date().toISOString(),
+      organization_id: orgRow.id,
+      slug: orgRow.slug,
+      discord_enabled: discordEnabled,
+    };
+  }
+
+  const { data, error } = await supabaseAdmin.from("server_settings").select("*").eq("guild_id", guildIdOrSlug).maybeSingle();
+  if (error) {
+    // Si server_settings a été supprimée par la migration RFC 0001 (Option 5A), retourner null.
+    return null;
+  }
+  return data as ServerProfile | null;
 });
 
 /** Tournoi lisible par le visiteur (public, ou privé dont il est membre), sinon null ➜ 404. */
@@ -84,12 +149,38 @@ export const getReadableTournament = cache(async (guildId: string, tournamentId:
     throw new Error(`tournament read failed: ${error.message}`);
   }
   if (!data) return null;
-  const tournament = data as Tournament;
-  if (tournament.is_public && tournament.guild_id === guildId) return tournament;
-  return canViewTournament(tournament, guildId, memberGuildIds(await getViewer())) ? tournament : null;
+  const tournament = data as Tournament & { organization_id?: string | null };
+  const profile = await getServerProfile(guildId);
+  const matchesRoute =
+    tournament.guild_id === guildId ||
+    tournament.organization_id === guildId ||
+    (!!profile?.organization_id && tournament.organization_id === profile.organization_id) ||
+    (!!profile?.guild_id && tournament.guild_id === profile.guild_id);
+
+  if (!matchesRoute) return null;
+  if (tournament.is_public) return tournament;
+
+  const viewer = await getViewer();
+  const memberIds = memberGuildIds(viewer);
+  if (viewer.discordId && profile?.organization_id) {
+    const { data: memberRow } = await supabaseAdmin
+      .from("organization_members")
+      .select("role")
+      .eq("organization_id", profile.organization_id)
+      .eq("user_discord_id", viewer.discordId)
+      .maybeSingle();
+    if (memberRow) memberIds.add(profile.organization_id);
+  }
+  return canViewTournament(
+    { guild_id: tournament.guild_id, organization_id: tournament.organization_id ?? null, is_public: tournament.is_public },
+    matchesRoute ? tournament.guild_id : guildId,
+    memberIds,
+  )
+    ? tournament
+    : null;
 });
 
-/** Tournoi géré : l'utilisateur peut gérer ce tournoi ET il appartient au serveur (SEC-01 côté lecture). */
+/** Tournoi géré : l'utilisateur peut gérer ce tournoi ET il appartient au serveur / à l'organisation (SEC-01 côté lecture). */
 export const getManagedTournament = cache(async (guildId: string, tournamentId: string): Promise<Tournament | null> => {
   const access = await getGuildAdminAccess(guildId);
   if (!access.allowed || !canPerform(access.access, "MANAGE_TOURNAMENT", tournamentId)) return null;
@@ -97,11 +188,17 @@ export const getManagedTournament = cache(async (guildId: string, tournamentId: 
     .from("tournaments")
     .select("*")
     .eq("id", tournamentId)
-    .eq("guild_id", guildId)
     .maybeSingle();
   if (error) {
     if (error.code === "22P02") return null;
     throw new Error(`tournament read failed: ${error.message}`);
   }
-  return data as Tournament | null;
+  if (!data) return null;
+  const row = data as Tournament & { organization_id?: string | null };
+  if (row.guild_id === guildId || row.organization_id === guildId) return row;
+  const profile = await getServerProfile(guildId);
+  if (profile && (row.organization_id === profile.organization_id || row.guild_id === profile.guild_id)) {
+    return row;
+  }
+  return null;
 });

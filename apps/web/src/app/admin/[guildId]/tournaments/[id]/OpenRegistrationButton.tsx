@@ -18,12 +18,14 @@ export function OpenRegistrationButton({
   isRegistrationOpen,
   hasRegistrationChannel,
   hasStartedOrCheckin,
+  discordEnabled = true,
 }: {
   tournamentId: string;
   guildId: string;
   isRegistrationOpen: boolean;
   hasRegistrationChannel: boolean;
   hasStartedOrCheckin: boolean;
+  discordEnabled?: boolean;
 }) {
   const [isSending, setIsSending] = useState(false);
   const { t } = useTranslation();
@@ -34,7 +36,7 @@ export function OpenRegistrationButton({
     ? t("adminTournaments.alreadyOpen")
     : hasStartedOrCheckin
       ? t("adminTournaments.passedCheckin")
-      : !hasRegistrationChannel
+      : discordEnabled && !hasRegistrationChannel
         ? t("adminTournaments.missingRegistrationChannel")
         : null;
   const isDisabled = isSending || blockedReason !== null;
