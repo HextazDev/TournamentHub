@@ -2,7 +2,6 @@ import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { RegistrationService } from "../services/RegistrationService";
 import { LifecycleService } from "../services/LifecycleService";
-import { ArchiveService } from "../services/ArchiveService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant";
 import { canPerform, LocaleSchema } from "@hub/shared";
@@ -132,28 +131,12 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Tournament roles are reserved to server managers", code: "TOURNAMENT_ROLES_RESERVED" });
     }
 
-    let transitionToRegistration = false;
     let newStatus = currentTournament.status;
 
     // Transition automatically from DRAFT to REGISTRATION if valid checkin dates are provided
+    // (#87 / LIFE-01 : ce passage n'archive plus les autres tournois du serveur et ne nettoie pas Discord).
     if (currentTournament.status === "DRAFT" && checkin_start_at && checkin_end_at) {
       newStatus = "REGISTRATION";
-      transitionToRegistration = true;
-    }
-
-    // SEC-21 : ce passage archive les autres tournois du serveur (et nettoie Discord) : effet réservé au niveau SERVER.
-    // L'archivage automatique lui-même (y compris des tournois ACTIVE) est suivi dans #87.
-    if (transitionToRegistration && access?.level !== "SERVER") {
-      const { count, error: othersError } = await supabase
-        .from("tournaments")
-        .select("id", { count: "exact", head: true })
-        .eq("guild_id", currentTournament.guild_id)
-        .neq("id", tournamentId)
-        .neq("status", "ARCHIVED");
-      if (othersError) throw othersError;
-      if ((count ?? 0) > 0) {
-        return res.status(403).json({ error: "Archiving other tournaments is reserved to server managers", code: "SERVER_LEVEL_REQUIRED" });
-      }
     }
 
     const payload: any = {
@@ -182,29 +165,6 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
     if (!data) return res.status(404).json({ error: "Tournament not found" });
 
 
-    // Handle archiving of older tournaments if transitioning from DRAFT to REGISTRATION
-    if (transitionToRegistration) {
-      try {
-        const discordClient = req.app.locals.discordClient;
-        const guildId = currentTournament.guild_id;
-
-        await supabase.from("tournaments")
-          .update({ status: "ARCHIVED" })
-          .eq("guild_id", guildId)
-          .neq("id", tournamentId)
-          .neq("status", "ARCHIVED");
-
-        const { data: settings } = await supabase.from("server_settings")
-          .select("captain_role_id")
-          .eq("guild_id", guildId)
-          .single();
-
-        ArchiveService.backgroundDiscordCleanup(discordClient, guildId, settings?.captain_role_id).catch((e: any) => console.error(e));
-      } catch (archErr: any) {
-        console.warn("[TournamentRouter] Archive/cleanup failed on settings transition:", archErr?.message || archErr);
-      }
-    }
-
     // Schedule/reschedule check-in tasks if status is REGISTRATION
     if (newStatus === "REGISTRATION" && data.checkin_start_at && data.checkin_end_at) {
       try {
@@ -214,9 +174,9 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       }
     }
 
-    // SEC-05 / DISC-08 : nouveau rôle TO de tournoi, ou autres tournois archivés : cache invalidé tout de suite,
+    // SEC-05 / DISC-08 : nouveau rôle TO de tournoi : cache invalidé tout de suite,
     // annuaire guild_admins resynchronisé en arrière-plan (la réponse n'attend pas le chargement des membres).
-    if (data.discord_to_role_id !== currentTournament.discord_to_role_id || transitionToRegistration) {
+    if (data.discord_to_role_id !== currentTournament.discord_to_role_id) {
       refreshGuildAccess(req.app.locals.discordClient, currentTournament.guild_id);
     }
 

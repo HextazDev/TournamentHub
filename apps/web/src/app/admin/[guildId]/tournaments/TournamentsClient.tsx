@@ -42,8 +42,6 @@ export function TournamentsClient({ guildId, tournaments, canCreate, canDelete }
     resolver: zodResolver(formSchema),
   });
 
-  const activePublishedTournament = tournaments.find(t => ['REGISTRATION', 'ACTIVE'].includes(t.status));
-
   const handleDelete = async () => {
     if (!tournamentToDelete) return;
     try {
@@ -118,15 +116,6 @@ export function TournamentsClient({ guildId, tournaments, canCreate, canDelete }
           </button>
         )}
       </div>
-
-      {activePublishedTournament && (
-        <div className="bg-yellow-900/20 border border-yellow-700/50 rounded-xl p-4 flex gap-4 items-center text-yellow-500">
-          <AlertTriangle className="w-6 h-6 shrink-0" />
-          <p>
-            <strong>{t("common.note")}</strong> {t("adminTournaments.activeNotice", { name: activePublishedTournament.name })}
-          </p>
-        </div>
-      )}
 
       {tournaments.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">

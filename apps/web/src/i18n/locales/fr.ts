@@ -371,7 +371,6 @@ export const fr = {
     title: "🏆 Gestion des Tournois",
     subtitle: "Gérez le tournoi en cours et lancez de nouvelles éditions.",
     createButton: "Créer un Tournoi",
-    activeNotice: "Le tournoi {name} est actuellement en cours ou actif. Vous pouvez préparer un nouveau brouillon, mais sa publication archivera l'édition en cours.",
     deleteConfirm: "Êtes-vous sûr de vouloir supprimer le tournoi \"{name}\" ? Cette action est irréversible.",
     deleteTitle: "Supprimer",
     draft: "Brouillon",
