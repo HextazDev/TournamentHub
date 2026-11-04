@@ -117,7 +117,12 @@ phaseRouter.put("/:id/seeding", phaseScope, async (req, res) => {
         p_phase_id: phaseId,
         p_participants: participants
       });
-      if (rpcError) throw rpcError;
+      if (rpcError) {
+        if (rpcError.code === 'P0001' || rpcError.message?.includes("n'appartient pas au tournoi")) {
+          throw new DomainError(400, "Le placement contient une équipe qui n'est pas inscrite à ce tournoi.");
+        }
+        throw rpcError;
+      }
     } else {
       const { error: delMatches } = await supabase.from('matches').delete().eq('phase_id', phaseId);
       if (delMatches) throw delMatches;

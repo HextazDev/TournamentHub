@@ -124,5 +124,65 @@ BEGIN
 EXCEPTION WHEN check_violation THEN NULL;
 END $$;
 
+-- SEC-20 / #85 : intégrité des équipes par tournoi dans phase_teams et regenerate_phase_seeding
+INSERT INTO phase_teams (phase_id, team_id, seed) VALUES
+  ('00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-0000000002a1', 1);
+
+-- 1. Le trigger trg_phase_teams_tournament_integrity bloque l'insertion directe d'une équipe étrangère
+DO $$
+DECLARE
+  v_caught boolean := false;
+BEGIN
+  BEGIN
+    INSERT INTO phase_teams (phase_id, team_id, seed) VALUES
+      ('00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-0000000002b2', 2);
+  EXCEPTION WHEN raise_exception THEN
+    v_caught := true;
+  END;
+  IF NOT v_caught THEN
+    RAISE EXCEPTION 'SEC-20: insertion directe phase_teams équipe étrangère acceptée';
+  END IF;
+END $$;
+
+-- 2. regenerate_phase_seeding avec une équipe étrangère lève une exception et n'efface rien
+DO $$
+DECLARE
+  v_caught boolean := false;
+BEGIN
+  BEGIN
+    PERFORM regenerate_phase_seeding(
+      '00000000-0000-0000-0000-0000000001a1',
+      '[{"team_id":"00000000-0000-0000-0000-0000000002b2","seed":1}]'::jsonb
+    );
+  EXCEPTION WHEN raise_exception THEN
+    v_caught := true;
+  END;
+  IF NOT v_caught THEN
+    RAISE EXCEPTION 'SEC-20: regenerate_phase_seeding avec équipe étrangère accepté';
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF (SELECT count(*) FROM phase_teams WHERE phase_id = '00000000-0000-0000-0000-0000000001a1') <> 1 THEN
+    RAISE EXCEPTION 'SEC-20: phase_teams a été altérée malgré l''exception';
+  END IF;
+  IF (SELECT count(*) FROM matches WHERE phase_id = '00000000-0000-0000-0000-0000000001a1') <> 1 THEN
+    RAISE EXCEPTION 'SEC-20: matches a été altéré malgré l''exception';
+  END IF;
+END $$;
+
+-- 3. regenerate_phase_seeding avec une équipe valide du tournoi réussit
+DO $$
+BEGIN
+  PERFORM regenerate_phase_seeding(
+    '00000000-0000-0000-0000-0000000001a1',
+    '[{"team_id":"00000000-0000-0000-0000-0000000002a1","seed":2}]'::jsonb
+  );
+  IF (SELECT count(*) FROM phase_teams WHERE phase_id = '00000000-0000-0000-0000-0000000001a1' AND seed = 2) <> 1 THEN
+    RAISE EXCEPTION 'SEC-20: regenerate_phase_seeding légitime échoué';
+  END IF;
+END $$;
+
 SELECT 'RLS OK' AS result;
 ROLLBACK;
