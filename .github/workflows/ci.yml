@@ -2,9 +2,13 @@ name: CI Quality Assurance
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, staging ]
+    tags: [ "v*" ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, staging ]
+
+permissions:
+  contents: read
 
 jobs:
   validate-monorepo:
@@ -31,6 +35,9 @@ jobs:
           SUPABASE_URL: http://127.0.0.1:54321
           SUPABASE_SERVICE_ROLE_KEY: dummy_key_for_ci
         run: npm run test
+
+      - name: 🔍 Lint & Typecheck Monorepo
+        run: make lint
 
       - name: 🛠️ Build Apps (Bot & Web)
         env:

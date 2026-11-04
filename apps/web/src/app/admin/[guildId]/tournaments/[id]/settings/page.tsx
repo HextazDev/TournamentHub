@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { SettingsClient } from "./SettingsClient";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 export default async function TournamentSettingsPage({
   params
@@ -23,7 +24,7 @@ export default async function TournamentSettingsPage({
   let channels: any[] = [];
   let roles: any[] = [];
 
-  const botApiUrl = process.env.NEXT_PUBLIC_BOT_API_URL || 'http://localhost:8080';
+  const botApiUrl = resolveServerBotApiUrl();
   const botApiSecret = process.env.BOT_API_SECRET;
 
   if (!botApiSecret) {

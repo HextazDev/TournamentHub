@@ -5,6 +5,7 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { canViewTournament } from "@/lib/accessRules";
 import { checkGuildAdminAccess, type GuildAdminAccess } from "@/lib/guildAccess";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 // Accès serveur uniquement : ce module lit la session NextAuth et utilise la clé service_role.
 // Toute lecture via supabaseAdmin DOIT passer par une des vérifications ci-dessous (SEC-10 / SEC-11).
@@ -62,7 +63,7 @@ export const getGuildAdminAccess = cache(async (guildId: string): Promise<GuildA
   return checkGuildAdminAccess({
     guildId,
     discordId,
-    botApiUrl: process.env.NEXT_PUBLIC_BOT_API_URL || "http://localhost:8080",
+    botApiUrl: resolveServerBotApiUrl(),
     botApiSecret: process.env.BOT_API_SECRET,
     fetchImpl: fetch,
   });
