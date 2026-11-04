@@ -153,6 +153,13 @@ describe("tournamentNextStep", () => {
     expect(tournamentNextStep({ ...dated, status: "ACTIVE" }, ctx)).toBe("runMatches");
     expect(tournamentNextStep({ ...dated, status: "COMPLETED" }, ctx)).toBeNull();
   });
+
+  it("CHK-05: si checkin_mode === 'DISABLED', saute l'étape checkinDates et passe directement à waitParticipants ou placementAndLaunch", () => {
+    const ctx = { phasesCount: 1, teamsCount: 0, serverSetupComplete: true };
+    const disabled = { ...base, is_registration_open: true, checkin_mode: "DISABLED" as const };
+    expect(tournamentNextStep(disabled, ctx)).toBe("waitParticipants");
+    expect(tournamentNextStep(disabled, { ...ctx, teamsCount: 2 })).toBe("placementAndLaunch");
+  });
 });
 
 describe("buildBotInviteUrl", () => {

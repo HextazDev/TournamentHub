@@ -30,6 +30,7 @@ export const fr = {
     nameChangeField: "Changement de Pseudo",
     captainRoleField: "Rôle Capitaine",
     pendingCheckin: "En attente du checkin",
+    presenceApplied: "Appliqué immédiatement (check-in désactivé)",
     subsHeader: "\n\n**Remplaçants:**\n",
     technicalWarning: "\n\n⚠️ **Avertissement:** {count} joueur(s) n'ont pas pu être enregistrés suite à une erreur technique. Contactez un TO.",
     generalError: "❌ Une erreur est survenue: {message}",

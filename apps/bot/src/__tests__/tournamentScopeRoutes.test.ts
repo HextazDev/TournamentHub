@@ -285,6 +285,20 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     expect(db.current?.tables.tournaments?.find((t) => t.id === T_B)?.status).toBe("ACTIVE");
     expect(ArchiveService.backgroundDiscordCleanup).not.toHaveBeenCalled();
   });
+
+  it("checkin_mode: valeur invalide ➜ 400", async () => {
+    const out = await settings(toOfA, { checkin_mode: "INVALID_MODE" });
+    expect(out.status).toBe(400);
+    expect(out.body).toMatchObject({ error: expect.stringContaining("checkin_mode") });
+  });
+
+  it("checkin_mode: DISABLED ➜ 200, passe DRAFT à REGISTRATION et met à jour checkin_mode", async () => {
+    seed([tournamentRow(T_A, { status: "DRAFT" })]);
+    const out = await settings(toOfA, { checkin_mode: "DISABLED" });
+    expect(out.status).toBe(200);
+    const row = db.current?.tables.tournaments?.find((t) => t.id === T_A);
+    expect(row).toMatchObject({ checkin_mode: "DISABLED", status: "REGISTRATION" });
+  });
 });
 
 describe("SEC-21: chaque route d'un montage ouvert aux TO de tournoi déclare sa garde", () => {

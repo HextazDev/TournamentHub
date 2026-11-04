@@ -1,5 +1,6 @@
 import type { Client } from "discord.js";
 import { z } from "zod";
+import { isSyntheticDiscordId } from "@hub/shared";
 import { logger } from "../utils/logger";
 import { applyPresence, hasPresenceFailure, removePresence, type PresenceReport } from "./CaptainPresenceService";
 
@@ -49,7 +50,7 @@ export class WebhookRolesService {
 
   private async sync(type: "INSERT" | "UPDATE" | "DELETE", record: TeamRecord): Promise<PresenceReport | null> {
     const captainId = record.captain_discord_id;
-    if (!captainId) return null;
+    if (!captainId || isSyntheticDiscordId(captainId)) return null;
     const team = { id: record.id, tournament_id: record.tournament_id, name: record.name, captain_discord_id: captainId };
 
     if (type === "DELETE") return record.is_checked_in ? removePresence(this.client, team) : null;

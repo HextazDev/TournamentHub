@@ -4,11 +4,12 @@ import { RegistrationService } from "../services/RegistrationService";
 import { LifecycleService } from "../services/LifecycleService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant";
-import { canPerform, LocaleSchema } from "@hub/shared";
+import { canPerform, LocaleSchema, CheckinModeSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { refreshGuildAccess } from "../services/AccessRefreshService";
 import { ChannelAccessService } from "../services/ChannelAccessService";
+import { logger } from "../utils/logger";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
@@ -99,7 +100,7 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
     }
 
     const {
-      start_at, checkin_start_at, checkin_end_at,
+      start_at, checkin_start_at, checkin_end_at, checkin_mode,
       discord_registration_channel_id, discord_announcement_channel_id,
       discord_checkin_channel_id, discord_captain_role_id, discord_to_role_id,
       language,
@@ -114,6 +115,15 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
 
     if (fetchErr || !currentTournament) {
       return res.status(404).json({ error: "Tournament not found" });
+    }
+
+    let resolvedCheckinMode = currentTournament.checkin_mode ?? "ENABLED";
+    if (checkin_mode !== undefined) {
+      const parsedMode = CheckinModeSchema.safeParse(checkin_mode);
+      if (!parsedMode.success) {
+        return res.status(400).json({ error: "checkin_mode must be 'ENABLED' or 'DISABLED'" });
+      }
+      resolvedCheckinMode = parsedMode.data;
     }
 
     const requestedLanguage = OptionalLocaleSchema.safeParse(language);
@@ -165,20 +175,22 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
 
     let newStatus = currentTournament.status;
 
-    // Transition automatically from DRAFT to REGISTRATION if valid checkin dates are provided
-    // (#87 / LIFE-01 : ce passage n'archive plus les autres tournois du serveur et ne nettoie pas Discord).
-    if (currentTournament.status === "DRAFT" && checkin_start_at && checkin_end_at) {
-      newStatus = "REGISTRATION";
+    // Transition automatically from DRAFT to REGISTRATION if valid checkin dates are provided or checkin is disabled (#15 / #87 / LIFE-01)
+    if (currentTournament.status === "DRAFT") {
+      if (resolvedCheckinMode === "DISABLED" || (checkin_start_at && checkin_end_at)) {
+        newStatus = "REGISTRATION";
+      }
     }
 
     const payload: any = {
       status: newStatus,
+      checkin_mode: resolvedCheckinMode,
       start_at: start_at || null,
-      checkin_start_at: checkin_start_at || null,
-      checkin_end_at: checkin_end_at || null,
+      checkin_start_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_start_at || null),
+      checkin_end_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_end_at || null),
       discord_registration_channel_id: discord_registration_channel_id || null,
       discord_announcement_channel_id: discord_announcement_channel_id || null,
-      discord_checkin_channel_id: discord_checkin_channel_id || null,
+      discord_checkin_channel_id: resolvedCheckinMode === "DISABLED" ? null : (discord_checkin_channel_id || null),
       // Sans droit sur les rôles, les valeurs enregistrées sont conservées (champ absent ou inchangé).
       discord_captain_role_id: canManageRoles ? discord_captain_role_id || null : currentTournament.discord_captain_role_id,
       discord_to_role_id: canManageRoles ? discord_to_role_id || null : currentTournament.discord_to_role_id,
@@ -196,13 +208,12 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Tournament not found" });
 
-
     // Schedule/reschedule check-in tasks if status is REGISTRATION
-    if (newStatus === "REGISTRATION" && data.checkin_start_at && data.checkin_end_at) {
+    if (newStatus === "REGISTRATION") {
       try {
-        SchedulerService.scheduleTournament(data);
-      } catch (schedErr: any) {
-        console.error("[TournamentRouter] Scheduling failed:", schedErr);
+        await SchedulerService.scheduleTournament(data);
+      } catch (schedErr: unknown) {
+        logger.error("[TournamentRouter] Scheduling failed:", schedErr);
       }
     }
 

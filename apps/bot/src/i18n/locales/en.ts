@@ -32,6 +32,7 @@ export const en: typeof fr = {
     nameChangeField: "Nickname Change",
     captainRoleField: "Captain Role",
     pendingCheckin: "Pending check-in",
+    presenceApplied: "Applied immediately (check-in disabled)",
     subsHeader: "\n\n**Substitutes:**\n",
     technicalWarning: "\n\n⚠️ **Warning:** {count} player(s) could not be registered due to a technical error. Contact a TO.",
     generalError: "❌ An error occurred: {message}",
