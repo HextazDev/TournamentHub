@@ -109,6 +109,7 @@ export interface NextStepTournament {
   checkin_start_at: string | null;
   checkin_end_at: string | null;
   discord_registration_channel_id: string | null;
+  checkin_mode?: "ENABLED" | "DISABLED" | null;
 }
 
 export type TournamentNextStep =
@@ -132,7 +133,8 @@ export function tournamentNextStep(
   if (!t.discord_registration_channel_id) return "registrationChannel";
   if (ctx.phasesCount === 0) return "structure";
   if (!t.is_registration_open) return "openRegistrations";
-  if (!t.checkin_start_at || !t.checkin_end_at) return "checkinDates";
+  // CHK-05 (#15) : si le check-in est désactivé, on saute l'étape des dates de check-in
+  if (t.checkin_mode !== "DISABLED" && (!t.checkin_start_at || !t.checkin_end_at)) return "checkinDates";
   if (ctx.teamsCount < 2) return "waitParticipants";
   return "placementAndLaunch";
 }

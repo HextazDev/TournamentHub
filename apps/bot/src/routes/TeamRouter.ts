@@ -2,7 +2,7 @@ import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { getAuthenticatedGuildId, getTournamentScope, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
-import { CreateTeamSchema, GenerateFakeTeamsSchema, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
+import { CreateTeamSchema, GenerateFakeTeamsSchema, generateSyntheticDiscordId, isSyntheticDiscordId, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
 import type { Client } from "discord.js";
 import { applyPresence, hasPresenceFailure, removePresence } from "../services/CaptainPresenceService";
 import { defaultCheckedInOnManualAdd } from "../utils/manualTeamCheckin";
@@ -35,7 +35,7 @@ teamRouter.post("/", bodyTournamentScope, async (req, res) => {
 
     const { data: tournament, error: tournamentError } = await supabase
       .from("tournaments")
-      .select("status, checkin_start_at")
+      .select("status, checkin_start_at, checkin_mode")
       .eq("id", tournament_id)
       .single();
     if (tournamentError || !tournament) {
@@ -68,8 +68,9 @@ teamRouter.post("/", bodyTournamentScope, async (req, res) => {
 
     // DISC-12 : une équipe créée check-in reçoit la présence comme au check-in (DISC-11).
     // Un refus Discord n'annule pas la création : il est signalé au TO via `presence_warning`.
+    // Les équipes sans Discord (capitaine synthétique) ne déclenchent aucun appel Discord (#15).
     let presenceWarning = false;
-    if (team.is_checked_in) {
+    if (team.is_checked_in && !isSyntheticDiscordId(team.captain_discord_id)) {
       const client: Client = req.app.locals.discordClient;
       const report = await applyPresence(client, {
         id: team.id,
@@ -109,7 +110,7 @@ teamRouter.post("/generate-fake", bodyTournamentScope, async (req, res) => {
     const fakeTeams = Array.from({ length: safeCount }).map(() => ({
       tournament_id,
       name: `Equipe Fictive ${Math.floor(Math.random() * 10000)}`,
-      captain_discord_id: `999999999${Math.floor(Math.random() * 10000)}`,
+      captain_discord_id: generateSyntheticDiscordId(),
       is_checked_in: true,
     }));
 
@@ -235,7 +236,8 @@ teamRouter.patch("/:id/checkin", teamScope, async (req, res) => {
 
     // DISC-11 : la présence (pseudo + rôle Capitaine) est appliquée ici, sans dépendre du webhook Supabase.
     // Un refus Discord est journalisé par CaptainPresenceService et n'annule pas le check-in.
-    if (updated.captain_discord_id) {
+    // Les équipes sans Discord (capitaine synthétique) ne déclenchent aucun appel Discord (#15).
+    if (updated.captain_discord_id && !isSyntheticDiscordId(updated.captain_discord_id)) {
       const client: Client = req.app.locals.discordClient;
       const team = {
         id: updated.id,

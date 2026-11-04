@@ -32,4 +32,10 @@ describe("defaultCheckedInOnManualAdd — REG-09 check-in par défaut d'une équ
   it("REG-09: date de check-in illisible ➜ non check-in", () => {
     expect(defaultCheckedInOnManualAdd({ status: "REGISTRATION", checkin_start_at: "not-a-date" }, NOW)).toBe(false);
   });
+
+  it("REG-09: checkin_mode === DISABLED ➜ toujours check-in (même en DRAFT ou sans date)", () => {
+    expect(defaultCheckedInOnManualAdd({ status: "DRAFT", checkin_start_at: null, checkin_mode: "DISABLED" }, NOW)).toBe(true);
+    expect(defaultCheckedInOnManualAdd({ status: "REGISTRATION", checkin_start_at: AFTER, checkin_mode: "DISABLED" }, NOW)).toBe(true);
+    expect(defaultCheckedInOnManualAdd({ status: "REGISTRATION", checkin_start_at: null, checkin_mode: "DISABLED" }, NOW)).toBe(true);
+  });
 });

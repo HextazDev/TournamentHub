@@ -13,6 +13,10 @@ export type PhaseType = "ROUND_ROBIN" | "SINGLE_ELIM" | "SWISS" | "DOUBLE_ELIM";
 export const LocaleSchema = z.enum(["fr", "en"]);
 export type Locale = z.infer<typeof LocaleSchema>;
 
+// Mode de check-in (tournaments.checkin_mode) : ENABLED (défaut) ou DISABLED (#15)
+export const CheckinModeSchema = z.enum(["ENABLED", "DISABLED"]);
+export type CheckinMode = z.infer<typeof CheckinModeSchema>;
+
 // Plafond de génération d'équipes fictives (back-office de test) : borne l'UI et l'API bot.
 export const MAX_FAKE_TEAMS = 64;
 
@@ -26,6 +30,7 @@ export interface Tournament {
   status: TournamentStatus;
   game_type: GameType;
   language: Locale;
+  checkin_mode?: CheckinMode;
   start_at?: string | null;
   start_date?: string | null;
   is_registration_open?: boolean | null;
@@ -219,10 +224,26 @@ export const CreateTournamentSchema = z.object({
   description: z.string().optional().nullable(),
   game_type: z.string().default("GENERIC"),
   language: LocaleSchema.optional(),
+  checkin_mode: CheckinModeSchema.default("ENABLED"),
   start_at: z.string().optional().nullable(),
   checkin_start_at: z.string().optional().nullable(),
   checkin_end_at: z.string().optional().nullable(),
 });
+
+/** Corps de `PUT /api/tournaments/:id/settings` (mise à jour des paramètres du tournoi, #15). */
+export const TournamentSettingsUpdateSchema = z.object({
+  start_at: z.string().optional().nullable(),
+  checkin_start_at: z.string().optional().nullable(),
+  checkin_end_at: z.string().optional().nullable(),
+  checkin_mode: CheckinModeSchema.default("ENABLED"),
+  discord_registration_channel_id: z.string().optional().nullable(),
+  discord_announcement_channel_id: z.string().optional().nullable(),
+  discord_checkin_channel_id: z.string().optional().nullable(),
+  discord_captain_role_id: z.string().optional().nullable(),
+  discord_to_role_id: z.string().optional().nullable(),
+  language: LocaleSchema.optional().nullable(),
+});
+export type TournamentSettingsUpdateInput = z.infer<typeof TournamentSettingsUpdateSchema>;
 
 export const ReportScoreSchema = z.object({
   match_id: z.uuid(),
@@ -249,7 +270,22 @@ export type ForceScoreInput = z.infer<typeof ForceScoreSchema>;
 // Bornes alignées sur le schéma SQL (`teams.name VARCHAR(32)`, `team_members` VARCHAR(50) / VARCHAR(25)).
 export const TEAM_NAME_MAX_LENGTH = 32;
 export const TEAM_MEMBERS_MAX = 10;
-const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+
+/**
+ * Génère un identifiant Discord synthétique (18 chiffres, préfixe 000000)
+ * pour les équipes manuelles ou tournois fermés sans compte Discord (#15).
+ * Les snowflakes Discord réels étant des entiers sans zéro de tête, le préfixe 000000
+ * garantit l'absence de collision avec de vrais comptes.
+ */
+export function generateSyntheticDiscordId(): string {
+  const randomPart = Math.floor(100000000000 + Math.random() * 900000000000).toString();
+  return `000000${randomPart}`;
+}
+
+export function isSyntheticDiscordId(id: string | null | undefined): boolean {
+  return typeof id === "string" && (id.startsWith("000000") || id.startsWith("999999"));
+}
 
 export const CreateTeamMemberSchema = z.object({
   user_id: DiscordSnowflakeSchema.nullable().default(null),

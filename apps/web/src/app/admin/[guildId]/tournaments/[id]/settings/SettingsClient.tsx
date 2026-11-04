@@ -75,8 +75,9 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
   // ici rechargeait la base par-dessus les modifications non enregistrées.
   }, [guildId, tournament.id, t]);
 
-  const { register, handleSubmit } = useForm({
+  const { register, handleSubmit, watch } = useForm({
     defaultValues: {
+      checkin_mode: tournament.checkin_mode || "ENABLED",
       start_at: tournament.start_at ? dayjs(tournament.start_at).format('YYYY-MM-DDTHH:mm') : "",
       checkin_start_at: tournament.checkin_start_at ? dayjs(tournament.checkin_start_at).format('YYYY-MM-DDTHH:mm') : "",
       checkin_end_at: tournament.checkin_end_at ? dayjs(tournament.checkin_end_at).format('YYYY-MM-DDTHH:mm') : "",
@@ -89,6 +90,9 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
     }
   });
 
+  const checkinMode = watch("checkin_mode");
+  const isCheckinDisabled = checkinMode === "DISABLED";
+
   const onSubmit = async (data: any) => {
     setIsSaving(true);
     setMessage(null);
@@ -99,12 +103,13 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           guildId,
+          checkin_mode: data.checkin_mode,
           start_at: data.start_at ? new Date(data.start_at).toISOString() : null,
-          checkin_start_at: data.checkin_start_at ? new Date(data.checkin_start_at).toISOString() : null,
-          checkin_end_at: data.checkin_end_at ? new Date(data.checkin_end_at).toISOString() : null,
+          checkin_start_at: isCheckinDisabled || !data.checkin_start_at ? null : new Date(data.checkin_start_at).toISOString(),
+          checkin_end_at: isCheckinDisabled || !data.checkin_end_at ? null : new Date(data.checkin_end_at).toISOString(),
           discord_registration_channel_id: data.discord_registration_channel_id || null,
           discord_announcement_channel_id: data.discord_announcement_channel_id || null,
-          discord_checkin_channel_id: data.discord_checkin_channel_id || null,
+          discord_checkin_channel_id: isCheckinDisabled ? null : (data.discord_checkin_channel_id || null),
           // Sans droit sur les rôles, ils ne sont pas envoyés : le bot conserve les valeurs enregistrées.
           ...(canManageRoles
             ? { discord_captain_role_id: data.discord_captain_role_id || null, discord_to_role_id: data.discord_to_role_id || null }
@@ -150,13 +155,25 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
         </div>
       )}
 
-      <CheckinTimeManager tournament={tournament} guildId={guildId} />
+      <CheckinTimeManager tournament={{ ...tournament, checkin_mode: checkinMode }} guildId={guildId} />
 
       <form onSubmit={handleSubmit(onSubmit)} className="bg-slate-800 rounded-xl p-8 border border-slate-700 space-y-6 shadow-xl">
         <h2 className="text-xl font-bold text-white mb-4">{t("adminSettingsPage.datesSection")}</h2>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-3 md:col-span-2">
+        <div className="space-y-6">
+          <div className="space-y-2">
+            <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinModeLabel")}</label>
+            <select
+              {...register("checkin_mode")}
+              className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+            >
+              <option value="ENABLED">{t("adminSettingsPage.checkinModeEnabled")}</option>
+              <option value="DISABLED">{t("adminSettingsPage.checkinModeDisabled")}</option>
+            </select>
+            <p className="text-xs text-slate-400">{t("adminSettingsPage.checkinModeDescription")}</p>
+          </div>
+
+          <div className="space-y-3">
             <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.startDate")}</label>
             <input
               type="datetime-local"
@@ -165,23 +182,31 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
             />
           </div>
 
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinStart")}</label>
-            <input
-              type="datetime-local"
-              {...register("checkin_start_at")}
-              className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-            />
-          </div>
+          {isCheckinDisabled ? (
+            <div className="bg-purple-950/20 border border-purple-900/40 rounded-xl p-4 text-xs text-purple-300">
+              {t("adminSettingsPage.checkinDatesNotRequired")}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinStart")}</label>
+                <input
+                  type="datetime-local"
+                  {...register("checkin_start_at")}
+                  className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                />
+              </div>
 
-          <div className="space-y-3">
-            <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinEnd")}</label>
-            <input
-              type="datetime-local"
-              {...register("checkin_end_at")}
-              className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
-            />
-          </div>
+              <div className="space-y-3">
+                <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinEnd")}</label>
+                <input
+                  type="datetime-local"
+                  {...register("checkin_end_at")}
+                  className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all outline-none"
+                />
+              </div>
+            </div>
+          )}
         </div>
 
         <h2 className="text-xl font-bold text-white mb-4 mt-8 flex items-center gap-2">

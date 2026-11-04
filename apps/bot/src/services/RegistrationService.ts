@@ -2,6 +2,7 @@ import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, Moda
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage, isBotLocale } from '../i18n';
 import { logger } from '../utils/logger';
+import { applyPresence } from './CaptainPresenceService';
 
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -369,12 +370,15 @@ export class RegistrationService {
 
       const { data: tournament } = await supabase.from('tournaments').select('*').eq('id', tournamentId).single();
 
+      const isCheckedIn = tournament?.checkin_mode === 'DISABLED';
+
       const { data: team, error: teamErr } = await supabase
         .from('teams')
         .insert({
           tournament_id: tournamentId,
           name: cachedData.teamName,
-          captain_discord_id: interaction.user.id
+          captain_discord_id: interaction.user.id,
+          is_checked_in: isCheckedIn
         })
         .select()
         .single();
@@ -430,6 +434,20 @@ export class RegistrationService {
         }
       }
 
+      // Si check-in désactivé, appliquer la présence Discord dès l'inscription (#15 / #68)
+      if (isCheckedIn) {
+        try {
+          await applyPresence(interaction.client, {
+            id: team.id,
+            tournament_id: team.tournament_id,
+            name: team.name,
+            captain_discord_id: team.captain_discord_id,
+          });
+        } catch (presenceErr) {
+          logger.warn("Failed to apply presence on registration for disabled checkin tournament:", presenceErr);
+        }
+      }
+
       const warningStr = insertErrors.length > 0
         ? tBot(lang, 'registration.technicalWarning', { count: allPlayers.length })
         : '';
@@ -438,8 +456,8 @@ export class RegistrationService {
         title: tBot(lang, 'registration.registrationSuccessTitle'),
         description: `${tBot(lang, 'registration.registrationSuccessDesc', { teamName: cachedData.teamName })}${warningStr}`,
         fields: [
-          { name: tBot(lang, 'registration.nameChangeField'), value: tBot(lang, 'registration.pendingCheckin'), inline: true },
-          { name: tBot(lang, 'registration.captainRoleField'), value: tBot(lang, 'registration.pendingCheckin'), inline: true }
+          { name: tBot(lang, 'registration.nameChangeField'), value: isCheckedIn ? tBot(lang, 'registration.presenceApplied') : tBot(lang, 'registration.pendingCheckin'), inline: true },
+          { name: tBot(lang, 'registration.captainRoleField'), value: isCheckedIn ? tBot(lang, 'registration.presenceApplied') : tBot(lang, 'registration.pendingCheckin'), inline: true }
         ],
         color: 0x57F287
       };

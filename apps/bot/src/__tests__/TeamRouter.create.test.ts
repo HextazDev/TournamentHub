@@ -158,6 +158,12 @@ describe("POST /api/teams — REG-09 check-in par défaut", () => {
     await post(body({ is_checked_in: true }));
     expect(inserted.teams[0]).toMatchObject({ is_checked_in: true });
   });
+
+  it("REG-09: checkin_mode === DISABLED ➜ équipe check-in par défaut même avec checkin_start_at futur ou nul", async () => {
+    tables.tournament = { data: { status: "REGISTRATION", checkin_start_at: FUTURE, checkin_mode: "DISABLED" }, error: null };
+    await post(body());
+    expect(inserted.teams[0]).toMatchObject({ is_checked_in: true });
+  });
 });
 
 describe("POST /api/teams — DISC-12 présence à la création", () => {
@@ -178,6 +184,17 @@ describe("POST /api/teams — DISC-12 présence à la création", () => {
     const out = await post(body());
     expect(out.status).toBe(201);
     expect(out.body).toMatchObject({ id: "team-1", presence_warning: true });
+  });
+
+  it.each([
+    ["nouveau format 000000", "000000123456789012"],
+    ["ancien format 999999", "999999123456789012"],
+  ])("DISC-12: capitaine synthétique sans compte Discord (%s) ➜ aucun appel Discord et presence_warning faux", async (_label, synthCaptain) => {
+    tables.team = { data: { ...teamRow(true), captain_discord_id: synthCaptain }, error: null };
+    const out = await post(body({ captain_discord_id: synthCaptain }));
+    expect(out.status).toBe(201);
+    expect(presence.applyPresence).not.toHaveBeenCalled();
+    expect(out.body).toMatchObject({ presence_warning: false });
   });
 
   it("DISC-12: rôle au-dessus du bot ➜ 201 + presence_warning", async () => {
