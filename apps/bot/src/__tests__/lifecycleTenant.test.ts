@@ -54,12 +54,13 @@ describe("SEC-14 lifecycle tenant isolation", () => {
     verify.mockResolvedValue(true);
     const filters: string[][] = [];
     const tournament = { id: "t1", guild_id: "a" };
+    const archivedRow = { id: "t-old", discord_captain_role_id: "r", discord_checkin_channel_id: "c" };
     const chain = {
       select: () => chain, update: () => chain,
       eq: (key: string, value: string) => { filters.push([key, value]); return chain; },
       neq: () => chain,
-      single: async () => ({ data: filters.length === 2 ? tournament : { captain_role_id: "r" }, error: null }),
-      then: (resolve: (value: unknown) => void) => resolve({ error: null }),
+      single: async () => ({ data: tournament, error: null }),
+      then: (resolve: (value: unknown) => void) => resolve({ data: [archivedRow], error: null }),
     };
     db.from.mockReturnValue(chain);
     cleanup.mockResolvedValue(undefined);
@@ -69,6 +70,26 @@ describe("SEC-14 lifecycle tenant isolation", () => {
     expect(res.statusCode).toBe(202);
     expect(filters).toContainEqual(["guild_id", "a"]);
     expect(schedule).toHaveBeenCalledWith(tournament);
-    expect(cleanup).toHaveBeenCalledOnce();
+    expect(cleanup).toHaveBeenCalledWith(expect.anything(), "a", [archivedRow]);
+  });
+
+  it("ne déclenche pas backgroundDiscordCleanup si aucun autre tournoi n'a été archivé", async () => {
+    verify.mockResolvedValue(true);
+    const tournament = { id: "t1", guild_id: "a" };
+    const chain = {
+      select: () => chain, update: () => chain,
+      eq: () => chain,
+      neq: () => chain,
+      single: async () => ({ data: tournament, error: null }),
+      then: (resolve: (value: unknown) => void) => resolve({ data: [], error: null }),
+    };
+    db.from.mockReturnValue(chain);
+    cleanup.mockResolvedValue(undefined);
+    const req = { body: { guildId: "a", newTournamentId: "t1" }, adminCheck: { guildId: "a" }, app: { locals: { discordClient: {} } } } as unknown as Request;
+    const res = response();
+    await archiveAndInit(req, res as unknown as Response);
+    expect(res.statusCode).toBe(202);
+    expect(schedule).toHaveBeenCalledWith(tournament);
+    expect(cleanup).not.toHaveBeenCalled();
   });
 });
