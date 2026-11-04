@@ -10,8 +10,18 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
+import { discordListQuery } from "@/lib/accessRules";
 
-export function SettingsClient({ tournament, guildId, initialChannels = [], initialRoles = [] }: { tournament: any; guildId: string; initialChannels?: any[]; initialRoles?: any[] }) {
+interface SettingsClientProps {
+  tournament: any;
+  guildId: string;
+  /** SEC-22 : faux pour un TO de tournoi, qui ne peut pas changer les rôles TO / Capitaine de son tournoi. */
+  canManageRoles: boolean;
+  initialChannels?: any[];
+  initialRoles?: any[];
+}
+
+export function SettingsClient({ tournament, guildId, canManageRoles, initialChannels = [], initialRoles = [] }: SettingsClientProps) {
   const router = useRouter();
   const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
@@ -31,8 +41,8 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
       }
       try {
         const [channelsRes, rolesRes] = await Promise.all([
-          fetch(`/api/bot/discord/channels?guildId=${guildId}`),
-          fetch(`/api/bot/discord/roles?guildId=${guildId}`)
+          fetch(`/api/bot/discord/channels?${discordListQuery(guildId, tournament.id)}`),
+          fetch(`/api/bot/discord/roles?${discordListQuery(guildId, tournament.id)}`)
         ]);
 
         if (channelsRes.ok) {
@@ -63,7 +73,7 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
     fetchDiscordData();
   // Ne dépend que du serveur : la session NextAuth est relue à chaque retour sur l'onglet, et la relancer
   // ici rechargeait la base par-dessus les modifications non enregistrées.
-  }, [guildId, t]);
+  }, [guildId, tournament.id, t]);
 
   const { register, handleSubmit } = useForm({
     defaultValues: {
@@ -95,8 +105,10 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
           discord_registration_channel_id: data.discord_registration_channel_id || null,
           discord_announcement_channel_id: data.discord_announcement_channel_id || null,
           discord_checkin_channel_id: data.discord_checkin_channel_id || null,
-          discord_captain_role_id: data.discord_captain_role_id || null,
-          discord_to_role_id: data.discord_to_role_id || null,
+          // Sans droit sur les rôles, ils ne sont pas envoyés : le bot conserve les valeurs enregistrées.
+          ...(canManageRoles
+            ? { discord_captain_role_id: data.discord_captain_role_id || null, discord_to_role_id: data.discord_to_role_id || null }
+            : {}),
           language: data.language || "fr",
         }),
       });
@@ -228,13 +240,20 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
           {t("adminSettingsPage.rolesSection")}
         </h2>
 
+        {!canManageRoles && (
+          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4">
+            {t("adminSettingsPage.rolesReserved")}
+          </p>
+        )}
+
         {!isLoadingDiscord && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="space-y-3">
               <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.captainRoleLabel")}</label>
               <select
                 {...register("discord_captain_role_id")}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none"
+                disabled={!canManageRoles}
+                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <option value="">{t("adminSettingsPage.noRole")}</option>
                 {roles.map((ro: any) => (
@@ -247,7 +266,8 @@ export function SettingsClient({ tournament, guildId, initialChannels = [], init
               <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.toRoleLabel")}</label>
               <select
                 {...register("discord_to_role_id")}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none"
+                disabled={!canManageRoles}
+                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <option value="">{t("adminSettingsPage.noRole")}</option>
                 {roles.map((ro: any) => (

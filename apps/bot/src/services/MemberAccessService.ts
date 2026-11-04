@@ -1,7 +1,7 @@
 import { PermissionFlagsBits } from "discord.js";
 import type { AccessDeniedCode, GuildAccess } from "@hub/shared";
 import { resolveAdminReason } from "../utils/adminAccess";
-import { readToRoleId } from "./GuildRegistryService";
+import { readToRoleId, readTournamentToRoles } from "./GuildRegistryService";
 
 /** Sous-ensemble du client Discord utilisé (facilite les tests). */
 export interface DiscordClientLike {
@@ -28,7 +28,8 @@ interface CacheEntry {
 }
 
 /**
- * SEC-05 : filet de sécurité. Les changements connus (rôles d'un membre, permissions d'un rôle, rôle TO du serveur)
+ * SEC-05 : filet de sécurité. Les changements connus (rôles d'un membre, permissions d'un rôle, rôle TO du serveur
+ * ou d'un tournoi, archivage d'un tournoi)
  * invalident l'entrée immédiatement ; ce délai ne couvre que les changements que Discord ne signale pas.
  */
 const ACCESS_CACHE_TTL_MS = 30_000;
@@ -69,7 +70,17 @@ async function computeAccess(client: DiscordClientLike, guildId: string, discord
     hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
     hasToRole: !!settings.toRoleId && member.roles.cache.has(settings.toRoleId),
   });
-  return reason ? { allowed: true, access: { level: "SERVER", reason } } : { allowed: false, code: "NO_RIGHTS" };
+  // Le niveau SERVER l'emporte : les rôles TO de tournoi ne sont lus que sans droit serveur.
+  if (reason) return { allowed: true, access: { level: "SERVER", reason } };
+
+  const tournamentRoles = await readTournamentToRoles(guildId);
+  if (!tournamentRoles.ok) return { allowed: false, code: "CHECK_FAILED" };
+  const tournamentIds = tournamentRoles.roles
+    .filter((role) => member.roles.cache.has(role.roleId))
+    .map((role) => role.tournamentId);
+  return tournamentIds.length > 0
+    ? { allowed: true, access: { level: "TOURNAMENT", tournamentIds } }
+    : { allowed: false, code: "NO_RIGHTS" };
 }
 
 /**

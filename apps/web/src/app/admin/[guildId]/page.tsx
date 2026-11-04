@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { Trophy, CheckCircle } from "lucide-react";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getGuildAdminAccess, getServerProfile } from "@/lib/viewer";
+import { managedTournamentIds } from "@/lib/accessRules";
 import { ServerSetupChecklist } from "@/components/admin/ServerSetupChecklist";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
@@ -9,12 +10,19 @@ import { getServerLocale } from "@/i18n/server";
 export default async function AdminDashboard({ params }: { params: Promise<{ guildId: string }> }) {
   const { guildId } = await params;
   // Le layout bloque déjà l'accès ; la page ne lit des données service_role qu'après la même vérification.
-  if (!(await getGuildAdminAccess(guildId)).allowed) notFound();
+  const access = await getGuildAdminAccess(guildId);
+  if (!access.allowed) notFound();
   const locale = await getServerLocale();
 
+  // SEC-21 : un TO de tournoi ne compte que ses tournois et ne voit pas la configuration du serveur.
+  const scope = managedTournamentIds(access.access);
+  const countTournaments = () => {
+    const query = supabaseAdmin.from("tournaments").select("id", { count: "exact", head: true }).eq("guild_id", guildId);
+    return scope ? query.in("id", [...scope]) : query;
+  };
   const [totalRes, activeRes, settings] = await Promise.all([
-    supabaseAdmin.from("tournaments").select("id", { count: "exact", head: true }).eq("guild_id", guildId),
-    supabaseAdmin.from("tournaments").select("id", { count: "exact", head: true }).eq("guild_id", guildId).eq("status", "ACTIVE"),
+    countTournaments(),
+    countTournaments().eq("status", "ACTIVE"),
     getServerProfile(guildId),
   ]);
   if (totalRes.error) throw new Error(`tournaments count failed: ${totalRes.error.message}`);
@@ -27,7 +35,7 @@ export default async function AdminDashboard({ params }: { params: Promise<{ gui
         <p className="text-slate-400">{t(locale, "admin.dashboardSubtitle")}</p>
       </div>
 
-      <ServerSetupChecklist guildId={guildId} settings={settings} locale={locale} />
+      {access.access.level === "SERVER" && <ServerSetupChecklist guildId={guildId} settings={settings} locale={locale} />}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-md flex items-center justify-between">

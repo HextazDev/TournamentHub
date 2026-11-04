@@ -4,17 +4,23 @@ import { supabase } from "../lib/supabase";
 import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
-import { getAuthenticatedGuildId, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
+import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { DomainError, sendServerError } from "../utils/serverError";
 
 export const phaseRouter = Router();
 
+// SEC-21 : chaque route déclare sa garde de portée (montage ouvert aux TO de tournoi).
+const phaseScope = requireTournamentScope(tournamentFrom.phase("id"));
+
 // Créer une phase
-phaseRouter.post("/", async (req, res) => {
+phaseRouter.post("/", requireTournamentScope(tournamentFrom.body("tournament_id")), async (req, res) => {
   try {
-    const { tournament_id, name, format, phase_order, bracket_size, settings } = req.body;
+    const { name, format, phase_order, bracket_size, settings } = req.body;
+    // Le tournoi vient de la garde de portée, jamais directement du corps (SEC-21).
+    const tournament_id = getTournamentScope(req);
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -39,7 +45,7 @@ phaseRouter.post("/", async (req, res) => {
 });
 
 // Obtenir les phases d'un tournoi
-phaseRouter.get("/:tournamentId", async (req, res) => {
+phaseRouter.get("/:tournamentId", requireTournamentScope(tournamentFrom.param("tournamentId")), async (req, res) => {
   try {
     const tournamentId = req.params.tournamentId;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -61,7 +67,7 @@ phaseRouter.get("/:tournamentId", async (req, res) => {
 });
 
 // Appliquer le seeding et régénérer l'arbre (Live Edit) — transactionnel via RPC
-phaseRouter.put("/:id/seeding", async (req, res) => {
+phaseRouter.put("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -149,7 +155,7 @@ phaseRouter.put("/:id/seeding", async (req, res) => {
 });
 
 // Récupérer le seeding actuel
-phaseRouter.get("/:id/seeding", async (req, res) => {
+phaseRouter.get("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -166,7 +172,7 @@ phaseRouter.get("/:id/seeding", async (req, res) => {
 });
 
 // DELETE /api/phases/:id — Delete a phase and its matches
-phaseRouter.delete("/:id", async (req, res) => {
+phaseRouter.delete("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -190,7 +196,7 @@ phaseRouter.delete("/:id", async (req, res) => {
 });
 
 // PUT /api/phases/:id — Update phase config (name, order, bracket_size, max_groups, settings)
-phaseRouter.put("/:id", async (req, res) => {
+phaseRouter.put("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -234,7 +240,7 @@ phaseRouter.put("/:id", async (req, res) => {
 });
 
 // Synchroniser les salons Discord
-phaseRouter.post("/:id/sync", async (req, res) => {
+phaseRouter.post("/:id/sync", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);

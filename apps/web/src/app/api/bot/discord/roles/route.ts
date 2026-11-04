@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { BOT_UNREACHABLE, botAccessError, relayedBotError } from "@/lib/accessErrors";
 import { getServerLocale } from "@/i18n/server";
+import { discordListQuery } from "@/lib/accessRules";
 
 export async function GET(request: Request) {
   const session = await getServerSession(authOptions);
@@ -27,7 +28,9 @@ export async function GET(request: Request) {
   const discordId = (session.user as any)?.id || "";
 
   try {
-    const res = await fetch(`${botApiUrl}/api/discord/roles?guildId=${guildId}`, {
+    // SEC-21 : un TO de tournoi désigne son tournoi, vérifié par le bot.
+    const tournamentId = url.searchParams.get("tournamentId") ?? undefined;
+    const res = await fetch(`${botApiUrl}/api/discord/roles?${discordListQuery(guildId, tournamentId)}`, {
       headers: {
         Authorization: `Bearer ${botApiSecret}`,
         "X-Discord-User-Id": discordId,

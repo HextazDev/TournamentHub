@@ -14,6 +14,7 @@ vi.mock("../services/CaptainPresenceService", async (importOriginal) => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
+  getTournamentScope: (req: { tournamentScope?: { tournamentId: string } }) => req.tournamentScope?.tournamentId ?? null,
   verifyTeamGuild: vi.fn(),
   verifyTournamentGuild: tenant.verifyTournamentGuild,
 }));

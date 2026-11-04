@@ -5,15 +5,25 @@ import { LifecycleService } from "../services/LifecycleService";
 import { ArchiveService } from "../services/ArchiveService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, verifyTournamentGuild } from "../utils/tenant";
-import { LocaleSchema } from "@hub/shared";
+import { canPerform, LocaleSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
+import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
+import { invalidateGuildAccess } from "../services/MemberAccessService";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
 
 export const tournamentRouter = Router();
 
+// SEC-21 : chaque route déclare sa garde (montage ouvert aux TO de tournoi) ; la création reste au niveau SERVER.
+const tournamentScope = requireTournamentScope(tournamentFrom.param("id"));
+
+/** Un champ de rôle est modifié s'il est fourni et diffère de la valeur enregistrée (vide = aucun rôle). */
+function roleChanged(requested: unknown, current: string | null): boolean {
+  return requested !== undefined && (requested || null) !== current;
+}
+
 // POST /api/tournaments — Create a new tournament (defaults to DRAFT)
-tournamentRouter.post("/", async (req, res) => {
+tournamentRouter.post("/", requireServerLevel, async (req, res) => {
   try {
     const {
       guild_id, name, description, start_at,
@@ -71,6 +81,8 @@ tournamentRouter.post("/", async (req, res) => {
 
     if (error) throw error;
 
+    // SEC-05 : un rôle TO de tournoi ouvre l'accès au panel ; les décisions en cache du serveur sont recalculées.
+    if (created?.discord_to_role_id) invalidateGuildAccess(targetGuildId);
     res.status(201).json(created);
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.create");
@@ -78,7 +90,7 @@ tournamentRouter.post("/", async (req, res) => {
 });
 
 // PUT /api/tournaments/:id/settings — Update tournament settings
-tournamentRouter.put("/:id/settings", async (req, res) => {
+tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -109,6 +121,17 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
       return res.status(400).json({ error: "language must be 'fr' or 'en'" });
     }
 
+    // SEC-22 : les rôles du tournoi décident qui le gère ; un TO de tournoi ne peut pas les changer.
+    const access = req.adminCheck?.access;
+    const canManageRoles = !!access && canPerform(access, "MANAGE_TOURNAMENT_ROLES", tournamentId);
+    if (
+      !canManageRoles &&
+      (roleChanged(discord_to_role_id, currentTournament.discord_to_role_id) ||
+        roleChanged(discord_captain_role_id, currentTournament.discord_captain_role_id))
+    ) {
+      return res.status(403).json({ error: "Tournament roles are reserved to server managers", code: "TOURNAMENT_ROLES_RESERVED" });
+    }
+
     let transitionToRegistration = false;
     let newStatus = currentTournament.status;
 
@@ -116,6 +139,21 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
     if (currentTournament.status === "DRAFT" && checkin_start_at && checkin_end_at) {
       newStatus = "REGISTRATION";
       transitionToRegistration = true;
+    }
+
+    // SEC-21 : ce passage archive les autres tournois du serveur (et nettoie Discord) : effet réservé au niveau SERVER.
+    // L'archivage automatique lui-même (y compris des tournois ACTIVE) est suivi dans #87.
+    if (transitionToRegistration && access?.level !== "SERVER") {
+      const { count, error: othersError } = await supabase
+        .from("tournaments")
+        .select("id", { count: "exact", head: true })
+        .eq("guild_id", currentTournament.guild_id)
+        .neq("id", tournamentId)
+        .neq("status", "ARCHIVED");
+      if (othersError) throw othersError;
+      if ((count ?? 0) > 0) {
+        return res.status(403).json({ error: "Archiving other tournaments is reserved to server managers", code: "SERVER_LEVEL_REQUIRED" });
+      }
     }
 
     const payload: any = {
@@ -126,8 +164,9 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
       discord_registration_channel_id: discord_registration_channel_id || null,
       discord_announcement_channel_id: discord_announcement_channel_id || null,
       discord_checkin_channel_id: discord_checkin_channel_id || null,
-      discord_captain_role_id: discord_captain_role_id || null,
-      discord_to_role_id: discord_to_role_id || null,
+      // Sans droit sur les rôles, les valeurs enregistrées sont conservées (champ absent ou inchangé).
+      discord_captain_role_id: canManageRoles ? discord_captain_role_id || null : currentTournament.discord_captain_role_id,
+      discord_to_role_id: canManageRoles ? discord_to_role_id || null : currentTournament.discord_to_role_id,
       language: requestedLanguage.data ?? currentTournament.language,
       updated_at: new Date().toISOString(),
     };
@@ -141,6 +180,7 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Tournament not found" });
+
 
     // Handle archiving of older tournaments if transitioning from DRAFT to REGISTRATION
     if (transitionToRegistration) {
@@ -174,6 +214,11 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
       }
     }
 
+    // SEC-05 : nouveau rôle TO de tournoi, ou autres tournois archivés : l'accès des membres est recalculé.
+    if (data.discord_to_role_id !== currentTournament.discord_to_role_id || transitionToRegistration) {
+      invalidateGuildAccess(currentTournament.guild_id);
+    }
+
     res.json(data);
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.updateSettings");
@@ -181,7 +226,7 @@ tournamentRouter.put("/:id/settings", async (req, res) => {
 });
 
 // PATCH /api/tournaments/:id/visibility — Toggle is_public
-tournamentRouter.patch("/:id/visibility", async (req, res) => {
+tournamentRouter.patch("/:id/visibility", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -212,7 +257,7 @@ tournamentRouter.patch("/:id/visibility", async (req, res) => {
 });
 
 // /api/tournaments/:id/launch
-tournamentRouter.post("/:id/launch", async (req, res) => {
+tournamentRouter.post("/:id/launch", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -232,7 +277,7 @@ tournamentRouter.post("/:id/launch", async (req, res) => {
 });
 
 // /api/tournaments/:id/close
-tournamentRouter.post("/:id/close", async (req, res) => {
+tournamentRouter.post("/:id/close", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -252,7 +297,7 @@ tournamentRouter.post("/:id/close", async (req, res) => {
 });
 
 // /api/tournaments/:id/registrations
-tournamentRouter.post("/:id/registrations", async (req, res) => {
+tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -310,7 +355,7 @@ tournamentRouter.post("/:id/registrations", async (req, res) => {
 });
 
 // POST /api/tournaments/:id/checkin/stop — Stop check-in immediately (Kill Switch)
-tournamentRouter.post("/:id/checkin/stop", async (req, res) => {
+tournamentRouter.post("/:id/checkin/stop", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);

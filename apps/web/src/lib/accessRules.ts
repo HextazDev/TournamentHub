@@ -1,4 +1,5 @@
 // Règles d'accès et de guidage pures (sans I/O) : partagées par les pages serveur et testées unitairement.
+import { canPerform, type GuildAccess } from "@hub/shared";
 
 const ADMINISTRATOR = BigInt(0x8);
 const MANAGE_GUILD = BigInt(0x20);
@@ -138,4 +139,29 @@ export function buildBotInviteUrl(clientId: string, guildId: string): string {
   url.searchParams.set("guild_id", guildId);
   url.searchParams.set("disable_guild_select", "true");
   return url.toString();
+}
+
+/**
+ * SEC-21 : tournois lisibles dans le panel. `null` = tous les tournois du serveur (niveau SERVER) ;
+ * sinon, uniquement ceux dont le membre porte le rôle TO (niveau TOURNAMENT).
+ */
+export function managedTournamentIds(access: GuildAccess): readonly string[] | null {
+  return access.level === "SERVER" ? null : access.tournamentIds;
+}
+
+/** Actions de niveau serveur affichées dans le panel (le bot refuse de toute façon les autres, SEC-21). */
+export function panelCapabilities(access: GuildAccess): { canCreate: boolean; canDelete: boolean; canConfigureServer: boolean } {
+  return {
+    canCreate: canPerform(access, "CREATE_TOURNAMENT"),
+    // DELETE_TOURNAMENT ne dépend pas du tournoi au niveau SERVER et est toujours refusé au niveau TOURNAMENT.
+    canDelete: access.level === "SERVER" && canPerform(access, "DELETE_TOURNAMENT"),
+    canConfigureServer: canPerform(access, "MANAGE_SERVER_SETTINGS"),
+  };
+}
+
+/** Paramètres des listes Discord (rôles, salons, membres) : un TO de tournoi doit désigner son tournoi. */
+export function discordListQuery(guildId: string, tournamentId?: string): string {
+  const params = new URLSearchParams({ guildId });
+  if (tournamentId) params.set("tournamentId", tournamentId);
+  return params.toString();
 }

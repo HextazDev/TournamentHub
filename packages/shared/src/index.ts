@@ -146,7 +146,17 @@ export const GuildAccessSchema = z.discriminatedUnion("level", [
   z.object({ level: z.literal("TOURNAMENT"), tournamentIds: z.array(z.string().min(1)) }),
 ]) satisfies z.ZodType<GuildAccess>;
 
-export const GUILD_ACTIONS = ["MANAGE_SERVER_SETTINGS", "CREATE_TOURNAMENT", "DELETE_TOURNAMENT", "MANAGE_TOURNAMENT"] as const;
+/**
+ * MANAGE_TOURNAMENT_ROLES : modifier les rôles d'un tournoi (discord_to_role_id, discord_captain_role_id).
+ * Le rôle TO d'un tournoi désigne qui le gère : un TO de tournoi ne peut donc pas le changer (SEC-22).
+ */
+export const GUILD_ACTIONS = [
+  "MANAGE_SERVER_SETTINGS",
+  "CREATE_TOURNAMENT",
+  "DELETE_TOURNAMENT",
+  "MANAGE_TOURNAMENT",
+  "MANAGE_TOURNAMENT_ROLES",
+] as const;
 export type GuildAction = (typeof GUILD_ACTIONS)[number];
 
 /** Motifs de refus d'accès, partagés par le bot (champ `code` des réponses) et le web (messages traduits). */
@@ -157,6 +167,10 @@ export const AccessDeniedCodeSchema = z.enum([
   "BOT_NOT_IN_GUILD",
   "CHECK_FAILED",
   "SERVER_SETTINGS_RESERVED",
+  // SEC-21 : route réservée au niveau SERVER (création, archivage, paramètres serveur…), refusée au TO de tournoi.
+  "SERVER_LEVEL_REQUIRED",
+  // SEC-22 : modification des rôles d'un tournoi refusée au TO de ce tournoi.
+  "TOURNAMENT_ROLES_RESERVED",
 ]);
 export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
 
@@ -181,6 +195,7 @@ export function canPerform(access: GuildAccess, action: GuildAction, tournamentI
     case "CREATE_TOURNAMENT":
     case "DELETE_TOURNAMENT":
     case "MANAGE_TOURNAMENT":
+    case "MANAGE_TOURNAMENT_ROLES":
       return true;
     default:
       return false;

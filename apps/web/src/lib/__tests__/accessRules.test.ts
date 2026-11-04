@@ -3,6 +3,9 @@ import {
   buildBotInviteUrl,
   canManageFromOAuth,
   canViewTournament,
+  discordListQuery,
+  managedTournamentIds,
+  panelCapabilities,
   serverSetupChecklist,
   splitServers,
   tournamentNextStep,
@@ -125,5 +128,26 @@ describe("buildBotInviteUrl", () => {
     expect(url.searchParams.get("guild_id")).toBe("456");
     expect(url.searchParams.get("disable_guild_select")).toBe("true");
     expect(BigInt(url.searchParams.get("permissions") ?? "0") & BigInt(8)).toBe(BigInt(0));
+  });
+});
+
+describe("SEC-21: panel d'un TO de tournoi", () => {
+  const scoped = { level: "TOURNAMENT", tournamentIds: ["t1", "t2"] } as const;
+  const serverTo = { level: "SERVER", reason: "TO_ROLE" } as const;
+
+  it("la liste des tournois est bornée à ceux du TO ; le niveau SERVER voit tout le serveur", () => {
+    expect(managedTournamentIds(scoped)).toEqual(["t1", "t2"]);
+    expect(managedTournamentIds(serverTo)).toBeNull();
+  });
+
+  it("création et suppression masquées pour un TO de tournoi", () => {
+    expect(panelCapabilities(scoped)).toEqual({ canCreate: false, canDelete: false, canConfigureServer: false });
+    expect(panelCapabilities(serverTo)).toEqual({ canCreate: true, canDelete: true, canConfigureServer: false });
+    expect(panelCapabilities({ level: "SERVER", reason: "ADMINISTRATOR" })).toEqual({ canCreate: true, canDelete: true, canConfigureServer: true });
+  });
+
+  it("les listes Discord désignent le tournoi (exigé par le bot pour ce niveau)", () => {
+    expect(discordListQuery("g1", "t1")).toBe("guildId=g1&tournamentId=t1");
+    expect(discordListQuery("g1")).toBe("guildId=g1");
   });
 });

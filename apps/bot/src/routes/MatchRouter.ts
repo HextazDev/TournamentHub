@@ -6,10 +6,11 @@ import { TextChannel } from "discord.js";
 import { getAuthenticatedGuildId, verifyMatchGuild } from "../utils/tenant";
 import { ForceScoreSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
+import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 
 export const matchRouter = Router();
 
-matchRouter.put("/:id/force-score", async (req, res) => {
+matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match("id")), async (req, res) => {
   try {
     const matchId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);

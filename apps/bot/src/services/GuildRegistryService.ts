@@ -44,6 +44,33 @@ export async function readToRoleId(guildId: string): Promise<{ ok: true; toRoleI
   return { ok: true, toRoleId: (data as { to_role_id: string | null } | null)?.to_role_id ?? null };
 }
 
+export interface TournamentToRole {
+  tournamentId: string;
+  roleId: string;
+}
+
+/**
+ * Rôles TO propres aux tournois du serveur (tournaments.discord_to_role_id), hors tournois archivés (SEC-23).
+ * Un tournoi COMPLETED reste géré : son TO peut encore corriger les résultats.
+ */
+export async function readTournamentToRoles(guildId: string): Promise<{ ok: true; roles: TournamentToRole[] } | { ok: false }> {
+  const { data, error } = await supabase
+    .from("tournaments")
+    .select("id, discord_to_role_id")
+    .eq("guild_id", guildId)
+    .neq("status", "ARCHIVED")
+    .not("discord_to_role_id", "is", null);
+  if (error) {
+    logger.error(`[GuildRegistry] Lecture des rôles TO de tournoi impossible pour ${guildId}:`, error);
+    return { ok: false };
+  }
+  const rows = (data ?? []) as { id: string; discord_to_role_id: string | null }[];
+  return {
+    ok: true,
+    roles: rows.flatMap((row) => (row.discord_to_role_id ? [{ tournamentId: row.id, roleId: row.discord_to_role_id }] : [])),
+  };
+}
+
 export class GuildRegistryService {
   /**
    * Enregistre (ou rafraîchit) le serveur dans server_settings : c'est cette ligne qui le rend visible sur le web.

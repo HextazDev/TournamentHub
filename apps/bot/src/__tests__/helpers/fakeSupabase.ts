@@ -1,9 +1,12 @@
 type Row = Record<string, unknown>;
-type Filter = { column: string; value: unknown } | { column: string; values: readonly unknown[] };
+type Filter =
+  | { column: string; value: unknown }
+  | { column: string; values: readonly unknown[] }
+  | { column: string; not: unknown };
 
 export interface WriteLog {
   table: string;
-  op: "update" | "insert";
+  op: "update" | "insert" | "delete";
   payload: Row | Row[];
   filters: Filter[];
   affected: number;
@@ -12,6 +15,7 @@ export interface WriteLog {
 export interface QueryResult {
   data: unknown;
   error: { code: string; message: string } | null;
+  count?: number;
 }
 
 /**
@@ -32,27 +36,47 @@ export class FakeSupabase {
     return new FakeQuery(this, table);
   }
 
-  public writesTo(table: string, op?: "update" | "insert"): WriteLog[] {
+  public writesTo(table: string, op?: WriteLog["op"]): WriteLog[] {
     return this.writes.filter(w => w.table === table && (op === undefined || w.op === op));
   }
 }
 
 class FakeQuery implements PromiseLike<QueryResult> {
   private readonly filters: Filter[] = [];
-  private op: "select" | "update" | "insert" = "select";
+  private op: "select" | "update" | "insert" | "delete" = "select";
+  private counting = false;
   private payload: Row | Row[] = {};
   private returning = false;
   private max: number | null = null;
 
   constructor(private readonly db: FakeSupabase, private readonly table: string) {}
 
-  public select(_columns?: string) {
+  /** `{ count: "exact", head: true }` : renvoie `count` sans lignes. */
+  public select(_columns?: string, options?: { count?: "exact"; head?: boolean }) {
     if (this.op !== "select") this.returning = true;
+    if (options?.count === "exact") this.counting = true;
+    return this;
+  }
+
+  public delete() {
+    this.op = "delete";
     return this;
   }
 
   public eq(column: string, value: unknown) {
     this.filters.push({ column, value });
+    return this;
+  }
+
+  public neq(column: string, value: unknown) {
+    this.filters.push({ column, not: value });
+    return this;
+  }
+
+  /** Seul `not(column, "is", null)` est simulé (colonne renseignée). */
+  public not(column: string, operator: "is", value: null) {
+    if (operator !== "is" || value !== null) throw new Error(`FakeSupabase: not(${operator}) non simulé`);
+    this.filters.push({ column, not: null });
     return this;
   }
 
@@ -100,7 +124,11 @@ class FakeQuery implements PromiseLike<QueryResult> {
   }
 
   private matches(row: Row): boolean {
-    return this.filters.every(f => ("values" in f ? f.values.includes(row[f.column]) : row[f.column] === f.value));
+    return this.filters.every(f => {
+      if ("values" in f) return f.values.includes(row[f.column]);
+      if ("not" in f) return f.not === null ? row[f.column] != null : row[f.column] !== f.not;
+      return row[f.column] === f.value;
+    });
   }
 
   private toSingle(res: QueryResult): QueryResult {
@@ -120,6 +148,14 @@ class FakeQuery implements PromiseLike<QueryResult> {
       return { data: null, error: null };
     }
 
+    if (this.op === "delete") {
+      const kept = rows.filter(r => !this.matches(r));
+      const affected = rows.length - kept.length;
+      rows.splice(0, rows.length, ...kept);
+      this.db.writes.push({ table: this.table, op: "delete", payload: {}, filters: [...this.filters], affected });
+      return { data: null, error: null };
+    }
+
     if (this.op === "update") {
       const hit = rows.filter(r => this.matches(r));
       const update = Array.isArray(this.payload) ? {} : this.payload;
@@ -130,6 +166,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
     const source = this.db.staleReads[this.table] ?? rows;
     const found = source.filter(r => this.matches(r)).map(r => ({ ...r }));
+    if (this.counting) return { data: null, error: null, count: found.length };
     return { data: this.max === null ? found : found.slice(0, this.max), error: null };
   }
 }
