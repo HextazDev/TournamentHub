@@ -241,6 +241,16 @@ describe("PUT /api/phases/:id/seeding — SEC-20 équipes du tournoi de la phase
     expect(writes).toEqual(["rpc:regenerate_phase_seeding"]);
   });
 
+  it("SEC-20: exception SQL P0001 levée par la RPC (défense en profondeur) ➜ traduite en 400 sans fuite d'information", async () => {
+    db.rpc.mockResolvedValueOnce({
+      error: { code: "P0001", message: "Une ou plusieurs équipes n'appartiennent pas au tournoi de la phase" },
+    });
+    const out = await putSeeding({ participants: [{ team_id: TEAM_A, seed: 1 }, { team_id: TEAM_C, seed: 2 }] });
+    expect(out.status).toBe(400);
+    expect(out.body).toEqual({ error: "Le placement contient une équipe qui n'est pas inscrite à ce tournoi." });
+    expect(generators.generateBracket).not.toHaveBeenCalled();
+  });
+
   it("SEC-20/SEC-19: échec de lecture des équipes ➜ 500 générique, aucune écriture", async () => {
     teamsReadError = { code: "XX000", message: "relation teams secret detail" };
     const out = await putSeeding(webBody);
