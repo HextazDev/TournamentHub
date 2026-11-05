@@ -22,6 +22,30 @@ function permsToEditData(perm: OverwriteData) {
   };
 }
 
+const DISCORD_UNKNOWN_MEMBER = 10007;
+const DISCORD_UNKNOWN_USER = 10013;
+
+/**
+ * DISC-09 : un capitaine inscrit sur le Web n'est pas forcément membre du serveur, et Discord refuse toute permission
+ * portant sur un identifiant inconnu. Seuls les absents avérés sont écartés : une panne remonte pour rester rejouable.
+ */
+async function captainsPresentInGuild(guild: Guild, captainIds: readonly string[]): Promise<string[]> {
+  const uniqueIds = [...new Set(captainIds)];
+  const present = await Promise.all(
+    uniqueIds.map(async (id) => {
+      try {
+        await guild.members.fetch(id);
+        return id;
+      } catch (error) {
+        const code = (error as { code?: unknown }).code;
+        if (code === DISCORD_UNKNOWN_MEMBER || code === DISCORD_UNKNOWN_USER) return null;
+        throw error;
+      }
+    }),
+  );
+  return present.filter((id): id is string => id !== null);
+}
+
 export class LifecycleService {
   /**
    * Transition métier du lancement (DISC-02) : la base est l'autorité, sans aucun appel Discord.
@@ -282,14 +306,15 @@ export class LifecycleService {
       if (isSingleChannelPhase) {
         let channelId = phase.discord_channel_id;
         const perms = getBasePerms();
-        for (const pt of (ptData || [])) {
-          const teamDetails: any = Array.isArray(pt.teams) ? pt.teams[0] : pt.teams;
-          if (teamDetails?.captain_discord_id) {
-            perms.push({
-              id: teamDetails.captain_discord_id,
-              allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
-            });
-          }
+        const phaseCaptains = (ptData || []).flatMap((pt) => {
+          const team = Array.isArray(pt.teams) ? pt.teams[0] : pt.teams;
+          return team?.captain_discord_id ? [team.captain_discord_id] : [];
+        });
+        for (const capId of await captainsPresentInGuild(guild, phaseCaptains)) {
+          perms.push({
+            id: capId,
+            allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+          });
         }
 
         if (!channelId) {
@@ -336,7 +361,7 @@ export class LifecycleService {
             .map(pt => pt.teamDetails!.captain_discord_id);
 
           const perms = getBasePerms();
-          for (const capId of captainsInGroup) {
+          for (const capId of await captainsPresentInGuild(guild, captainsInGroup)) {
             perms.push({
               id: capId,
               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],

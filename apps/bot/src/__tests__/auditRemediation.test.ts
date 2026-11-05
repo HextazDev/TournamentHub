@@ -145,6 +145,56 @@ describe("INT-02 : effets Discord idempotents et bornés au serveur lié", () =>
   });
 });
 
+describe("DISC-09 : capitaine inscrit sur le Web mais absent du serveur Discord", () => {
+  function guildWith(members: string[], failure: unknown = Object.assign(new Error("Unknown Member"), { code: 10007 })) {
+    const create = vi.fn(async (_options: { permissionOverwrites: { id: string }[] }) => ({ id: "ch-1", send: vi.fn(async () => ({})) }));
+    const guild = {
+      roles: { everyone: { id: "everyone" } },
+      channels: { create, cache: new Map() },
+      members: { fetch: vi.fn(async (id: string) => { if (members.includes(id)) return { id }; throw failure; }) },
+    };
+    const client = { guilds: { cache: new Map([[GUILD, guild]]), fetch: async () => guild } } as unknown as Client;
+    return { client, create };
+  }
+
+  beforeEach(() => {
+    db.current!.tables.phases = [{
+      id: "p1", tournament_id: T1, format: "SINGLE_ELIM", name: "Arbre", discord_channel_id: null,
+      tournaments: { id: T1, name: "Cup", discord_category_id: "cat", discord_to_role_id: null }, groups: [],
+    }];
+    db.current!.tables.phase_teams = [
+      { phase_id: "p1", group_id: null, teams: { id: "a", captain_discord_id: "member-1" } },
+      { phase_id: "p1", group_id: null, teams: { id: "b", captain_discord_id: "absent-1" } },
+    ];
+  });
+
+  it("crée le salon en n'accordant l'accès qu'aux capitaines présents", async () => {
+    const { client, create } = guildWith(["member-1"]);
+    await LifecycleService.syncPhaseChannels("p1", GUILD, client);
+    const ids = create.mock.calls[0]?.[0].permissionOverwrites.map((o) => o.id);
+    expect(ids).toEqual(["everyone", "member-1"]);
+  });
+
+  it("idem pour le salon d'un groupe", async () => {
+    db.current!.tables.phases![0]!.format = "ROUND_ROBIN";
+    db.current!.tables.phases![0]!.groups = [{ id: "g1", name: "A", discord_channel_id: null }];
+    db.current!.tables.groups = [{ id: "g1", name: "A" }];
+    db.current!.tables.phase_teams = [
+      { phase_id: "p1", group_id: "g1", teams: { id: "a", captain_discord_id: "member-1" } },
+      { phase_id: "p1", group_id: "g1", teams: { id: "b", captain_discord_id: "absent-1" } },
+    ];
+    const { client, create } = guildWith(["member-1"]);
+    await LifecycleService.syncPhaseChannels("p1", GUILD, client);
+    expect(create.mock.calls[0]?.[0].permissionOverwrites.map((o) => o.id)).toEqual(["everyone", "member-1"]);
+  });
+
+  it("une panne Discord (autre qu'un membre inconnu) remonte : le salon reste à rejouer", async () => {
+    const { client, create } = guildWith([], Object.assign(new Error("Service Unavailable"), { status: 503 }));
+    await expect(LifecycleService.syncPhaseChannels("p1", GUILD, client)).rejects.toThrow("Service Unavailable");
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
 describe("CHK-01 : le planificateur respecte l'état de l'intégration", () => {
   it("SEC-26 : intégration coupée ➜ aucun appel Discord à la fermeture du check-in", async () => {
     db.current!.tables.organization_integrations![0]!.enabled = false;
