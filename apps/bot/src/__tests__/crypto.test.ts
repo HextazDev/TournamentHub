@@ -42,14 +42,14 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       expect(decrypted).toEqual(payload);
     });
 
-    it("utilise une clé arbitraire dérivée en SHA-256", () => {
-      const customKey = "my-super-secret-passphrase-with-high-entropy";
+    it("accepte une clé base64 de 32 octets", () => {
+      const base64Key = Buffer.alloc(32, 7).toString("base64");
       const payload = { webhookSecret: "whsec_abcdef" };
+      expect(decryptSecretPayload<typeof payload>(encryptSecretPayload(payload, base64Key), base64Key)).toEqual(payload);
+    });
 
-      const encrypted = encryptSecretPayload(payload, customKey);
-      const decrypted = decryptSecretPayload<typeof payload>(encrypted, customKey);
-
-      expect(decrypted).toEqual(payload);
+    it("SEC-07: refuse une clé qui ne fait pas 32 octets (pas de dérivation silencieuse d'une phrase)", () => {
+      expect(() => encryptSecretPayload({ a: 1 }, "my-super-secret-passphrase-with-high-entropy")).toThrowError("32 octets");
     });
 
     it("génère des IV uniques produisant des ciphertexts distincts pour le même payload", () => {
@@ -89,7 +89,7 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
 
     it("fonctionne en production si INTEGRATION_ENCRYPTION_KEY est défini", () => {
       process.env.NODE_ENV = "production";
-      process.env.INTEGRATION_ENCRYPTION_KEY = "prod-key-integration-secret-value-12345";
+      process.env.INTEGRATION_ENCRYPTION_KEY = "a".repeat(64);
       delete process.env.BOT_API_SECRET;
 
       const payload = { clientSecret: "prod-secret" };
@@ -115,7 +115,7 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       delete process.env.BOT_API_SECRET;
 
       const payload = { clientSecret: "prod-secret-rawkey" };
-      const explicitKey = "explicit-prod-key-param";
+      const explicitKey = "b".repeat(64);
       const encrypted = encryptSecretPayload(payload, explicitKey);
       const decrypted = decryptSecretPayload<typeof payload>(encrypted, explicitKey);
 
@@ -160,9 +160,9 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
 
     it("échoue lors du déchiffrement avec une mauvaise clé", () => {
       const payload = { test: "wrong-key" };
-      const encrypted = encryptSecretPayload(payload, "key-alpha");
+      const encrypted = encryptSecretPayload(payload, "a".repeat(64));
 
-      expect(() => decryptSecretPayload(encrypted, "key-beta")).toThrow();
+      expect(() => decryptSecretPayload(encrypted, "b".repeat(64))).toThrow();
     });
   });
 });

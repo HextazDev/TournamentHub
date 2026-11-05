@@ -35,13 +35,13 @@ function fakeSupabase(responses: Record<string, Result> = {}) {
       if (responses[`${table}.${call.op}`]) return Promise.resolve(responses[`${table}.${call.op}`]);
       if (table === "organization_integrations" && call.op === "select") {
         return Promise.resolve({
-          data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: {} },
+          data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: {} },
           error: null,
         });
       }
       if (table === "organizations" && call.op === "select") {
         return Promise.resolve({
-          data: { id: "org-1", slug: "guild-g1", name: "Guild One" },
+          data: { id: "org-1", slug: "discord-g1", name: "Guild One" },
           error: null,
         });
       }
@@ -151,8 +151,6 @@ describe("GuildRegistryService.registerGuild", () => {
 
     const intUpdate = calls.find((c) => c.table === "organization_integrations" && c.op === "update");
     expect(intUpdate?.payload).toEqual({
-      enabled: true,
-      status: "CONNECTED",
       config: {
         to_role_id: "to",
         guild_name: "Guild One",
@@ -179,7 +177,7 @@ describe("GuildRegistryService.markGuildLeft", () => {
   it("DISC-07: le départ du bot met à jour l'intégration Discord en DISCONNECTED", async () => {
     const calls = fakeSupabase({
       "organization_integrations.select": {
-        data: { id: "int-1", config: { guild_name: "Guild One", bot_present: true } },
+        data: { id: "int-1", enabled: true, config: { guild_name: "Guild One", bot_present: true } },
         error: null,
       },
     });
@@ -188,7 +186,7 @@ describe("GuildRegistryService.markGuildLeft", () => {
     expect(update?.payload).toEqual({
       enabled: false,
       status: "DISCONNECTED",
-      config: { guild_name: "Guild One", bot_present: false },
+      config: { guild_name: "Guild One", bot_present: false, left_while_enabled: true },
     });
     expect(update?.filters).toContainEqual(["eq", "id", "int-1"]);
   });
@@ -232,7 +230,7 @@ describe("GuildRegistryService.syncGuildAdmins", () => {
   it("DISC-08: recalcule tous les admins avec le rôle TO courant et purge les anciens", async () => {
     const calls = fakeSupabase({
       "organization_integrations.select": {
-        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } },
+        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } },
         error: null,
       },
     });
@@ -300,7 +298,7 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
   it("syncGuildAdmins inclut les TO de tournoi et purge ceux d'un tournoi archivé (absent de la lecture)", async () => {
     const calls = fakeSupabase({
       "organization_integrations.select": {
-        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } },
+        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } },
         error: null,
       },
       "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
@@ -322,7 +320,7 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
 
   it("ne purge rien si la lecture des rôles de tournoi échoue", async () => {
     const calls = fakeSupabase({
-      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } }, error: null },
       "tournaments.select": { data: null, error: { message: "down" } },
     });
     await expect(GuildRegistryService.syncGuildAdmins(guild([member("owner")]))).resolves.toBe(false);
@@ -331,9 +329,90 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
 
   it("readAdminRoles renvoie le rôle TO du serveur et ceux des tournois", async () => {
     fakeSupabase({
-      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } }, error: null },
       "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
     });
     await expect(readAdminRoles("g1")).resolves.toEqual({ ok: true, toRoleId: "to", tournamentRoles: [tRole] });
+  });
+});
+
+describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", () => {
+  const guildLike = { id: "g1", name: "Guild One", icon: null, ownerId: "owner-1", preferredLocale: "fr" } as unknown as GuildLike;
+
+  it("ACC-01: une organisation auto-créée reçoit le propriétaire du serveur comme ORG_OWNER natif", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: null, error: null },
+      "organizations.insert": { data: { id: "org-1" }, error: null },
+      "organization_members.select": { data: [], error: null },
+    });
+    await expect(GuildRegistryService.registerGuild(guildLike)).resolves.toBe(true);
+    const member = calls.find((c) => c.table === "organization_members" && c.op === "insert");
+    expect(member?.payload).toMatchObject({ organization_id: "org-1", user_id: "owner-1", role: "ORG_OWNER" });
+  });
+
+  it("ACC-01: rattrape une organisation existante sans responsable natif", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", enabled: true, config: {} }, error: null },
+      "organizations.select": { data: { id: "org-1", slug: "discord-g1" }, error: null },
+      "organization_members.select": { data: [], error: null },
+    });
+    await GuildRegistryService.registerGuild(guildLike);
+    expect(calls.find((c) => c.table === "organization_members" && c.op === "insert")?.payload).toMatchObject({ user_id: "owner-1", role: "ORG_OWNER" });
+  });
+
+  it("ACC-01: propriétaire au plafond ➜ responsable natif ORG_ADMIN plutôt qu'aucun", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", enabled: true, config: {} }, error: null },
+      "organizations.select": { data: { id: "org-1", slug: "discord-g1" }, error: null },
+      "organization_members.select": { data: [], error: null },
+      "organization_members.insert": { data: null, error: { code: "HT001", message: "quota" } },
+    });
+    await GuildRegistryService.registerGuild(guildLike);
+    const roles = calls.filter((c) => c.table === "organization_members" && c.op === "insert").map((c) => (c.payload as { role: string }).role);
+    expect(roles).toEqual(["ORG_OWNER", "ORG_ADMIN"]);
+  });
+
+  it("SEC-02: un redémarrage ne réactive pas une intégration coupée par un administrateur", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", enabled: false, status: "DISCONNECTED", config: { bot_present: true } }, error: null },
+      "organizations.select": { data: { id: "org-1", slug: "discord-g1" }, error: null },
+      "organization_members.select": { data: [{ role: "ORG_OWNER" }], error: null },
+    });
+    await GuildRegistryService.registerGuild(guildLike);
+    const update = calls.find((c) => c.table === "organization_integrations" && c.op === "update");
+    expect(update?.payload).not.toHaveProperty("enabled", true);
+    expect(update?.payload).not.toMatchObject({ status: "CONNECTED" });
+  });
+
+  it("SEC-02: le retour du bot réactive seulement une intégration active à son départ", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", enabled: false, status: "DISCONNECTED", config: { bot_present: false, left_while_enabled: true } }, error: null },
+      "organizations.select": { data: { id: "org-1", slug: "discord-g1" }, error: null },
+      "organization_members.select": { data: [{ role: "ORG_OWNER" }], error: null },
+    });
+    await GuildRegistryService.registerGuild(guildLike);
+    const update = calls.find((c) => c.table === "organization_integrations" && c.op === "update");
+    expect(update?.payload).toMatchObject({ enabled: true, status: "CONNECTED" });
+  });
+
+  it("une organisation Web liée garde son nom : seul le profil auto-créé suit le serveur", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", enabled: true, config: {} }, error: null },
+      "organizations.select": { data: { id: "org-1", slug: "mon-asso" }, error: null },
+      "organization_members.select": { data: [{ role: "ORG_OWNER" }], error: null },
+    });
+    await GuildRegistryService.registerGuild(guildLike);
+    expect(calls.find((c) => c.table === "organizations" && c.op === "update")).toBeUndefined();
+  });
+
+  it("SEC-26: sur une intégration coupée, syncGuildAdmins n'écrit aucun grant et purge l'existant", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: { id: "i1", organization_id: "org-1", external_id: "g1", enabled: false, config: {} }, error: null },
+    });
+    const member = { id: "m1", user: { bot: false }, permissions: { has: () => true }, roles: { cache: { has: () => false } } } as unknown as MemberLike;
+    const withMembers = { ...guildLike, members: { fetch: async () => new Map([["m1", member]]) } } as unknown as GuildLike;
+    await GuildRegistryService.syncGuildAdmins(withMembers);
+    expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "upsert")).toBe(false);
+    expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "delete")).toBe(true);
   });
 });

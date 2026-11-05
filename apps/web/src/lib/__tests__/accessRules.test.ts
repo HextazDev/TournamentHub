@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildBotInviteUrl,
   canManageFromOAuth,
-  canViewTournament,
+  canViewPrivateTournament,
   discordListQuery,
   managedTournamentIds,
   panelCapabilities,
@@ -12,21 +12,15 @@ import {
   tournamentNextStep,
 } from "../accessRules";
 
-describe("canViewTournament", () => {
-  const members = new Set(["g1"]);
+describe("canViewPrivateTournament (SEC-10)", () => {
+  const none = { isOrganizationMember: false, isTournamentStaff: false, isParticipant: false, hasValidInvite: false, isActiveDiscordMember: false };
 
-  it("SEC-10: un tournoi public est visible de tous, même sans connexion", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g2", new Set())).toBe(true);
+  it("refuse par défaut", () => {
+    expect(canViewPrivateTournament(none)).toBe(false);
   });
 
-  it("SEC-10: un tournoi privé n'est visible que des membres de son serveur", () => {
-    expect(canViewTournament({ guild_id: "g1", is_public: false }, "g1", members)).toBe(true);
-    expect(canViewTournament({ guild_id: "g2", is_public: false }, "g2", members)).toBe(false);
-    expect(canViewTournament({ guild_id: "g2", is_public: null }, "g2", members)).toBe(false);
-  });
-
-  it("SEC-10: une URL dont le serveur ne correspond pas au tournoi est refusée (même public)", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g1", members)).toBe(false);
+  it.each(Object.keys(none))("accepte %s à lui seul", (fact) => {
+    expect(canViewPrivateTournament({ ...none, [fact]: true })).toBe(true);
   });
 });
 

@@ -88,12 +88,23 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
           ? orgRow.public_contact_url
           : null,
     discordGuildId: hasDiscordInt && typeof intRecord.external_id === "string" ? intRecord.external_id : null,
-    discordEnabled: hasDiscordInt ? Boolean(intRecord.enabled) : false,
+    // LIFE-02 : sans serveur lié, une intégration « active » n'a aucun effet Discord possible.
+    discordEnabled: hasDiscordInt ? Boolean(intRecord.enabled) && typeof intRecord.external_id === "string" : false,
     discordConfig:
       hasDiscordInt && typeof intRecord.config === "object" && intRecord.config !== null
         ? (intRecord.config as Record<string, unknown>)
         : {},
   };
+}
+
+/**
+ * Serveur Discord à solliciter pour une organisation, ou `null` si l'intégration est coupée ou non liée (SEC-26) :
+ * point de passage de tout effet Discord hors du bus (planificateur, progression des matchs).
+ */
+export async function resolveActiveDiscordGuild(organizationId: string | null | undefined): Promise<string | null> {
+  if (!organizationId) return null;
+  const org = await resolveOrganization(organizationId);
+  return org?.discordEnabled ? org.discordGuildId : null;
 }
 
 /**

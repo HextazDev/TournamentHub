@@ -9,7 +9,7 @@ import { useToast } from "@/context/ToastContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 
 /**
- * Ouvre les inscriptions et publie l'annonce Discord (REG-08) : indépendant de la visibilité web du tournoi.
+ * Ouvre les inscriptions ; l'annonce Discord éventuelle est un effet rejouable (REG-08), jamais un prérequis.
  * Chaque blocage affiche sa raison au lieu d'un bouton grisé muet.
  */
 export function OpenRegistrationButton({
@@ -36,9 +36,7 @@ export function OpenRegistrationButton({
     ? t("adminTournaments.alreadyOpen")
     : hasStartedOrCheckin
       ? t("adminTournaments.passedCheckin")
-      : discordEnabled && !hasRegistrationChannel
-        ? t("adminTournaments.missingRegistrationChannel")
-        : null;
+      : null;
   const isDisabled = isSending || blockedReason !== null;
 
   const onOpen = async () => {
@@ -52,14 +50,12 @@ export function OpenRegistrationButton({
       if (!res.ok) {
         throw new Error((await readApiError(res)) ?? t("common.unknown"));
       }
-      toast.success(discordEnabled ? t("adminTournaments.openEmbedSent") : t("adminTournaments.openSuccessWeb"));
+      toast.success(discordEnabled && hasRegistrationChannel ? t("adminTournaments.openEmbedSent") : t("adminTournaments.openSuccessWeb"));
+      const { integrationWarnings } = (await res.json()) as { integrationWarnings?: unknown[] };
+      if (integrationWarnings?.length) toast.warning(t("integrationSync.warning"));
       router.refresh();
     } catch (e: unknown) {
-      toast.error(
-        discordEnabled
-          ? t("adminTournaments.discordError", { message: getErrorMessage(e) ?? t("common.unknown") })
-          : getErrorMessage(e) ?? t("common.unknown")
-      );
+      toast.error(getErrorMessage(e) ?? t("common.unknown"));
     } finally {
       setIsSending(false);
     }

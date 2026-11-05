@@ -23,6 +23,11 @@ export const MAX_FAKE_TEAMS = 64;
 // SEC-27 / RFC 0001 : plafond d'organisations possédées (ORG_OWNER) par un même utilisateur.
 export const MAX_OWNED_ORGANIZATIONS = 5;
 
+/** Segments de routes du site : un slug identique rendrait la page publique de l'organisation inaccessible (CLN-01). */
+export const RESERVED_ORGANIZATION_SLUGS: ReadonlySet<string> = new Set([
+  "admin", "api", "developers", "invite", "organizations", "overlay", "servers", "settings", "tournaments",
+]);
+
 const UUID_SLUG_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const OrganizationSlugSchema = z
@@ -31,12 +36,13 @@ export const OrganizationSlugSchema = z
   .toLowerCase()
   .regex(/^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/, "Slug d'organisation invalide (3 à 48 caractères alphanumériques ou tirets)")
   .refine((slug) => !/^\d+$/.test(slug), "Le slug d'organisation ne peut pas être composé uniquement de chiffres")
-  .refine((slug) => !UUID_SLUG_REGEX.test(slug), "Le slug d'organisation ne peut pas être un UUID");
+  .refine((slug) => !UUID_SLUG_REGEX.test(slug), "Le slug d'organisation ne peut pas être un UUID")
+  .refine((slug) => !RESERVED_ORGANIZATION_SLUGS.has(slug), "Cet identifiant est réservé par le site");
 
 export const OrganizationRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO"]);
 export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
 
-export const OrganizationMemberRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO", "MEMBER"]);
+export const OrganizationMemberRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO", "CASTER", "STATISTICIAN", "MEMBER"]);
 export type OrganizationMemberRole = z.infer<typeof OrganizationMemberRoleSchema>;
 
 export const TournamentStaffRoleSchema = z.enum(["TOURNAMENT_TO", "CASTER", "STATISTICIAN"]);
@@ -95,7 +101,8 @@ export interface OrganizationIntegration {
 export interface OrganizationInvite {
   id: string;
   organization_id: string;
-  role: "ORG_ADMIN" | "ORG_TO" | "MEMBER";
+  role: "ORG_ADMIN" | "ORG_TO" | "CASTER" | "STATISTICIAN" | "MEMBER" | "TOURNAMENT_TO";
+  tournament_id?: string | null;
   created_by: string;
   expires_at: string;
   used_by?: string | null;
@@ -176,6 +183,8 @@ export interface Match {
 }
 
 // Invitation Discord publique configurée par les TO (doublée par la contrainte SQL server_settings_invite_url_check).
+export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+
 export const DiscordInviteUrlSchema = z
   .string()
   .trim()
@@ -309,6 +318,7 @@ export const ORGANIZATION_ACTIONS = [
   "MANAGE_INTEGRATIONS",
   "MANAGE_ORG_MEMBERS",
   "TRANSFER_OWNERSHIP",
+  "DELETE_ORGANIZATION",
   "SCORE_MATCH",
   "VIEW_PRIVATE_TOURNAMENT",
 ] as const;
@@ -382,6 +392,7 @@ export function canPerform(
   const orgRole = resolveEffectiveOrgRole(access);
   switch (action) {
     case "TRANSFER_OWNERSHIP":
+    case "DELETE_ORGANIZATION":
       return orgRole === "ORG_OWNER";
     case "MANAGE_SERVER_SETTINGS":
     case "MANAGE_ORG_SETTINGS":
@@ -436,15 +447,84 @@ export const UpsertTournamentStaffSchema = z.object({
 });
 export type UpsertTournamentStaffInput = z.infer<typeof UpsertTournamentStaffSchema>;
 
-export const UpdateIntegrationSchema = z.object({
-  provider: IntegrationProviderSchema,
+const NullableSnowflake = z
+  .union([DiscordSnowflakeSchema, z.literal(""), z.null()])
+  .transform((value) => value || null);
+
+/** Paramètres non secrets par intégration (RFC 5.2) : toute clé inconnue, donc tout secret mal rangé, est refusée (SEC-08). */
+export const DiscordIntegrationConfigSchema = z
+  .object({
+    to_role_id: NullableSnowflake,
+    captain_role_id: NullableSnowflake,
+    registration_channel_id: NullableSnowflake,
+    announcement_channel_id: NullableSnowflake,
+    checkin_channel_id: NullableSnowflake,
+  })
+  .partial()
+  .strict();
+export const TwitchIntegrationConfigSchema = z
+  .object({ channel_login: z.string().trim().min(1).max(50) })
+  .partial()
+  .strict();
+export const AiIntegrationConfigSchema = z
+  .object({ model: z.string().trim().min(1).max(100) })
+  .partial()
+  .strict();
+
+const IntegrationEnvelope = {
   enabled: z.boolean().optional(),
-  external_id: z.string().trim().min(1).optional().nullable(),
-  config: z.record(z.string(), z.unknown()).optional(),
   secret_payload: z.string().trim().min(1).optional(),
   cleanupExternalResources: z.boolean().optional().default(false),
-});
+};
+
+export const UpdateIntegrationSchema = z.discriminatedUnion("provider", [
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("DISCORD"),
+    external_id: DiscordSnowflakeSchema.optional().nullable(),
+    config: DiscordIntegrationConfigSchema.optional(),
+  }),
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("TWITCH"),
+    external_id: z.string().trim().min(1).optional().nullable(),
+    config: TwitchIntegrationConfigSchema.optional(),
+  }),
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("AI"),
+    external_id: z.string().trim().min(1).optional().nullable(),
+    config: AiIntegrationConfigSchema.optional(),
+  }),
+]);
 export type UpdateIntegrationInput = z.infer<typeof UpdateIntegrationSchema>;
+
+export const TransferOwnershipSchema = z.object({
+  new_owner_id: z.string().trim().min(1),
+  demote_self: z.boolean().default(false),
+});
+
+/** Le slug retapé confirme une suppression irréversible (cascade sur tous les tournois). */
+export const DeleteOrganizationSchema = z.object({ confirm_slug: z.string().trim().min(1) });
+
+export const INVITE_MAX_HOURS = 24 * 30;
+
+/** Invitation à l'organisation (sans tournoi) ou au staff d'un tournoi. Jamais ORG_OWNER : la propriété se transfère. */
+export const CreateInviteSchema = z
+  .object({
+    role: z.enum(["ORG_ADMIN", "ORG_TO", "CASTER", "STATISTICIAN", "MEMBER", "TOURNAMENT_TO"]),
+    tournament_id: z.string().uuid().optional(),
+    expires_in_hours: z.number().int().min(1).max(INVITE_MAX_HOURS).default(72),
+  })
+  .refine(
+    (invite) =>
+      invite.tournament_id
+        ? ["TOURNAMENT_TO", "CASTER", "STATISTICIAN"].includes(invite.role)
+        : invite.role !== "TOURNAMENT_TO",
+    "Rôle incompatible avec la portée de l'invitation",
+  );
+
+export const AcceptInviteSchema = z.object({ token: z.string().trim().min(32).max(128) });
 
 // Common Zod Schemas
 export const CreateTournamentSchema = z.object({
@@ -460,6 +540,27 @@ export const CreateTournamentSchema = z.object({
   checkin_end_at: z.string().optional().nullable(),
 });
 
+/** Code ami Nintendo Switch : même format que l'inscription Discord (RegistrationService), normalisé en majuscules. */
+export const FriendCodeSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^SW-\d{4}-\d{4}-\d{4}$/, "Code ami invalide (format attendu : SW-1234-5678-9012)");
+
+/** Sort des équipes non check-in au lancement : décision explicite du TO (LCH-01), jamais implicite. */
+export const LaunchTournamentSchema = z.object({
+  uncheckedTeams: z.enum(["keep", "remove"]).optional(),
+});
+export type LaunchTournamentInput = z.infer<typeof LaunchTournamentSchema>;
+
+/** Échec isolé d'une intégration : la mutation métier a réussi, l'effet externe est à rejouer (INT-01). */
+export const IntegrationWarningCodeSchema = z.enum(["INTEGRATION_FAILED", "INTEGRATION_TIMEOUT"]);
+export type IntegrationWarningCode = z.infer<typeof IntegrationWarningCodeSchema>;
+export interface IntegrationWarning {
+  provider: IntegrationProvider;
+  code: IntegrationWarningCode;
+}
+
 /** Déclaration de score Web par le capitaine d'une équipe participante ou un membre du staff (SEC-30 / INT-02). */
 export const WebReportScoreSchema = z.object({
   team1_score: z.number().int().min(0).max(99),
@@ -469,14 +570,16 @@ export type WebReportScoreInput = z.infer<typeof WebReportScoreSchema>;
 
 /** Inscription autonome d'une équipe depuis le portail Web (INT-02). */
 export const WebRegisterTeamSchema = z.object({
+  /** Jeton du lien de partage : donne accès à l'inscription d'un tournoi privé (RFC, décision 3). */
+  invite_token: z.string().trim().min(32).max(128).optional(),
   name: z.string().trim().min(1, "Le nom de l'équipe est obligatoire").max(32),
   captain_ingame_name: z.string().trim().min(1, "Le pseudo en jeu du capitaine est obligatoire").max(50),
-  captain_friend_code: z.string().trim().min(1, "Le code ami du capitaine est obligatoire").max(25),
+  captain_friend_code: FriendCodeSchema,
   members: z
     .array(
       z.object({
         ingame_name: z.string().trim().min(1).max(50),
-        friend_code: z.string().trim().min(1).max(25),
+        friend_code: FriendCodeSchema,
       }),
     )
     .max(9)
@@ -524,7 +627,6 @@ export type ForceScoreInput = z.infer<typeof ForceScoreSchema>;
 // Bornes alignées sur le schéma SQL (`teams.name VARCHAR(32)`, `team_members` VARCHAR(50) / VARCHAR(25)).
 export const TEAM_NAME_MAX_LENGTH = 32;
 export const TEAM_MEMBERS_MAX = 10;
-export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
 
 /**
  * Vérifie si une chaîne correspond à un snowflake Discord réel valide (17 à 20 chiffres numériques).

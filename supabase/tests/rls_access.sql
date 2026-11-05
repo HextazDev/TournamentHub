@@ -70,7 +70,7 @@ BEGIN
   BEGIN
     DELETE FROM organization_members
     WHERE organization_id = '00000000-0000-0000-0000-000000000011' AND user_id = 'owner-1';
-  EXCEPTION WHEN raise_exception THEN
+  EXCEPTION WHEN SQLSTATE 'HT002' THEN
     v_caught := true;
   END;
   IF NOT v_caught THEN
@@ -86,7 +86,7 @@ BEGIN
     UPDATE organization_members
     SET role = 'ORG_ADMIN'
     WHERE organization_id = '00000000-0000-0000-0000-000000000011' AND user_id = 'owner-1';
-  EXCEPTION WHEN raise_exception THEN
+  EXCEPTION WHEN SQLSTATE 'HT002' THEN
     v_caught := true;
   END;
   IF NOT v_caught THEN
@@ -250,6 +250,113 @@ BEGIN
   );
   IF (SELECT count(*) FROM phase_teams WHERE phase_id = '00000000-0000-0000-0000-0000000001a1' AND seed = 2) <> 1 THEN
     RAISE EXCEPTION 'SEC-20: regenerate_phase_seeding légitime échoué';
+  END IF;
+END $$;
+
+-- ====================================================================
+-- Audit PR #100 : invariants réels (quota, grants, invitations, tables fermées)
+-- ====================================================================
+
+-- SYNC-01 : l'upsert du registre Discord vise une contrainte réelle, y compris sans tournoi (NULL).
+DO $$
+DECLARE v_org UUID;
+BEGIN
+  INSERT INTO organizations (slug, name) VALUES ('rls-audit-sync', 'Sync') RETURNING id INTO v_org;
+  FOR i IN 1..2 LOOP
+    INSERT INTO integration_access_grants (organization_id, provider, user_id, scope_type, tournament_id, granted_role, reason)
+    VALUES (v_org, 'DISCORD', 'u-sync', 'ORGANIZATION', NULL, 'ORG_ADMIN', 'ADMINISTRATOR')
+    ON CONFLICT (organization_id, provider, user_id, scope_type, tournament_id) DO UPDATE SET synced_at = NOW();
+  END LOOP;
+  IF (SELECT count(*) FROM integration_access_grants WHERE organization_id = v_org) <> 1 THEN
+    RAISE EXCEPTION 'SYNC-01: le grant d''organisation a été dupliqué';
+  END IF;
+END $$;
+
+-- SEC-06 : création atomique et quota de 5 organisations (code HT001), sans organisation orpheline.
+DO $$
+DECLARE v_failed BOOLEAN := FALSE;
+BEGIN
+  FOR i IN 1..5 LOOP
+    PERFORM create_organization_with_owner('rls-quota-' || i, 'Q', 'fr', NULL, NULL, 'u-quota');
+  END LOOP;
+  BEGIN
+    PERFORM create_organization_with_owner('rls-quota-6', 'Q', 'fr', NULL, NULL, 'u-quota');
+  EXCEPTION WHEN SQLSTATE 'HT001' THEN
+    v_failed := TRUE;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'SEC-06: 6e organisation acceptée'; END IF;
+  IF EXISTS (SELECT 1 FROM organizations WHERE slug = 'rls-quota-6') THEN
+    RAISE EXCEPTION 'SEC-06: organisation sans propriétaire persistée';
+  END IF;
+END $$;
+
+-- CLN-01 : slug réservé refusé par la base.
+DO $$
+BEGIN
+  INSERT INTO organizations (slug, name) VALUES ('admin', 'Réservé');
+  RAISE EXCEPTION 'CLN-01: slug réservé accepté';
+EXCEPTION WHEN check_violation THEN NULL;
+END $$;
+
+-- Transfert : refuse un non-admin (HT004) ; garde toujours un propriétaire.
+DO $$
+DECLARE v_org UUID; v_failed BOOLEAN := FALSE;
+BEGIN
+  v_org := (create_organization_with_owner('rls-transfer', 'T', 'fr', NULL, NULL, 'u-t-owner')).id;
+  INSERT INTO organization_members (organization_id, user_id, role) VALUES (v_org, 'u-t-admin', 'ORG_ADMIN');
+  BEGIN
+    PERFORM transfer_organization_ownership(v_org, 'u-t-owner', 'u-absent', TRUE);
+  EXCEPTION WHEN SQLSTATE 'HT004' THEN v_failed := TRUE;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'transfert accepté vers un non-admin'; END IF;
+  PERFORM transfer_organization_ownership(v_org, 'u-t-owner', 'u-t-admin', TRUE);
+  IF (SELECT role FROM organization_members WHERE organization_id = v_org AND user_id = 'u-t-admin') <> 'ORG_OWNER'
+     OR (SELECT role FROM organization_members WHERE organization_id = v_org AND user_id = 'u-t-owner') <> 'ORG_ADMIN' THEN
+    RAISE EXCEPTION 'transfert de propriété incorrect';
+  END IF;
+END $$;
+
+-- Invitation : usage unique, jamais de rétrogradation d'un membre existant.
+DO $$
+DECLARE v_org UUID; v_failed BOOLEAN := FALSE;
+BEGIN
+  v_org := (create_organization_with_owner('rls-invite', 'I', 'fr', NULL, NULL, 'u-i-owner')).id;
+  INSERT INTO organization_invites (organization_id, token_hash, role, created_by, expires_at)
+  VALUES (v_org, 'hash-1', 'ORG_TO', 'u-i-owner', NOW() + INTERVAL '1 hour'),
+         (v_org, 'hash-2', 'MEMBER', 'u-i-owner', NOW() + INTERVAL '1 hour'),
+         (v_org, 'hash-expired', 'MEMBER', 'u-i-owner', NOW() - INTERVAL '1 hour');
+  PERFORM accept_organization_invite('hash-1', 'u-guest');
+  IF (SELECT role FROM organization_members WHERE organization_id = v_org AND user_id = 'u-guest') <> 'ORG_TO' THEN
+    RAISE EXCEPTION 'invitation non appliquée';
+  END IF;
+  BEGIN
+    PERFORM accept_organization_invite('hash-1', 'u-other');
+  EXCEPTION WHEN SQLSTATE 'HT003' THEN v_failed := TRUE;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'invitation rejouée'; END IF;
+  v_failed := FALSE;
+  BEGIN
+    PERFORM accept_organization_invite('hash-expired', 'u-other');
+  EXCEPTION WHEN SQLSTATE 'HT003' THEN v_failed := TRUE;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'invitation expirée acceptée'; END IF;
+  PERFORM accept_organization_invite('hash-2', 'u-i-owner');
+  IF (SELECT role FROM organization_members WHERE organization_id = v_org AND user_id = 'u-i-owner') <> 'ORG_OWNER' THEN
+    RAISE EXCEPTION 'une invitation a rétrogradé le propriétaire';
+  END IF;
+END $$;
+
+-- Nouvelles tables et RPC fermées à anon / authenticated.
+DO $$
+BEGIN
+  IF has_table_privilege('anon', 'tournament_invite_tokens', 'SELECT')
+     OR has_table_privilege('authenticated', 'tournament_invite_tokens', 'SELECT') THEN
+    RAISE EXCEPTION 'tournament_invite_tokens lisible publiquement';
+  END IF;
+  IF has_function_privilege('anon', 'create_organization_with_owner(text,text,text,text,text,text)', 'EXECUTE')
+     OR has_function_privilege('anon', 'accept_organization_invite(text,text)', 'EXECUTE')
+     OR has_function_privilege('anon', 'transfer_organization_ownership(uuid,text,text,boolean)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'RPC d''organisation exécutable par anon';
   END IF;
 END $$;
 

@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { cache } from "react";
+import { cookies } from "next/headers";
 import { getServerSession } from "next-auth";
 import { canPerform, type ServerSettings, type Tournament } from "@hub/shared";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { canViewTournament } from "@/lib/accessRules";
+import { canViewPrivateTournament, TOURNAMENT_INVITE_COOKIE_PREFIX } from "@/lib/accessRules";
 import { checkGuildAdminAccess, type GuildAdminAccess } from "@/lib/guildAccess";
 import { resolveServerBotApiUrl } from "@/lib/config";
 
@@ -30,20 +32,40 @@ interface SessionWithDiscord {
   user?: { id?: string };
 }
 
+/**
+ * Discord limite fortement /users/@me/guilds : sans cache, naviguer dans le site suffit à déclencher des 429.
+ * En cas d'échec, la dernière liste connue reste utilisée plutôt que de priver le visiteur de ses droits Discord.
+ */
+const GUILDS_CACHE_TTL_MS = 60_000;
+const GUILDS_CACHE_MAX_ENTRIES = 5_000;
+const guildsCache = new Map<string, { guilds: DiscordGuildSummary[]; fetchedAt: number }>();
+
+async function fetchViewerGuilds(discordId: string, accessToken: string): Promise<DiscordGuildSummary[] | null> {
+  const cached = guildsCache.get(discordId);
+  if (cached && Date.now() - cached.fetchedAt < GUILDS_CACHE_TTL_MS) return cached.guilds;
+
+  const res = await fetch("https://discord.com/api/users/@me/guilds", {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    cache: "no-store",
+  }).catch(() => null);
+  if (!res?.ok) {
+    console.warn("[viewer] Discord guilds fetch failed:", res?.status ?? "network error");
+    return cached?.guilds ?? null;
+  }
+
+  const guilds = (await res.json()) as DiscordGuildSummary[];
+  if (guildsCache.size >= GUILDS_CACHE_MAX_ENTRIES) guildsCache.clear();
+  guildsCache.set(discordId, { guilds, fetchedAt: Date.now() });
+  return guilds;
+}
+
 export const getViewer = cache(async (): Promise<Viewer> => {
   const session = (await getServerSession(authOptions)) as SessionWithDiscord | null;
   const discordId = session?.user?.id ?? null;
   if (!session?.accessToken || !discordId) return { discordId: null, guilds: null, guildsError: false };
 
-  const res = await fetch("https://discord.com/api/users/@me/guilds", {
-    headers: { Authorization: `Bearer ${session.accessToken}` },
-    cache: "no-store",
-  }).catch(() => null);
-  if (!res?.ok) {
-    console.error("[viewer] Discord guilds fetch failed:", res?.status ?? "network error");
-    return { discordId, guilds: null, guildsError: true };
-  }
-  return { discordId, guilds: (await res.json()) as DiscordGuildSummary[], guildsError: false };
+  const guilds = await fetchViewerGuilds(discordId, session.accessToken);
+  return guilds ? { discordId, guilds, guildsError: false } : { discordId, guilds: null, guildsError: true };
 });
 
 export function memberGuildIds(viewer: Viewer): Set<string> {
@@ -73,6 +95,8 @@ export type ServerProfile = ServerSettings & {
   organization_id?: string;
   slug?: string;
   discord_enabled?: boolean;
+  discord_status?: string | null;
+  discord_last_error?: string | null;
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -112,7 +136,7 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
       .maybeSingle();
 
     const cfg = (discordInt?.config ?? {}) as Record<string, unknown>;
-    const discordEnabled = Boolean(discordInt?.enabled);
+    const discordEnabled = Boolean(discordInt?.enabled && discordInt.external_id);
     const externalGuildId = typeof discordInt?.external_id === "string" ? discordInt.external_id : orgRow.slug;
 
     return {
@@ -136,6 +160,8 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
       organization_id: orgRow.id,
       slug: orgRow.slug,
       discord_enabled: discordEnabled,
+      discord_status: typeof discordInt?.status === "string" ? discordInt.status : null,
+      discord_last_error: typeof discordInt?.last_error === "string" ? discordInt.last_error : null,
     };
   }
 
@@ -158,25 +184,57 @@ export const getReadableTournament = cache(async (guildId: string, tournamentId:
   if (!matchesRoute) return null;
   if (tournament.is_public) return tournament;
 
+  const organizationId = profile?.organization_id;
+  if (!organizationId) return null;
+
   const viewer = await getViewer();
-  const memberIds = memberGuildIds(viewer);
-  if (viewer.discordId && profile?.organization_id) {
-    const { data: memberRow } = await supabaseAdmin
-      .from("organization_members")
-      .select("role")
-      .eq("organization_id", profile.organization_id)
-      .eq("user_id", viewer.discordId)
-      .maybeSingle();
-    if (memberRow) memberIds.add(profile.organization_id);
+  const inviteToken = await getTournamentInviteToken(tournamentId);
+  const facts = await Promise.all([
+    viewer.discordId
+      ? supabaseAdmin.from("organization_members").select("role").eq("organization_id", organizationId).eq("user_id", viewer.discordId).maybeSingle()
+      : null,
+    viewer.discordId
+      ? supabaseAdmin.from("tournament_staff").select("role").eq("tournament_id", tournamentId).eq("user_id", viewer.discordId).maybeSingle()
+      : null,
+    viewer.discordId
+      ? supabaseAdmin.from("teams").select("id").eq("tournament_id", tournamentId).eq("captain_discord_id", viewer.discordId).limit(1)
+      : null,
+    viewer.discordId
+      ? supabaseAdmin.from("team_members").select("id, teams!inner(tournament_id)").eq("teams.tournament_id", tournamentId).eq("user_id", viewer.discordId).limit(1)
+      : null,
+    inviteToken
+      ? supabaseAdmin
+          .from("tournament_invite_tokens")
+          .select("tournament_id")
+          .eq("tournament_id", tournamentId)
+          .eq("token_hash", createHash("sha256").update(inviteToken).digest("hex"))
+          .maybeSingle()
+      : null,
+  ]);
+  const [memberRes, staffRes, captainRes, playerRes, inviteRes] = facts;
+  for (const result of facts) {
+    if (result?.error) throw new Error(`private tournament check failed: ${result.error.message}`);
   }
-  return canViewTournament(
-    { guild_id: tournament.guild_id, organization_id: tournament.organization_id ?? null, is_public: tournament.is_public },
-    matchesRoute ? tournament.guild_id : guildId,
-    memberIds,
-  )
+
+  // SEC-26 : l'appartenance au serveur Discord ne compte que tant que l'intégration est active.
+  const isActiveDiscordMember = Boolean(profile.discord_enabled && memberGuildIds(viewer).has(profile.guild_id));
+
+  return canViewPrivateTournament({
+    isOrganizationMember: Boolean(memberRes?.data),
+    isTournamentStaff: Boolean(staffRes?.data),
+    isParticipant: Boolean(captainRes?.data?.length || playerRes?.data?.length),
+    hasValidInvite: Boolean(inviteRes?.data),
+    isActiveDiscordMember,
+  })
     ? tournament
     : null;
 });
+
+/** Jeton du lien de partage déposé par /api/tournament-invite, à revalider à chaque usage (il peut avoir été révoqué). */
+export async function getTournamentInviteToken(tournamentId: string): Promise<string | null> {
+  const store = await cookies();
+  return store.get(`${TOURNAMENT_INVITE_COOKIE_PREFIX}${tournamentId}`)?.value ?? null;
+}
 
 /** Tournoi géré : l'utilisateur peut gérer ce tournoi ET il appartient au serveur / à l'organisation (SEC-01 côté lecture). */
 export const getManagedTournament = cache(async (guildId: string, tournamentId: string): Promise<Tournament | null> => {

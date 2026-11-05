@@ -14,26 +14,26 @@ const BOT_INVITE_PERMISSIONS = (
   BigInt(0x10000000) // Gérer les rôles
 ).toString();
 
-export interface TournamentVisibility {
-  guild_id: string;
-  organization_id?: string | null;
-  is_public: boolean | null;
+/** Préfixe du cookie httpOnly qui porte le jeton du lien de partage d'un tournoi privé. */
+export const TOURNAMENT_INVITE_COOKIE_PREFIX = "tournament_invite_";
+
+export interface PrivateTournamentAccessFacts {
+  isOrganizationMember: boolean;
+  isTournamentStaff: boolean;
+  isParticipant: boolean;
+  hasValidInvite: boolean;
+  /** Membre du serveur Discord rattaché, et seulement tant que l'intégration est active. */
+  isActiveDiscordMember: boolean;
 }
 
-/**
- * SEC-10 : un tournoi est lisible s'il est public, ou si le visiteur est membre de son serveur / organisation.
- * L'URL doit en plus désigner le bon serveur / organisation, pour qu'aucun lien ne présente un tournoi sous un autre organisateur.
- */
-export function canViewTournament(
-  tournament: TournamentVisibility,
-  routeGuildId: string,
-  memberGuildIds: ReadonlySet<string>,
-): boolean {
-  if (tournament.guild_id !== routeGuildId && tournament.organization_id !== routeGuildId) return false;
+/** SEC-10 / RFC, décision 3 : les conditions d'accès à un tournoi privé, indépendantes les unes des autres. */
+export function canViewPrivateTournament(facts: PrivateTournamentAccessFacts): boolean {
   return (
-    tournament.is_public === true ||
-    memberGuildIds.has(tournament.guild_id) ||
-    (!!tournament.organization_id && memberGuildIds.has(tournament.organization_id))
+    facts.isOrganizationMember ||
+    facts.isTournamentStaff ||
+    facts.isParticipant ||
+    facts.hasValidInvite ||
+    facts.isActiveDiscordMember
   );
 }
 

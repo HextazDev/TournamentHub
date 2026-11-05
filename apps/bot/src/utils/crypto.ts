@@ -13,10 +13,16 @@ function resolveKey(rawKey?: string): Buffer {
       "SEC-03: Variable INTEGRATION_ENCRYPTION_KEY obligatoire pour le chiffrement des intégrations",
     );
   }
-  if (/^[0-9a-fA-F]{64}$/.test(configured)) {
-    return Buffer.from(configured, "hex");
-  }
-  return createHash("sha256").update(configured).digest();
+  const key = parseIntegrationKey(configured);
+  if (!key) throw new Error("SEC-03: INTEGRATION_ENCRYPTION_KEY doit contenir 32 octets (64 caractères hex ou base64)");
+  return key;
+}
+
+/** Clé maîtresse de 32 octets en hexadécimal ou en base64 (RFC 5.2) ; `null` pour tout autre format. */
+export function parseIntegrationKey(value: string): Buffer | null {
+  if (/^[0-9a-fA-F]{64}$/.test(value)) return Buffer.from(value, "hex");
+  const decoded = Buffer.from(value, "base64");
+  return decoded.length === 32 && decoded.toString("base64").replace(/=+$/, "") === value.replace(/=+$/, "") ? decoded : null;
 }
 
 /**

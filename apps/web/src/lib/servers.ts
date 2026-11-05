@@ -5,8 +5,10 @@ import { splitServers, type GuildSummary, type ManageScope, type ManageState, ty
 import type { Viewer } from "@/lib/viewer";
 
 /** Vues « Mes serveurs » et « Panel organisateur » du visiteur connecté (lectures service_role bornées à ses serveurs / organisations). */
-export const loadServerOverview = cache(async (viewer: Viewer & { discordId: string; guilds: NonNullable<Viewer["guilds"]> }) => {
-  const ids = viewer.guilds.map((g) => g.id);
+export const loadServerOverview = cache(async (viewer: Viewer & { discordId: string }) => {
+  // CLN-03 : sans réponse de Discord, les organisations natives du visiteur restent accessibles.
+  const viewerGuilds = viewer.guilds ?? [];
+  const ids = viewerGuilds.map((g) => g.id);
 
   // 1. Lecture du modèle RFC 0001 (organizations, organization_members, organization_integrations, integration_access_grants)
   const [orgMembersRes, staffRes, discordIntsRes, grantsRes] = await Promise.all([
@@ -24,7 +26,8 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
   for (const row of (discordIntsRes.data ?? []) as Record<string, unknown>[]) {
     const extId = typeof row.external_id === "string" ? row.external_id : null;
     if (!extId) continue;
-    if (typeof row.organization_id === "string") {
+    // SEC-26 : un serveur dont l'intégration est coupée ne donne plus aucun droit dans le hub.
+    if (typeof row.organization_id === "string" && row.enabled === true) {
       orgIdToGuildId.set(row.organization_id, extId);
     }
     const cfg = (typeof row.config === "object" && row.config !== null ? row.config : {}) as Record<string, unknown>;
@@ -61,15 +64,15 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
       if (typeof m.organization_id === "string") {
         const guildId = orgIdToGuildId.get(m.organization_id);
         if (guildId && !directory.has(guildId)) {
-          if (m.role === "OWNER") directory.set(guildId, "SERVER_OWNER");
-          else if (m.role === "ADMIN") directory.set(guildId, "ADMINISTRATOR");
-          else if (m.role === "TO") directory.set(guildId, "TO_ROLE");
+          if (m.role === "ORG_OWNER") directory.set(guildId, "SERVER_OWNER");
+          else if (m.role === "ORG_ADMIN") directory.set(guildId, "ADMINISTRATOR");
+          else if (m.role === "ORG_TO") directory.set(guildId, "TO_ROLE");
         }
       }
     }
   }
 
-  const baseResult = splitServers(viewer.guilds, settings, directory);
+  const baseResult = splitServers(viewerGuilds, settings, directory);
 
   // 2. Organisations Web autonomes (sans serveur Discord attaché dans viewer.guilds) où le visiteur est membre ou staff
   const nativeOrgIds = new Set<string>();
@@ -77,7 +80,8 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
   for (const m of (orgMembersRes.data ?? []) as { organization_id?: string; role?: string }[]) {
     if (typeof m.organization_id === "string") {
       nativeOrgIds.add(m.organization_id);
-      nativeOrgRoles.set(m.organization_id, "server");
+      if (m.role === "ORG_OWNER" || m.role === "ORG_ADMIN" || m.role === "ORG_TO") nativeOrgRoles.set(m.organization_id, "server");
+      else if (m.role === "CASTER" || m.role === "STATISTICIAN") nativeOrgRoles.set(m.organization_id, "tournament");
     }
   }
   for (const s of (staffRes.data ?? []) as Record<string, unknown>[]) {
@@ -89,7 +93,7 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
     }
   }
   for (const g of (grantsRes.data ?? []) as { organization_id?: string; reason?: string }[]) {
-    if (typeof g.organization_id === "string" && !nativeOrgRoles.has(g.organization_id)) {
+    if (typeof g.organization_id === "string" && orgIdToGuildId.has(g.organization_id) && !nativeOrgRoles.has(g.organization_id)) {
       nativeOrgIds.add(g.organization_id);
       nativeOrgRoles.set(g.organization_id, g.reason === "TOURNAMENT_TO_ROLE" ? "tournament" : "server");
     }
@@ -133,9 +137,10 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
         owner: true,
         permissions: "8",
       };
-      const scope: ManageScope = nativeOrgRoles.get(orgId) ?? "server";
+      const scope = nativeOrgRoles.get(orgId);
       const state: ManageState = "ready";
-      baseResult.managedServers.push({ guild: summary, state, scope });
+      // Un simple membre voit l'organisation sans y avoir de panel.
+      if (scope) baseResult.managedServers.push({ guild: summary, state, scope });
       if (!existingMemberIds.has(routeKey)) {
         baseResult.memberServers.push(summary);
       }

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { isBotProxyPathAllowed } from "@/lib/botProxyAllowlist";
-import { BOT_UNREACHABLE, botAccessError, botInternalError } from "@/lib/accessErrors";
+import { BOT_UNREACHABLE, botAccessError, botDomainError, botInternalError } from "@/lib/accessErrors";
 import { getServerLocale } from "@/i18n/server";
 import { resolveServerBotApiUrl } from "@/lib/config";
 
@@ -78,7 +78,9 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
     // SEC-18 / SEC-19 : un refus d'accès ou un échec serveur du bot devient un message traduit ;
     // les erreurs métier sont relayées telles quelles.
     const locale = res.ok ? null : await getServerLocale();
-    const translatedError = locale ? (botAccessError(payload, locale) ?? botInternalError(payload, locale)) : null;
+    const translatedError = locale
+      ? (botAccessError(payload, locale) ?? botInternalError(payload, locale) ?? botDomainError(payload, locale))
+      : null;
     return NextResponse.json(translatedError ?? payload, { status: res.status });
   } catch (error: unknown) {
     console.error(`Proxy Error to ${targetUrl}:`, error);

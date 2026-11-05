@@ -48,3 +48,21 @@ describe("isBotProxyPathAllowed", () => {
     }
   });
 });
+
+describe("routes d'organisation et de joueurs ajoutées à l'audit #100", () => {
+  it.each([
+    "organizations/invites/accept",
+    "organizations/org-a/transfer",
+    "organizations/org-a/invites",
+    "organizations/org-a/invites/i-1",
+    "player/matches/m-1/contest-score",
+    "tournaments/t-1/integrations/sync",
+    "tournaments/t-1/invite-link",
+  ])("relaie %s", (path) => {
+    expect(isBotProxyPathAllowed(path)).toBe(true);
+  });
+
+  it.each(["discord/permissions", "webhook/team-update", "organizations/org-a/secrets"])("bloque %s", (path) => {
+    expect(isBotProxyPathAllowed(path)).toBe(false);
+  });
+});

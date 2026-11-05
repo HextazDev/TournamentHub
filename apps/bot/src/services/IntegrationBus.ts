@@ -1,4 +1,4 @@
-import type { IntegrationProvider, OrganizationIntegration } from "@hub/shared";
+import type { IntegrationProvider, IntegrationWarning, OrganizationIntegration } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 
@@ -54,6 +54,32 @@ export interface EmitIntegrationPayload {
 
 const plugins = new Map<IntegrationProvider, IntegrationPlugin>();
 
+/** INT-01 : délai maximal d'attente d'un plugin ; au-delà, la requête repart sans lui et le TO est averti. */
+export const INTEGRATION_TIMEOUT_MS = 5_000;
+/** Création de salons en série (rate-limit Discord) : seule exception au délai standard. */
+const SLOW_EVENT_TIMEOUT_MS = 30_000;
+const SLOW_EVENTS: ReadonlySet<IntegrationEventName> = new Set(["onTournamentLaunched", "onPhaseSynced", "onTournamentCompleted"]);
+
+class IntegrationTimeoutError extends Error {}
+
+/** Le handler n'est pas annulable : il continue en arrière-plan et sa fin tardive est seulement journalisée. */
+async function runWithTimeout(work: Promise<void>, timeoutMs: number, label: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new IntegrationTimeoutError(`${label} : délai de ${timeoutMs} ms dépassé`)), timeoutMs);
+  });
+  try {
+    await Promise.race([work, timeout]);
+  } catch (err) {
+    if (err instanceof IntegrationTimeoutError) {
+      work.catch((late: unknown) => logger.error(`[IntegrationBus] Échec tardif de ${label}:`, late));
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * INT-01 (RFC 0001 Q4) : Bus d'intégrations asynchrone et fail-safe.
  * Une panne d'intégration externe (Discord, Twitch, IA) est journalisée et passe l'intégration en `DEGRADED`,
@@ -72,8 +98,16 @@ export class IntegrationBus {
     return plugins.get(provider);
   }
 
-  static async emit(event: IntegrationEventName, payload: EmitIntegrationPayload): Promise<void> {
-    if (!payload.organizationId) return;
+  /**
+   * Exécute les plugins actifs, isolés les uns des autres, après le commit métier de l'appelant.
+   * Ne lève jamais : les échecs passent l'intégration en `DEGRADED` et sont renvoyés comme avertissements.
+   */
+  static async emit(
+    event: IntegrationEventName,
+    payload: EmitIntegrationPayload,
+    options: { timeoutMs?: number } = {},
+  ): Promise<IntegrationWarning[]> {
+    if (!payload.organizationId) return [];
 
     const { data, error } = await supabase
       .from("organization_integrations")
@@ -83,52 +117,57 @@ export class IntegrationBus {
 
     if (error) {
       logger.error(`[IntegrationBus] Lecture des intégrations impossible pour ${payload.organizationId}:`, error);
-      return;
+      return [];
     }
 
-    const activeIntegrations = (data ?? []) as OrganizationIntegration[];
-    if (activeIntegrations.length === 0) return;
-
-    await Promise.allSettled(
-      activeIntegrations.map(async (integration) => {
-        const provider = integration.provider ?? integration.type;
-        if (!provider) return;
-        const plugin = plugins.get(provider);
-        const handler = plugin?.[event];
-        if (!plugin || typeof handler !== "function") return;
-
-        const ctx: IntegrationEventContext = {
-          ...payload,
-          guildId: payload.guildId ?? integration.external_id,
-          integration,
-        };
-
-        try {
-          await handler.call(plugin, ctx);
-          if (integration.status === "DEGRADED") {
-            await supabase
-              .from("organization_integrations")
-              .update({
-                status: "CONNECTED",
-                last_error: null,
-                last_sync_at: new Date().toISOString(),
-                updated_at: new Date().toISOString(),
-              })
-              .eq("id", integration.id);
-          }
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          logger.error(`[IntegrationBus] Échec du plugin ${provider} sur ${event} (org=${payload.organizationId}):`, err);
-          await supabase
-            .from("organization_integrations")
-            .update({
-              status: "DEGRADED",
-              last_error: message,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", integration.id);
-        }
-      }),
+    const timeoutMs = options.timeoutMs ?? (SLOW_EVENTS.has(event) ? SLOW_EVENT_TIMEOUT_MS : INTEGRATION_TIMEOUT_MS);
+    const results = await Promise.all(
+      ((data ?? []) as OrganizationIntegration[]).map((integration) =>
+        this.runPlugin(event, payload, integration, timeoutMs),
+      ),
     );
+    return results.filter((warning): warning is IntegrationWarning => warning !== null);
+  }
+
+  private static async runPlugin(
+    event: IntegrationEventName,
+    payload: EmitIntegrationPayload,
+    integration: OrganizationIntegration,
+    timeoutMs: number,
+  ): Promise<IntegrationWarning | null> {
+    const provider = integration.provider;
+    const plugin = plugins.get(provider);
+    const handler = plugin?.[event];
+    if (!plugin || typeof handler !== "function") return null;
+
+    const ctx: IntegrationEventContext = {
+      ...payload,
+      guildId: payload.guildId ?? integration.external_id,
+      integration,
+    };
+
+    try {
+      await runWithTimeout(handler.call(plugin, ctx), timeoutMs, `${provider}.${event}`);
+      if (integration.status === "DEGRADED") {
+        await this.recordHealth(integration.id, { status: "CONNECTED", last_error: null, last_sync_at: new Date().toISOString() });
+      }
+      return null;
+    } catch (err: unknown) {
+      logger.error(`[IntegrationBus] Échec du plugin ${provider} sur ${event} (org=${payload.organizationId}):`, err);
+      await this.recordHealth(integration.id, {
+        status: "DEGRADED",
+        last_error: err instanceof Error ? err.message : String(err),
+      });
+      return { provider, code: err instanceof IntegrationTimeoutError ? "INTEGRATION_TIMEOUT" : "INTEGRATION_FAILED" };
+    }
+  }
+
+  /** L'état de santé est informatif : son échec d'écriture est journalisé sans affecter la mutation métier. */
+  private static async recordHealth(integrationId: string, health: Record<string, string | null>): Promise<void> {
+    const { error } = await supabase
+      .from("organization_integrations")
+      .update({ ...health, updated_at: new Date().toISOString() })
+      .eq("id", integrationId);
+    if (error) logger.error(`[IntegrationBus] Écriture de l'état de santé impossible pour ${integrationId}:`, error);
   }
 }

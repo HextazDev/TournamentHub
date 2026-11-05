@@ -105,7 +105,7 @@ describe("INT-01: IntegrationBus asynchrone et fail-safe", () => {
         organizationId: ORG_ID,
         tournamentId: "t1",
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
 
     expect(log.error).toHaveBeenCalledWith(expect.stringContaining("[IntegrationBus]"), boom);
     const row = db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord");
@@ -113,5 +113,29 @@ describe("INT-01: IntegrationBus asynchrone et fail-safe", () => {
       status: "DEGRADED",
       last_error: "Discord API 503 Unavailable",
     });
+  });
+
+  it("INT-01: un plugin qui dépasse le délai ne bloque pas l'appelant et devient un avertissement", async () => {
+    IntegrationBus.registerPlugin({
+      provider: "DISCORD",
+      onRegistrationOpened: () => new Promise<void>(() => undefined),
+    });
+    const warnings = await IntegrationBus.emit(
+      "onRegistrationOpened",
+      { organizationId: ORG_ID, tournamentId: "t1" },
+      { timeoutMs: 20 },
+    );
+    expect(warnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_TIMEOUT" }]);
+    const row = db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord");
+    expect(row?.status).toBe("DEGRADED");
+  });
+
+  it("INT-01: une réussite après panne repasse l'intégration en CONNECTED sans avertissement", async () => {
+    db.current!.tables.organization_integrations![0]!.status = "DEGRADED";
+    IntegrationBus.registerPlugin({ provider: "DISCORD", onRegistrationOpened: async () => undefined });
+    const warnings = await IntegrationBus.emit("onRegistrationOpened", { organizationId: ORG_ID, tournamentId: "t1" });
+    expect(warnings).toEqual([]);
+    const row = db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord");
+    expect(row).toMatchObject({ status: "CONNECTED", last_error: null });
   });
 });

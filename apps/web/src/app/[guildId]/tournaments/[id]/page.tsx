@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getReadableTournament, getViewer } from "@/lib/viewer";
+import { getReadableTournament, getTournamentInviteToken, getViewer } from "@/lib/viewer";
 import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Monitor, Users } from "lucide-react";
@@ -89,15 +89,19 @@ export default async function PublicTournamentOverview({
     (!checkinStart || now >= checkinStart) &&
     (!checkinEnd || now <= checkinEnd);
 
-  const captainPendingRaw = captainTeamRow
-    ? matches.find(
-        (m) =>
-          m.status === "PENDING" &&
-          (m.team1_id === captainTeamRow.id || m.team2_id === captainTeamRow.id) &&
-          m.team1_id &&
-          m.team2_id,
-      )
+  // UX-01 : le prochain match du capitaine, quel que soit son état, pour ne jamais faire disparaître son action.
+  const captainMatchRaw = captainTeamRow
+    ? [...matches]
+        .sort((a, b) => (a.round_number || 0) - (b.round_number || 0))
+        .find(
+          (m) =>
+            ["PENDING", "IN_PROGRESS", "WAITING_VALIDATION", "CONTESTED"].includes(m.status) &&
+            (m.team1_id === captainTeamRow.id || m.team2_id === captainTeamRow.id) &&
+            m.team1_id &&
+            m.team2_id,
+        )
     : null;
+  const inviteToken = await getTournamentInviteToken(id);
 
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
@@ -107,6 +111,7 @@ export default async function PublicTournamentOverview({
         isRegistrationOpen={Boolean(tournament.is_registration_open)}
         canCheckinNow={canCheckinNow}
         viewerDiscordId={viewer.discordId}
+        inviteToken={inviteToken}
         captainTeam={
           captainTeamRow
             ? {
@@ -116,13 +121,22 @@ export default async function PublicTournamentOverview({
               }
             : null
         }
-        pendingMatch={
-          captainPendingRaw
+        captainMatch={
+          captainMatchRaw
             ? {
-                id: String(captainPendingRaw.id),
-                round_number: typeof captainPendingRaw.round_number === "number" ? captainPendingRaw.round_number : null,
-                team1_name: String(captainPendingRaw.team1?.name ?? t(locale, "common.tbd")),
-                team2_name: String(captainPendingRaw.team2?.name ?? t(locale, "common.tbd")),
+                id: String(captainMatchRaw.id),
+                state:
+                  captainMatchRaw.status === "CONTESTED"
+                    ? "CONTESTED"
+                    : captainMatchRaw.status !== "WAITING_VALIDATION"
+                      ? "TO_REPORT"
+                      : captainMatchRaw.reported_by_team_id === captainTeamRow?.id
+                        ? "WAITING_OPPONENT"
+                        : "TO_VALIDATE",
+                team1_name: String(captainMatchRaw.team1?.name ?? t(locale, "common.tbd")),
+                team2_name: String(captainMatchRaw.team2?.name ?? t(locale, "common.tbd")),
+                team1_score: Number(captainMatchRaw.team1_score ?? 0),
+                team2_score: Number(captainMatchRaw.team2_score ?? 0),
               }
             : null
         }

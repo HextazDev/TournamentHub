@@ -1,16 +1,26 @@
 import { logger } from "../utils/logger";
 import { GuildRegistryService, type GuildLike } from "./GuildRegistryService";
 import { invalidateGuildAccess } from "./MemberAccessService";
+import { resolveOrganization } from "../utils/tenant";
 
 /** Sous-ensemble du client Discord nécessaire à la resynchronisation (facilite les tests). */
 export interface GuildFetcher {
   guilds: { fetch(guildId: string): Promise<GuildLike> };
 }
 
-async function resyncDirectory(client: GuildFetcher, guildId: string): Promise<void> {
-  const guild = await client.guilds.fetch(guildId);
+async function resyncDirectory(client: GuildFetcher, tenantId: string): Promise<void> {
+  const org = await resolveOrganization(tenantId);
+  if (!org) return;
+  // Une même décision est mise en cache sous chaque identifiant de l'organisation (UUID, slug, serveur).
+  invalidateGuildAccess(org.id);
+  invalidateGuildAccess(org.slug);
+  if (org.discordGuildId) invalidateGuildAccess(org.discordGuildId);
+  // Organisation sans Discord actif : aucun annuaire à reconstruire.
+  if (!org.discordEnabled || !org.discordGuildId) return;
+
+  const guild = await client.guilds.fetch(org.discordGuildId);
   const synced = await GuildRegistryService.syncGuildAdmins(guild);
-  if (!synced) logger.warn(`[AccessRefresh] Annuaire guild_admins non resynchronisé pour ${guildId}.`);
+  if (!synced) logger.warn(`[AccessRefresh] Annuaire des accès Discord non resynchronisé pour ${org.discordGuildId}.`);
 }
 
 /**

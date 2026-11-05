@@ -6,9 +6,16 @@ import { Save, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 import { DiscordInviteUrlSchema, isDiscordSnowflake } from "@hub/shared";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
 /** Formulaire des paramètres du serveur : rendu uniquement si canPerform(..., "MANAGE_SERVER_SETTINGS") (SEC-16). */
-export function ServerSettingsClient({ guildId }: { guildId: string }) {
+export function ServerSettingsClient({
+  guildId,
+  manageableGuilds,
+}: {
+  guildId: string;
+  manageableGuilds: readonly { id: string; name: string }[];
+}) {
   const { t } = useTranslation();
 
   const [loading, setLoading] = useState(true);
@@ -31,6 +38,9 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
   const [hasOrgRecord, setHasOrgRecord] = useState(false);
   const [togglingDiscord, setTogglingDiscord] = useState(false);
   const [apiError, setApiError] = useState("");
+  const [linkedGuildId, setLinkedGuildId] = useState("");
+  const [showDisableModal, setShowDisableModal] = useState(false);
+  const [cleanupDiscord, setCleanupDiscord] = useState(false);
 
   useEffect(() => {
     async function loadData() {
@@ -54,6 +64,7 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
             activeDiscord = Boolean(orgData.discordEnabled);
             setDiscordEnabled(activeDiscord);
             targetDiscordGuildId = orgData.discordGuildId || (isDiscordSnowflake(guildId) ? guildId : null);
+            setLinkedGuildId(orgData.discordGuildId ?? "");
             const cfg = orgData.discordConfig ?? {};
             setSettings({
               captain_role_id: cfg.captain_role_id || "",
@@ -98,24 +109,14 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
   // ici rechargeait la base par-dessus les modifications non enregistrées.
   }, [guildId, t]);
 
-  const handleToggleDiscord = async () => {
+  const updateDiscordIntegration = async (body: Record<string, unknown>, nextState: boolean) => {
     setTogglingDiscord(true);
     setMessage({ type: "", text: "" });
     try {
-      const nextState = !discordEnabled;
       const res = await botApiFetch(`/api/organizations/${guildId}/integrations/DISCORD`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          enabled: nextState,
-          config: {
-            captain_role_id: settings.captain_role_id || null,
-            to_role_id: settings.to_role_id || null,
-            checkin_channel_id: settings.checkin_channel_id || null,
-            announcement_channel_id: settings.announcement_channel_id || null,
-            registration_channel_id: settings.registration_channel_id || null,
-          },
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         throw new Error((await readApiError(res)) ?? t("common.unknown"));
@@ -127,6 +128,14 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
     } finally {
       setTogglingDiscord(false);
     }
+  };
+
+  const handleEnableDiscord = () => updateDiscordIntegration({ enabled: true, external_id: linkedGuildId }, true);
+
+  const handleDisableDiscord = async () => {
+    await updateDiscordIntegration({ enabled: false, cleanupExternalResources: cleanupDiscord }, false);
+    setShowDisableModal(false);
+    setCleanupDiscord(false);
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
@@ -156,26 +165,28 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
               invite_url: settings.invite_url.trim() || null,
             }),
           }),
-          botApiFetch(`/api/organizations/${guildId}/integrations/DISCORD`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              enabled: discordEnabled,
-              config: {
-                captain_role_id: settings.captain_role_id || null,
-                to_role_id: settings.to_role_id || null,
-                checkin_channel_id: settings.checkin_channel_id || null,
-                announcement_channel_id: settings.announcement_channel_id || null,
-                registration_channel_id: settings.registration_channel_id || null,
-              },
-            }),
-          }),
+          // Une organisation sans Discord n'a aucune configuration d'intégration à écrire.
+          discordEnabled
+            ? botApiFetch(`/api/organizations/${guildId}/integrations/DISCORD`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  config: {
+                    captain_role_id: settings.captain_role_id || null,
+                    to_role_id: settings.to_role_id || null,
+                    checkin_channel_id: settings.checkin_channel_id || null,
+                    announcement_channel_id: settings.announcement_channel_id || null,
+                    registration_channel_id: settings.registration_channel_id || null,
+                  },
+                }),
+              })
+            : null,
         ]);
 
         if (!orgRes.ok) {
           throw new Error((await readApiError(orgRes)) ?? t("common.unknown"));
         }
-        if (!intRes.ok) {
+        if (intRes && !intRes.ok) {
           throw new Error((await readApiError(intRes)) ?? t("common.unknown"));
         }
       } else {
@@ -245,19 +256,42 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
                 <h3 className="text-sm font-bold text-white">{t("organizations.discordIntegrationTitle")}</h3>
                 <p className="text-xs text-slate-400 mt-1">{t("organizations.discordIntegrationDesc")}</p>
               </div>
-              <button
-                type="button"
-                disabled={togglingDiscord}
-                onClick={handleToggleDiscord}
-                className={`px-4 py-2 rounded-lg text-xs font-bold transition-colors ${
-                  discordEnabled
-                    ? "bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30"
-                    : "bg-slate-800 text-slate-300 border border-slate-600 hover:bg-slate-700"
-                }`}
-              >
-                {discordEnabled ? t("organizations.integrationEnabled") : t("organizations.integrationDisabled")}
-              </button>
+              {discordEnabled ? (
+                <button
+                  type="button"
+                  disabled={togglingDiscord}
+                  onClick={() => setShowDisableModal(true)}
+                  className="px-4 py-2 rounded-lg text-xs font-bold transition-colors bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-600/30"
+                >
+                  {t("organizations.disableDiscord")}
+                </button>
+              ) : (
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    aria-label={t("organizations.chooseGuild")}
+                    value={linkedGuildId}
+                    onChange={(e) => setLinkedGuildId(e.target.value)}
+                    className="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white"
+                  >
+                    <option value="">{t("organizations.chooseGuild")}</option>
+                    {manageableGuilds.map((guild) => (
+                      <option key={guild.id} value={guild.id}>{guild.name}</option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={togglingDiscord || !linkedGuildId}
+                    onClick={handleEnableDiscord}
+                    className="px-4 py-2 rounded-lg text-xs font-bold transition-colors bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white"
+                  >
+                    {t("organizations.connectDiscord")}
+                  </button>
+                </div>
+              )}
             </div>
+            {!discordEnabled && manageableGuilds.length === 0 && (
+              <p className="text-xs text-slate-400">{t("organizations.noManageableGuild")}</p>
+            )}
           </div>
         )}
 
@@ -532,6 +566,24 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           </button>
         </div>
       </form>
+      <ConfirmModal
+        isOpen={showDisableModal}
+        onClose={() => setShowDisableModal(false)}
+        onConfirm={handleDisableDiscord}
+        title={t("organizations.disableDiscord")}
+        description={
+          <span className="space-y-3 block">
+            <span className="block">{t("organizations.disableDiscordConfirm")}</span>
+            <label className="flex items-center gap-2 text-sm text-slate-200">
+              <input type="checkbox" checked={cleanupDiscord} onChange={(e) => setCleanupDiscord(e.target.checked)} />
+              {t("organizations.cleanupDiscordChannels")}
+            </label>
+          </span>
+        }
+        confirmText={t("organizations.disableDiscord")}
+        variant="warning"
+        isLoading={togglingDiscord}
+      />
     </div>
   );
 }

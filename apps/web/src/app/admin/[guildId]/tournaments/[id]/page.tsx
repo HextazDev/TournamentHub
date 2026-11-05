@@ -82,7 +82,8 @@ export default async function TournamentDashboard({ params }: { params: Promise<
       <NextStepCard guildId={guildId} tournamentId={tournamentId} step={nextStep} locale={locale} />
 
       {/* Tournament Lifecycle Manager */}
-      <TournamentLifecycleManager 
+      <TournamentLifecycleManager
+        integrationDegraded={profile?.discord_status === "DEGRADED"}
         tournamentId={tournamentId} 
         guildId={guildId} 
         status={tournament.status} 

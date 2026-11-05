@@ -5,10 +5,11 @@ const SEGMENT = "[A-Za-z0-9_-]+";
 const ALLOWED = [
   /^discord\/(roles|channels|members)$/,
   /^server-settings$/,
-  new RegExp(`^tournaments(/${SEGMENT}(/(settings|visibility|launch|close|registrations|checkin/stop))?)?$`),
+  new RegExp(`^tournaments(/${SEGMENT}(/(settings|visibility|launch|close|registrations|checkin/stop|integrations/sync|invite-link))?)?$`),
   new RegExp(`^(teams|phases|matches)(/${SEGMENT})*$`),
-  new RegExp(`^organizations(/${SEGMENT}(/(members(/${SEGMENT})?|tournaments/${SEGMENT}/staff(/${SEGMENT})?|integrations(/${SEGMENT})?))?)?$`),
-  new RegExp(`^player/(tournaments/${SEGMENT}/(register|checkin)|matches/${SEGMENT}/report-score)$`),
+  /^organizations\/invites\/accept$/,
+  new RegExp(`^organizations(/${SEGMENT}(/(transfer|members(/${SEGMENT})?|invites(/${SEGMENT})?|tournaments/${SEGMENT}/staff(/${SEGMENT})?|integrations(/${SEGMENT})?))?)?$`),
+  new RegExp(`^player/(tournaments/${SEGMENT}/(register|checkin)|matches/${SEGMENT}/(report-score|contest-score))$`),
 ];
 const BLOCKED = /^tournaments\/archive-and-init$/;
 

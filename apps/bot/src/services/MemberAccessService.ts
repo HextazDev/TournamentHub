@@ -65,6 +65,25 @@ export function invalidateGuildAccess(tenantId: string): void {
 
 export const invalidateOrganizationAccess = invalidateGuildAccess;
 
+/**
+ * SEC-18 : droits de gestion réels sur un serveur, sans le rôle TO (qui dépend déjà d'un rattachement).
+ * Le bot doit être présent : sans lui, aucune vérification fiable n'est possible.
+ */
+export async function checkGuildManageRights(
+  client: DiscordClientLike,
+  guildId: string,
+  discordId: string,
+): Promise<"OK" | "NO_RIGHTS" | "BOT_NOT_IN_GUILD"> {
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) return "BOT_NOT_IN_GUILD";
+  if (guild.ownerId === discordId) return "OK";
+  const member = await guild.members.fetch(discordId).catch(() => null);
+  if (!member) return "NO_RIGHTS";
+  return member.permissions.has(PermissionFlagsBits.Administrator) || member.permissions.has(PermissionFlagsBits.ManageGuild)
+    ? "OK"
+    : "NO_RIGHTS";
+}
+
 function normalizeNativeRole(rawRole: unknown): OrganizationRole | null {
   if (rawRole === "ORG_OWNER" || rawRole === "OWNER") return "ORG_OWNER";
   if (rawRole === "ORG_ADMIN" || rawRole === "ADMIN") return "ORG_ADMIN";
@@ -92,7 +111,8 @@ async function computeOrganizationAccess(
     .maybeSingle();
 
   if (memberErr) return { allowed: false, code: "CHECK_FAILED" };
-  const nativeRole = normalizeNativeRole((memberRow as { role?: unknown } | null)?.role);
+  const rawNativeRole = (memberRow as { role?: unknown } | null)?.role;
+  const nativeRole = normalizeNativeRole(rawNativeRole);
   if (nativeRole) {
     return {
       allowed: true,
@@ -117,6 +137,11 @@ async function computeOrganizationAccess(
   const activeIds = activeTournaments.map((t) => t.id);
 
   const tournamentRolesMap: Record<string, TournamentStaffRole> = {};
+  // RFC Q2 : casteur / statisticien d'organisation = même périmètre que le rôle de tournoi, sur chaque tournoi non archivé.
+  // Ils restent de niveau TOURNAMENT : aucune route réservée au niveau SERVER ne leur est ouverte.
+  if (rawNativeRole === "CASTER" || rawNativeRole === "STATISTICIAN") {
+    for (const id of activeIds) tournamentRolesMap[id] = rawNativeRole;
+  }
   if (activeIds.length > 0) {
     const { data: staffRows, error: staffErr } = await supabase
       .from("tournament_staff")

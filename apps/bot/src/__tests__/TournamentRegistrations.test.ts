@@ -6,17 +6,17 @@ vi.mock("../lib/supabase", () => ({
 vi.mock("../utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
-vi.mock("../services/RegistrationService", () => ({
-  RegistrationService: { sendRegistrationEmbed: vi.fn().mockResolvedValue(undefined) },
+vi.mock("../services/IntegrationBus", () => ({
+  IntegrationBus: { emit: vi.fn().mockResolvedValue([]) },
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
   verifyTournamentGuild: () => Promise.resolve(true),
-  resolveOrganization: () => Promise.resolve(null),
+  resolveOrganization: () => Promise.resolve({ id: "org-1" }),
 }));
 
 import { supabase } from "../lib/supabase";
-import { RegistrationService } from "../services/RegistrationService";
+import { IntegrationBus } from "../services/IntegrationBus";
 import { tournamentRouter } from "../routes/TournamentRouter";
 import { callRoute } from "./helpers/route";
 
@@ -51,28 +51,29 @@ const open = () =>
 beforeEach(() => vi.clearAllMocks());
 
 describe("POST /api/tournaments/:id/registrations (open)", () => {
-  it("REG-08: un tournoi privé peut ouvrir ses inscriptions (annonce Discord + flag)", async () => {
+  it("REG-08: ouvre les inscriptions en base puis notifie les intégrations", async () => {
     db({ status: "DRAFT", is_public: false, start_at: null, start_date: null, checkin_start_at: null });
     const out = await open();
     expect(out.status).toBe(200);
-    expect(RegistrationService.sendRegistrationEmbed).toHaveBeenCalledWith(TID, {});
     expect(updates).toEqual([{ is_registration_open: true }]);
+    expect(IntegrationBus.emit).toHaveBeenCalledWith("onRegistrationOpened", { organizationId: "org-1", tournamentId: TID, discordClient: {} });
   });
 
   it("REG-01: refuse l'ouverture une fois le check-in commencé", async () => {
     db({ status: "REGISTRATION", is_public: true, checkin_start_at: "2000-01-01T00:00:00Z" });
     const out = await open();
     expect(out.status).toBe(400);
-    expect(RegistrationService.sendRegistrationEmbed).not.toHaveBeenCalled();
+    expect(updates).toEqual([]);
+    expect(IntegrationBus.emit).not.toHaveBeenCalled();
   });
 
-  it("REG-08: n'annonce pas un succès si l'annonce Discord échoue", async () => {
+  it("REG-08: une annonce Discord en échec n'empêche pas l'ouverture et devient un avertissement", async () => {
     db({ status: "DRAFT", is_public: true });
-    vi.mocked(RegistrationService.sendRegistrationEmbed).mockRejectedValueOnce(new Error("Missing Access"));
+    vi.mocked(IntegrationBus.emit).mockResolvedValueOnce([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
     const out = await open();
-    expect(out.status).toBe(502);
-    expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });
-    expect(updates).toEqual([]);
+    expect(out.status).toBe(200);
+    expect(updates).toEqual([{ is_registration_open: true }]);
+    expect(out.body).toMatchObject({ integrationWarnings: [{ provider: "DISCORD", code: "INTEGRATION_FAILED" }] });
   });
 
   it("REG-08: une erreur d'écriture du flag est remontée (pas de succès silencieux)", async () => {

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Loader2, Shield, Trophy, UserMinus, UserPlus } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Loader2, Shield, Trophy, UserMinus, UserPlus, XCircle } from "lucide-react";
 import { botApiFetch } from "@/utils/api";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { useToast } from "@/context/ToastContext";
@@ -14,11 +14,14 @@ export interface CaptainTeamInfo {
   is_checked_in: boolean;
 }
 
-export interface CaptainPendingMatch {
+export interface CaptainMatch {
   id: string;
-  round_number: number | null;
+  /** TO_REPORT : à déclarer ; TO_VALIDATE : score adverse à valider ou contester ; WAITING_OPPONENT ; CONTESTED : arbitrage. */
+  state: "TO_REPORT" | "TO_VALIDATE" | "WAITING_OPPONENT" | "CONTESTED";
   team1_name: string;
   team2_name: string;
+  team1_score: number;
+  team2_score: number;
 }
 
 export function WebPlayerActions({
@@ -27,16 +30,19 @@ export function WebPlayerActions({
   isRegistrationOpen,
   canCheckinNow,
   viewerDiscordId,
+  inviteToken,
   captainTeam,
-  pendingMatch,
+  captainMatch,
 }: {
   tournamentId: string;
   status: string;
   isRegistrationOpen: boolean;
   canCheckinNow: boolean;
   viewerDiscordId: string | null;
+  /** Lien de partage d'un tournoi privé : revalidé par le bot à l'inscription. */
+  inviteToken: string | null;
   captainTeam: CaptainTeamInfo | null;
-  pendingMatch: CaptainPendingMatch | null;
+  captainMatch: CaptainMatch | null;
 }) {
   const { t } = useTranslation();
   const { toast } = useToast();
@@ -52,7 +58,7 @@ export function WebPlayerActions({
   if (!viewerDiscordId) return null;
 
   const showRegistrationBlock = (status === "DRAFT" || status === "REGISTRATION") && (isRegistrationOpen || captainTeam !== null);
-  const showScoreBlock = status === "ACTIVE" && pendingMatch !== null;
+  const showScoreBlock = status === "ACTIVE" && captainMatch !== null;
 
   if (!showRegistrationBlock && !showScoreBlock) return null;
 
@@ -122,20 +128,41 @@ export function WebPlayerActions({
     }
   };
 
-  const handleReportScore = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!pendingMatch) return;
+  const submitScore = async (matchId: string, team1: number, team2: number, successMessage: string) => {
     setLoading(true);
     try {
-      const res = await botApiFetch(`/api/player/matches/${pendingMatch.id}/report-score`, {
+      const res = await botApiFetch(`/api/player/matches/${matchId}/report-score`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ team1_score: Number(team1Score), team2_score: Number(team2Score) }),
+        body: JSON.stringify({ team1_score: team1, team2_score: team2 }),
       });
       if (!res.ok) {
         throw new Error((await readApiError(res)) ?? t("common.unknown"));
       }
-      toast.success(t("playerActions.scoreReportedSuccess"));
+      toast.success(successMessage);
+      router.refresh();
+    } catch (err: unknown) {
+      toast.error(t("feedback.genericError", { message: getErrorMessage(err) ?? t("common.unknown") }));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleReportScore = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!captainMatch) return;
+    await submitScore(captainMatch.id, team1Score, team2Score, t("playerActions.scoreReportedSuccess"));
+  };
+
+  const handleContest = async () => {
+    if (!captainMatch) return;
+    setLoading(true);
+    try {
+      const res = await botApiFetch(`/api/player/matches/${captainMatch.id}/contest-score`, { method: "POST" });
+      if (!res.ok) {
+        throw new Error((await readApiError(res)) ?? t("common.unknown"));
+      }
+      toast.success(t("playerActions.scoreContestedSuccess"));
       router.refresh();
     } catch (err: unknown) {
       toast.error(t("feedback.genericError", { message: getErrorMessage(err) ?? t("common.unknown") }));
@@ -178,8 +205,9 @@ export function WebPlayerActions({
               <input
                 type="text"
                 required
-                minLength={1}
-                maxLength={25}
+                pattern="[Ss][Ww]-\d{4}-\d{4}-\d{4}"
+                title={t("playerActions.captainFriendCodePlaceholder")}
+                maxLength={17}
                 value={captainFriendCode}
                 onChange={(e) => setCaptainFriendCode(e.target.value)}
                 placeholder={t("playerActions.captainFriendCodePlaceholder")}
@@ -234,17 +262,17 @@ export function WebPlayerActions({
         </div>
       )}
 
-      {showScoreBlock && pendingMatch && (
+      {showScoreBlock && captainMatch?.state === "TO_REPORT" && (
         <form onSubmit={handleReportScore} className="bg-slate-900/60 p-4 rounded-lg border border-slate-800 space-y-4">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-200">
             <Trophy className="w-4 h-4 text-amber-400" />
             <span>
-              {t("playerActions.reportScoreTitle")} ({pendingMatch.team1_name} vs {pendingMatch.team2_name})
+              {t("playerActions.reportScoreTitle")} ({captainMatch.team1_name} vs {captainMatch.team2_name})
             </span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-400">{pendingMatch.team1_name}</label>
+              <label className="text-xs text-slate-400">{captainMatch.team1_name}</label>
               <input
                 type="number"
                 min={0}
@@ -255,7 +283,7 @@ export function WebPlayerActions({
               />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-slate-400">{pendingMatch.team2_name}</label>
+              <label className="text-xs text-slate-400">{captainMatch.team2_name}</label>
               <input
                 type="number"
                 min={0}
@@ -275,6 +303,52 @@ export function WebPlayerActions({
             </button>
           </div>
         </form>
+      )}
+
+      {showScoreBlock && captainMatch && captainMatch.state !== "TO_REPORT" && (
+        <div className="bg-slate-900/60 p-4 rounded-lg border border-slate-800 space-y-3">
+          <p className="flex items-center gap-2 text-sm font-semibold text-slate-200">
+            <Trophy className="w-4 h-4 text-amber-400" />
+            {captainMatch.team1_name} {captainMatch.team1_score} - {captainMatch.team2_score} {captainMatch.team2_name}
+          </p>
+          {captainMatch.state === "TO_VALIDATE" && (
+            <div className="space-y-3">
+              <p className="text-sm text-slate-300">{t("playerActions.validateScorePrompt")}</p>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={() => submitScore(captainMatch.id, captainMatch.team1_score, captainMatch.team2_score, t("playerActions.scoreValidatedSuccess"))}
+                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
+                >
+                  {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                  {t("playerActions.validateScoreButton")}
+                </button>
+                <button
+                  type="button"
+                  disabled={loading}
+                  onClick={handleContest}
+                  className="inline-flex items-center gap-2 rounded-lg bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 px-4 py-2 text-sm font-semibold text-red-300 disabled:opacity-50"
+                >
+                  <XCircle className="w-4 h-4" />
+                  {t("playerActions.contestScoreButton")}
+                </button>
+              </div>
+            </div>
+          )}
+          {captainMatch.state === "WAITING_OPPONENT" && (
+            <p className="flex items-center gap-2 text-sm text-slate-300">
+              <Clock className="w-4 h-4 text-blue-400" />
+              {t("playerActions.waitingOpponent")}
+            </p>
+          )}
+          {captainMatch.state === "CONTESTED" && (
+            <p className="flex items-center gap-2 text-sm text-amber-300">
+              <AlertTriangle className="w-4 h-4" />
+              {t("playerActions.contestedNotice")}
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

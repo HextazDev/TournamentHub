@@ -203,6 +203,8 @@ function readSource(req: Request, source: DirectSource | ResourceSource): unknow
 export interface TournamentScopeOptions {
   /** Le niveau SERVER peut omettre l'identifiant (listes Discord appelées hors tournoi). */
   optionalForServer?: boolean;
+  /** Action exigée sur le tournoi : gestion complète par défaut, saisie de score pour le statisticien (RFC 5.1). */
+  action?: OrganizationAction;
 }
 
 /**
@@ -236,7 +238,7 @@ export function requireTournamentScope<P extends ParamsDictionary>(
       if (!lookup.ok) return deny(res, 503, "CHECK_FAILED", DENIAL_RESPONSES.CHECK_FAILED.error);
       tournamentId = lookup.tournamentId;
     }
-    if (!tournamentId || !canPerform(check.access, "MANAGE_TOURNAMENT", tournamentId)) {
+    if (!tournamentId || !canPerform(check.access, options.action ?? "MANAGE_TOURNAMENT", tournamentId)) {
       return deny(res, 403, "NO_RIGHTS", "Access denied");
     }
     req.tournamentScope = { tournamentId };
@@ -250,6 +252,7 @@ const ACTION_DENIED_CODE: Record<OrganizationAction, AccessDeniedCode> = {
   MANAGE_INTEGRATIONS: "SERVER_SETTINGS_RESERVED",
   MANAGE_ORG_MEMBERS: "SERVER_SETTINGS_RESERVED",
   TRANSFER_OWNERSHIP: "SERVER_SETTINGS_RESERVED",
+  DELETE_ORGANIZATION: "SERVER_SETTINGS_RESERVED",
   CREATE_TOURNAMENT: "NO_RIGHTS",
   DELETE_TOURNAMENT: "NO_RIGHTS",
   MANAGE_TOURNAMENT: "NO_RIGHTS",

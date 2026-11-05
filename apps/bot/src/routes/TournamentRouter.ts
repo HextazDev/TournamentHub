@@ -1,18 +1,30 @@
-import { Router } from "express";
+import { createHash, randomBytes } from "node:crypto";
+import { Router, type Request } from "express";
 import { supabase } from "../lib/supabase";
-import { RegistrationService } from "../services/RegistrationService";
 import { LifecycleService } from "../services/LifecycleService";
 import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, resolveOrganization, verifyTournamentGuild } from "../utils/tenant";
-import { canPerform, LocaleSchema, CheckinModeSchema } from "@hub/shared";
+import { canPerform, LaunchTournamentSchema, LocaleSchema, CheckinModeSchema, type IntegrationWarning } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { refreshGuildAccess } from "../services/AccessRefreshService";
 import { ChannelAccessService } from "../services/ChannelAccessService";
-import { IntegrationBus } from "../services/IntegrationBus";
+import { IntegrationBus, type IntegrationEventName } from "../services/IntegrationBus";
 import { logger } from "../utils/logger";
 
 const OptionalLocaleSchema = LocaleSchema.optional();
+
+/** Notifie les intégrations de l'organisation authentifiée, une fois la mutation métier enregistrée. */
+async function emitForTenant(
+  event: IntegrationEventName,
+  tenantId: string,
+  tournamentId: string,
+  req: Request,
+): Promise<IntegrationWarning[]> {
+  const org = await resolveOrganization(tenantId);
+  if (!org) return [];
+  return IntegrationBus.emit(event, { organizationId: org.id, tournamentId, discordClient: req.app.locals.discordClient });
+}
 
 export const tournamentRouter = Router();
 
@@ -282,27 +294,15 @@ tournamentRouter.post("/:id/launch", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
-    const discordClient = req.app.locals.discordClient;
-    const targetGuildId = authGuildId;
-    const org = await resolveOrganization(targetGuildId);
-
-    const skipDiscord = Boolean(org && !org.discordEnabled);
-    if (skipDiscord) {
-      await LifecycleService.launchTournament(
-        tournamentId,
-        org?.discordGuildId ?? targetGuildId,
-        discordClient,
-        { skipDiscord: true },
-      );
-    } else {
-      await LifecycleService.launchTournament(
-        tournamentId,
-        org?.discordGuildId ?? targetGuildId,
-        discordClient,
-      );
+    const parsed = LaunchTournamentSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ error: "uncheckedTeams must be 'keep' or 'remove'" });
     }
-    res.json({ success: true, message: "Tournament launched successfully." });
+
+    // DISC-02 : la base d'abord ; une panne d'intégration ne bloque jamais le lancement.
+    await LifecycleService.launchTournament(tournamentId, parsed.data);
+    const integrationWarnings = await emitForTenant("onTournamentLaunched", authGuildId, tournamentId, req);
+    res.json({ success: true, status: "ACTIVE", message: "Tournament launched successfully.", integrationWarnings });
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.launch");
   }
@@ -317,28 +317,83 @@ tournamentRouter.post("/:id/close", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
-    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
-    const discordClient = req.app.locals.discordClient;
-    const targetGuildId = authGuildId;
-    const org = await resolveOrganization(targetGuildId);
-
-    if (org && !org.discordEnabled) {
-      const { error } = await supabase
-        .from("tournaments")
-        .update({ status: "COMPLETED", updated_at: new Date().toISOString() })
-        .eq("id", tournamentId);
-      if (error) throw error;
-      await IntegrationBus.emit("onTournamentCompleted", {
-        organizationId: org.id,
-        tournamentId,
-        discordClient,
-      });
-    } else {
-      await LifecycleService.closeTournament(tournamentId, org?.discordGuildId ?? targetGuildId, discordClient);
-    }
-    res.json({ success: true, message: "Tournament closed successfully." });
+    await LifecycleService.closeTournament(tournamentId);
+    const integrationWarnings = await emitForTenant("onTournamentCompleted", authGuildId, tournamentId, req);
+    res.json({ success: true, status: "COMPLETED", message: "Tournament closed successfully.", integrationWarnings });
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.close");
+  }
+});
+
+// POST /api/tournaments/:id/invite-link — (Re)génère le lien de partage ; le jeton n'est renvoyé qu'ici (RFC 5.2)
+tournamentRouter.post("/:id/invite-link", tournamentScope, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const authGuildId = getAuthenticatedGuildId(req);
+    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+      return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
+    }
+
+    const token = randomBytes(32).toString("base64url");
+    const { error: deleteError } = await supabase.from("tournament_invite_tokens").delete().eq("tournament_id", tournamentId);
+    if (deleteError) throw deleteError;
+    const { error } = await supabase.from("tournament_invite_tokens").insert({
+      tournament_id: tournamentId,
+      token_hash: createHash("sha256").update(token).digest("hex"),
+      created_by: req.adminCheck?.discordId,
+    });
+    if (error) throw error;
+    res.status(201).json({ token });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.createInviteLink");
+  }
+});
+
+// DELETE /api/tournaments/:id/invite-link — Révoque le lien de partage
+tournamentRouter.delete("/:id/invite-link", tournamentScope, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const authGuildId = getAuthenticatedGuildId(req);
+    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+      return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
+    }
+    const { error } = await supabase.from("tournament_invite_tokens").delete().eq("tournament_id", tournamentId);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.revokeInviteLink");
+  }
+});
+
+// POST /api/tournaments/:id/integrations/sync — Rejoue l'effet externe de l'étape en cours (INT-01, idempotent)
+tournamentRouter.post("/:id/integrations/sync", tournamentScope, async (req, res) => {
+  try {
+    const tournamentId = req.params.id;
+    const authGuildId = getAuthenticatedGuildId(req);
+    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+      return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
+    }
+
+    const { data: tournament, error } = await supabase
+      .from("tournaments")
+      .select("status, is_registration_open")
+      .eq("id", tournamentId)
+      .single();
+    if (error) throw error;
+
+    const event: IntegrationEventName | null =
+      tournament.status === "ACTIVE"
+        ? "onTournamentLaunched"
+        : tournament.status === "COMPLETED"
+          ? "onTournamentCompleted"
+          : tournament.is_registration_open
+            ? "onRegistrationOpened"
+            : null;
+
+    const integrationWarnings = event ? await emitForTenant(event, authGuildId, tournamentId, req) : [];
+    res.json({ success: integrationWarnings.length === 0, integrationWarnings });
+  } catch (error: unknown) {
+    sendServerError(res, error, "TournamentRouter.integrationsSync");
   }
 });
 
@@ -352,15 +407,14 @@ tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) =>
     }
 
     const { action } = req.body;
-    const discordClient = req.app.locals.discordClient;
-    
+
     if (action !== 'open') {
       return res.status(400).json({ error: "Unknown registration action" });
     }
 
     const { data: tournament, error: fetchError } = await supabase
       .from('tournaments')
-      .select('start_at, start_date, checkin_start_at, status, discord_registration_channel_id, organization_id')
+      .select('start_at, start_date, checkin_start_at, status')
       .eq('id', tournamentId)
       .single();
 
@@ -378,18 +432,6 @@ tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) =>
       return res.status(400).json({ error: "Cannot open registrations: The tournament has already reached the check-in phase or has already started." });
     }
 
-    const org = await resolveOrganization(authGuildId);
-    const isWebOnlyRegistration = Boolean(org && !org.discordEnabled && !tournament.discord_registration_channel_id);
-
-    if (!isWebOnlyRegistration) {
-      try {
-        await RegistrationService.sendRegistrationEmbed(tournamentId, discordClient);
-      } catch (embedError: unknown) {
-        sendServerError(res, embedError, `TournamentRouter.registrations: annonce d'inscription échouée pour ${tournamentId}`, 502);
-        return;
-      }
-    }
-
     const { error: flagError } = await supabase
       .from('tournaments')
       .update({ is_registration_open: true })
@@ -399,15 +441,9 @@ tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) =>
       return;
     }
 
-    if (org) {
-      await IntegrationBus.emit("onRegistrationOpened", {
-        organizationId: org.id,
-        tournamentId,
-        discordClient,
-      });
-    }
-
-    res.json({ success: true, message: "Registration action executed." });
+    // REG-08 : les inscriptions Web sont ouvertes ; l'annonce Discord n'est plus qu'un effet rejouable.
+    const integrationWarnings = await emitForTenant("onRegistrationOpened", authGuildId, tournamentId, req);
+    res.json({ success: true, message: "Registration action executed.", integrationWarnings });
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.registrations");
   }

@@ -2,7 +2,7 @@ import { Client, Guild, ChannelType, CategoryChannel, PermissionFlagsBits, Overw
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage } from '../i18n';
 import { DomainError } from '../utils/serverError';
-import { IntegrationBus } from './IntegrationBus';
+import type { LaunchTournamentInput, Tournament } from '@hub/shared';
 
 function hasPerm(list: PermissionResolvable[] | undefined, bit: bigint): boolean {
   if (!list) return false;
@@ -23,199 +23,211 @@ function permsToEditData(perm: OverwriteData) {
 }
 
 export class LifecycleService {
-  static async launchTournament(
-    tournamentId: string,
-    guildId: string,
-    discordClient?: Client | null,
-    options?: { skipDiscord?: boolean },
-  ): Promise<boolean> {
-    try {
-      const { data: tournament, error } = await supabase
-        .from('tournaments')
-        .select('*')
-        .eq('id', tournamentId)
-        .single();
+  /**
+   * Transition métier du lancement (DISC-02) : la base est l'autorité, sans aucun appel Discord.
+   * Les effets externes sont délégués au bus d'intégrations par l'appelant.
+   * Les équipes non check-in ne sont jamais retirées sans décision explicite du TO (LCH-01 à LCH-04).
+   */
+  static async launchTournament(tournamentId: string, options: LaunchTournamentInput = {}): Promise<void> {
+    const { data: tournament, error } = await supabase
+      .from('tournaments')
+      .select('id, status, checkin_mode')
+      .eq('id', tournamentId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!tournament) throw new DomainError(404, 'Tournament not found');
+    if (tournament.status !== 'DRAFT' && tournament.status !== 'REGISTRATION') {
+      throw new DomainError(400, 'Le tournoi ne peut pas être lancé depuis son statut actuel.', { code: 'INVALID_STATUS' });
+    }
 
-      if (error || !tournament) throw new DomainError(404, 'Tournament not found');
+    const { data: phases, error: phasesError } = await supabase
+      .from('phases')
+      .select('id')
+      .eq('tournament_id', tournamentId);
+    if (phasesError) throw phasesError;
+    if ((phases ?? []).length === 0) {
+      throw new DomainError(400, 'Ajoutez au moins une phase avant de lancer le tournoi.', { code: 'NO_PHASE' });
+    }
 
-      // ARC-02: Contrôle d'état strict sur le lancement
-      if (tournament.status === 'ACTIVE' || tournament.status === 'COMPLETED' || tournament.status === 'ARCHIVED') {
-        throw new DomainError(400, 'Le tournoi ne peut pas être lancé depuis son statut actuel.');
-      }
+    const { data: teamRows, error: teamsError } = await supabase
+      .from('teams')
+      .select('id, is_checked_in')
+      .eq('tournament_id', tournamentId);
+    if (teamsError) throw teamsError;
+    const teams = (teamRows ?? []) as { id: string; is_checked_in: boolean | null }[];
+    const uncheckedIds = tournament.checkin_mode === 'DISABLED' ? [] : teams.filter((t) => !t.is_checked_in).map((t) => t.id);
 
-      // ARC-02: Purge des équipes non check-in si le check-in est activé
-      if (tournament.checkin_mode !== 'DISABLED') {
-        const { error: purgeError } = await supabase
-          .from('teams')
-          .delete()
-          .eq('tournament_id', tournamentId)
-          .eq('is_checked_in', false);
-        if (purgeError) throw purgeError;
-      }
-
-      // Mode sans Discord (organisation autonome ou Discord désactivé)
-      if (options?.skipDiscord || !discordClient || !guildId) {
-        const { error: updateError } = await supabase
-          .from('tournaments')
-          .update({
-            status: 'ACTIVE',
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', tournamentId);
-        if (updateError) throw updateError;
-
-        if (tournament.organization_id) {
-          await IntegrationBus.emit('onTournamentLaunched', {
-            organizationId: tournament.organization_id,
-            tournamentId,
-            discordClient: discordClient ?? undefined,
-          });
-        }
-        return true;
-      }
-
-      const lang = await getGuildLanguage(guildId);
-
-      const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
-      if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
-
-      const permissions: OverwriteData[] = [
-        {
-          id: guild.roles.everyone.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-      ];
-
-      if (tournament.discord_to_role_id) {
-        permissions.push({
-          id: tournament.discord_to_role_id,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
-        });
-      }
-
-      if (tournament.discord_captain_role_id) {
-        permissions.push({
-          id: tournament.discord_captain_role_id,
-          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
-          deny: [PermissionFlagsBits.SendMessages],
-        });
-      }
-
-      // 1. Create category
-      const categoryName = `🏆 ${tournament.name}`;
-      const category = await guild.channels.create({
-        name: categoryName,
-        type: ChannelType.GuildCategory,
-        permissionOverwrites: permissions,
+    if (uncheckedIds.length > 0 && options.uncheckedTeams === undefined) {
+      throw new DomainError(409, 'Des équipes inscrites n\'ont pas fait leur check-in.', {
+        code: 'UNCHECKED_TEAMS',
+        uncheckedCount: uncheckedIds.length,
       });
+    }
 
-      console.log(`[LifecycleService] Created category ${category.name} (${category.id}) for tournament ${tournamentId}`);
+    const removeIds = options.uncheckedTeams === 'remove' ? uncheckedIds : [];
+    if (teams.length - removeIds.length < 2) {
+      throw new DomainError(400, 'Il faut au moins 2 équipes pour lancer le tournoi.', { code: 'NOT_ENOUGH_TEAMS' });
+    }
 
-      // 2. Create info channel
-      const infoChannel = await guild.channels.create({
-        name: 'informations',
-        type: ChannelType.GuildText,
-        parent: category.id,
-      });
-
-      const messagePayload: any = {
-        embeds: [{
-          title: tBot(lang, 'lifecycle.tournamentLaunchedTitle'),
-          description: tBot(lang, 'lifecycle.tournamentLaunchedDesc', { name: tournament.name }),
-          color: 0x3b82f6,
-        }]
-      };
-
-      if (tournament.discord_captain_role_id) {
-        messagePayload.content = `<@&${tournament.discord_captain_role_id}>`;
-      }
-
-      await infoChannel.send(messagePayload);
-
-      // 3. Sync phase channels BEFORE setting status to ACTIVE
-      const { data: phasesIds_1 } = await supabase.from("phases").select("id").eq("tournament_id", tournamentId);
-      if (phasesIds_1 && phasesIds_1.length > 0) {
-        for (const p of phasesIds_1) {
-          try {
-            await this.syncPhaseChannels(p.id, guildId, discordClient);
-          } catch (err) {
-            console.error(`[LifecycleService] Failed to sync phase ${p.id}, but continuing:`, err);
-          }
-        }
-      }
-
-      // 4. Only set ACTIVE after all Discord resources are created
-      await supabase
-        .from('tournaments')
-        .update({
-          status: 'ACTIVE',
-          discord_category_id: category.id,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', tournamentId);
-
-      if (tournament.organization_id) {
-        await IntegrationBus.emit('onTournamentLaunched', {
-          organizationId: tournament.organization_id,
-          tournamentId,
-          discordClient,
+    if (removeIds.length > 0) {
+      const { data: placed, error: placedError } = await supabase
+        .from('phase_teams')
+        .select('team_id')
+        .in('team_id', removeIds);
+      if (placedError) throw placedError;
+      if ((placed ?? []).length > 0) {
+        throw new DomainError(409, 'Des équipes non check-in sont déjà placées : retirez-les du placement avant de lancer.', {
+          code: 'UNCHECKED_TEAMS_PLACED',
         });
       }
+    }
 
-      // 5. Optional: announce in general channel
-      if (tournament.discord_announcement_channel_id) {
-        const annChannel = await guild.channels.fetch(tournament.discord_announcement_channel_id).catch(() => null);
-        if (annChannel && annChannel.isTextBased()) {
-          await annChannel.send(tBot(lang, 'lifecycle.tournamentActiveAnnounce', { name: tournament.name }));
-        }
-      }
+    // Transition atomique : un double clic ne lance (et ne purge) qu'une seule fois.
+    const { data: launched, error: updateError } = await supabase
+      .from('tournaments')
+      .update({ status: 'ACTIVE', updated_at: new Date().toISOString() })
+      .eq('id', tournamentId)
+      .in('status', ['DRAFT', 'REGISTRATION'])
+      .select('id');
+    if (updateError) throw updateError;
+    if (!launched || launched.length === 0) {
+      throw new DomainError(400, 'Le tournoi ne peut pas être lancé depuis son statut actuel.', { code: 'INVALID_STATUS' });
+    }
 
-      return true;
-
-    } catch (error) {
-      console.error('[LifecycleService] Error launching tournament:', error);
-      throw error;
+    if (removeIds.length > 0) {
+      const { error: removeError } = await supabase.from('teams').delete().in('id', removeIds);
+      if (removeError) throw removeError;
     }
   }
 
-  static async closeTournament(tournamentId: string, guildId: string, discordClient: Client): Promise<boolean> {
-    try {
-      const { data: tournament, error } = await supabase
-        .from('tournaments')
-        .select('*')
-        .eq('id', tournamentId)
-        .single();
+  /**
+   * Effets Discord du lancement, exécutés par le plugin après le commit (INT-01).
+   * Idempotent pour le rejeu : une catégorie déjà créée et toujours présente n'est pas recréée.
+   */
+  static async syncDiscordLaunch(tournamentId: string, guildId: string, discordClient: Client): Promise<void> {
+    const { data: tournament, error } = await supabase
+      .from('tournaments')
+      .select('*')
+      .eq('id', tournamentId)
+      .single();
+    if (error || !tournament) throw new Error('Tournament not found');
 
-      if (error || !tournament) throw new Error('Tournament not found');
+    const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
+    if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
 
-      const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
-      if (!guild) {
-        console.warn(`[LifecycleService] Guild ${guildId} not found, proceeding with local DB update only.`);
-      } else if (tournament.discord_category_id) {
-        const category = guild.channels.cache.get(tournament.discord_category_id) as CategoryChannel | undefined;
-        if (category) {
-          for (const [_, child] of category.children.cache) {
-            await child.delete('Tournament Closure').catch(e => console.error(`Failed to delete channel ${child.id}:`, e));
-          }
-          await category.delete('Tournament Closure').catch(e => console.error(`Failed to delete category ${category.id}:`, e));
-          console.log(`[LifecycleService] Deleted category and children for tournament ${tournamentId}`);
-        } else {
-          console.warn(`[LifecycleService] Category ${tournament.discord_category_id} not found on Discord.`);
-        }
-      }
+    const existingCategory = tournament.discord_category_id
+      ? await guild.channels.fetch(tournament.discord_category_id).catch(() => null)
+      : null;
 
-      await supabase
-        .from('tournaments')
-        .update({
-          status: 'COMPLETED'
-        })
-        .eq('id', tournamentId);
-
-      return true;
-    } catch (error) {
-      console.error('[LifecycleService] Error closing tournament:', error);
-      throw error;
+    if (!existingCategory) {
+      await this.createLaunchChannels(tournament, guild, guildId);
     }
+
+    const { data: phases } = await supabase.from('phases').select('id').eq('tournament_id', tournamentId);
+    const phaseFailures: unknown[] = [];
+    for (const phase of phases ?? []) {
+      try {
+        await this.syncPhaseChannels(phase.id, guildId, discordClient);
+      } catch (err) {
+        phaseFailures.push(err);
+      }
+    }
+    if (phaseFailures.length > 0) {
+      throw new Error(`${phaseFailures.length} phase(s) non synchronisée(s) sur Discord`, { cause: phaseFailures[0] });
+    }
+  }
+
+  private static async createLaunchChannels(
+    tournament: Pick<Tournament, 'id' | 'name' | 'discord_to_role_id' | 'discord_captain_role_id' | 'discord_announcement_channel_id'>,
+    guild: Guild,
+    guildId: string,
+  ): Promise<void> {
+    const lang = await getGuildLanguage(guildId, tournament.id);
+    const permissions: OverwriteData[] = [
+      { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
+    ];
+    if (tournament.discord_to_role_id) {
+      permissions.push({
+        id: tournament.discord_to_role_id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
+      });
+    }
+    if (tournament.discord_captain_role_id) {
+      permissions.push({
+        id: tournament.discord_captain_role_id,
+        allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
+        deny: [PermissionFlagsBits.SendMessages],
+      });
+    }
+
+    const category = await guild.channels.create({
+      name: `🏆 ${tournament.name}`,
+      type: ChannelType.GuildCategory,
+      permissionOverwrites: permissions,
+    });
+
+    const { error: categoryError } = await supabase
+      .from('tournaments')
+      .update({ discord_category_id: category.id })
+      .eq('id', tournament.id);
+    if (categoryError) throw categoryError;
+
+    const infoChannel = await guild.channels.create({
+      name: 'informations',
+      type: ChannelType.GuildText,
+      parent: category.id,
+    });
+    await infoChannel.send({
+      ...(tournament.discord_captain_role_id ? { content: `<@&${tournament.discord_captain_role_id}>` } : {}),
+      embeds: [{
+        title: tBot(lang, 'lifecycle.tournamentLaunchedTitle'),
+        description: tBot(lang, 'lifecycle.tournamentLaunchedDesc', { name: tournament.name }),
+        color: 0x3b82f6,
+      }],
+    });
+
+    if (tournament.discord_announcement_channel_id) {
+      const announcement = await guild.channels.fetch(tournament.discord_announcement_channel_id).catch(() => null);
+      if (announcement?.isTextBased()) {
+        await announcement.send(tBot(lang, 'lifecycle.tournamentActiveAnnounce', { name: tournament.name }));
+      }
+    }
+  }
+
+  /** Transition métier de la clôture : un seul passage ACTIVE ➜ COMPLETED, sans appel Discord (LCH-07). */
+  static async closeTournament(tournamentId: string): Promise<void> {
+    const { data, error } = await supabase
+      .from('tournaments')
+      .update({ status: 'COMPLETED', updated_at: new Date().toISOString() })
+      .eq('id', tournamentId)
+      .eq('status', 'ACTIVE')
+      .select('id');
+    if (error) throw error;
+    if (!data || data.length === 0) {
+      throw new DomainError(400, 'Seul un tournoi en cours peut être clôturé.', { code: 'INVALID_STATUS' });
+    }
+  }
+
+  /** Supprime la catégorie Discord du tournoi et ses salons. Sans effet si elle n'existe plus (rejeu). */
+  static async deleteDiscordCategory(tournamentId: string, guildId: string, discordClient: Client): Promise<void> {
+    const { data: tournament, error } = await supabase
+      .from('tournaments')
+      .select('discord_category_id')
+      .eq('id', tournamentId)
+      .single();
+    if (error || !tournament) throw new Error('Tournament not found');
+    if (!tournament.discord_category_id) return;
+
+    const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
+    if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
+
+    const category = await guild.channels.fetch(tournament.discord_category_id).catch(() => null);
+    if (category?.type !== ChannelType.GuildCategory) return;
+
+    for (const child of (category as CategoryChannel).children.cache.values()) {
+      await child.delete('Tournament Closure');
+    }
+    await category.delete('Tournament Closure');
   }
 
   static async syncPhaseChannels(phaseId: string, guildId: string, discordClient: Client): Promise<boolean> {

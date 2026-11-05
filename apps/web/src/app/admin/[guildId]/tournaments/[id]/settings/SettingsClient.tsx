@@ -11,17 +11,22 @@ import { useRouter } from "next/navigation";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 import { discordListQuery } from "@/lib/accessRules";
-import { isDiscordSnowflake } from "@hub/shared";
+import { isDiscordSnowflake, type Tournament } from "@hub/shared";
+
+interface DiscordOption {
+  id: string;
+  name: string;
+}
 
 interface SettingsClientProps {
-  tournament: any;
+  tournament: Tournament;
   guildId: string;
   discordGuildId?: string;
   discordEnabled?: boolean;
   /** SEC-22 : faux pour un TO de tournoi, qui ne peut pas changer les rôles TO / Capitaine de son tournoi. */
   canManageRoles: boolean;
-  initialChannels?: any[];
-  initialRoles?: any[];
+  initialChannels?: DiscordOption[];
+  initialRoles?: DiscordOption[];
 }
 
 export function SettingsClient({
@@ -38,8 +43,8 @@ export function SettingsClient({
   const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{type: 'success' | 'error', text: string} | null>(null);
 
-  const [channels, setChannels] = useState<any[]>(initialChannels);
-  const [roles, setRoles] = useState<any[]>(initialRoles);
+  const [channels, setChannels] = useState<DiscordOption[]>(initialChannels);
+  const [roles, setRoles] = useState<DiscordOption[]>(initialRoles);
   const [isLoadingDiscord, setIsLoadingDiscord] = useState(discordEnabled);
   const [discordError, setDiscordError] = useState<string | null>(null);
 
@@ -104,7 +109,18 @@ export function SettingsClient({
   const checkinMode = watch("checkin_mode");
   const isCheckinDisabled = checkinMode === "DISABLED";
 
-  const onSubmit = async (data: any) => {
+  const onSubmit = async (data: {
+    checkin_mode: string;
+    start_at: string;
+    checkin_start_at: string;
+    checkin_end_at: string;
+    discord_registration_channel_id: string;
+    discord_announcement_channel_id: string;
+    discord_checkin_channel_id: string;
+    discord_captain_role_id: string;
+    discord_to_role_id: string;
+    language: string;
+  }) => {
     setIsSaving(true);
     setMessage(null);
 
@@ -240,17 +256,17 @@ export function SettingsClient({
                   >
                     <option value="">{t("adminSettingsPage.noChannel")}</option>
                     {tournament.discord_registration_channel_id &&
-                      !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                      !channels.some((ch) => ch.id === tournament.discord_registration_channel_id) && (
                         <option value={tournament.discord_registration_channel_id} disabled className="text-amber-400 bg-slate-800">
                           {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_registration_channel_id})
                         </option>
                       )}
-                    {channels.map((ch: any) => (
+                    {channels.map((ch) => (
                       <option key={ch.id} value={ch.id}>#{ch.name}</option>
                     ))}
                   </select>
                   {tournament.discord_registration_channel_id &&
-                    !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                    !channels.some((ch) => ch.id === tournament.discord_registration_channel_id) && (
                       <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         {t("adminSettingsPage.channelInaccessibleNotice")}
@@ -266,17 +282,17 @@ export function SettingsClient({
                   >
                     <option value="">{t("adminSettingsPage.noChannel")}</option>
                     {tournament.discord_announcement_channel_id &&
-                      !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                      !channels.some((ch) => ch.id === tournament.discord_announcement_channel_id) && (
                         <option value={tournament.discord_announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
                           {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_announcement_channel_id})
                         </option>
                       )}
-                    {channels.map((ch: any) => (
+                    {channels.map((ch) => (
                       <option key={ch.id} value={ch.id}>#{ch.name}</option>
                     ))}
                   </select>
                   {tournament.discord_announcement_channel_id &&
-                    !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                    !channels.some((ch) => ch.id === tournament.discord_announcement_channel_id) && (
                       <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         {t("adminSettingsPage.channelInaccessibleNotice")}
@@ -292,17 +308,17 @@ export function SettingsClient({
                   >
                     <option value="">{t("adminSettingsPage.noChannel")}</option>
                     {tournament.discord_checkin_channel_id &&
-                      !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                      !channels.some((ch) => ch.id === tournament.discord_checkin_channel_id) && (
                         <option value={tournament.discord_checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
                           {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_checkin_channel_id})
                         </option>
                       )}
-                    {channels.map((ch: any) => (
+                    {channels.map((ch) => (
                       <option key={ch.id} value={ch.id}>#{ch.name}</option>
                     ))}
                   </select>
                   {tournament.discord_checkin_channel_id &&
-                    !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                    !channels.some((ch) => ch.id === tournament.discord_checkin_channel_id) && (
                       <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
                         <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                         {t("adminSettingsPage.channelInaccessibleNotice")}
@@ -333,7 +349,7 @@ export function SettingsClient({
                     className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <option value="">{t("adminSettingsPage.noRole")}</option>
-                    {roles.map((ro: any) => (
+                    {roles.map((ro) => (
                       <option key={ro.id} value={ro.id}>@{ro.name}</option>
                     ))}
                   </select>
@@ -347,7 +363,7 @@ export function SettingsClient({
                     className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
                   >
                     <option value="">{t("adminSettingsPage.noRole")}</option>
-                    {roles.map((ro: any) => (
+                    {roles.map((ro) => (
                       <option key={ro.id} value={ro.id}>@{ro.name}</option>
                     ))}
                   </select>

@@ -3,6 +3,7 @@ import { getGuildAdminAccess, getManagedTournament, getServerProfile } from "@/l
 import { discordListQuery } from "@/lib/accessRules";
 import { notFound } from "next/navigation";
 import { SettingsClient } from "./SettingsClient";
+import { TournamentAccessPanel } from "@/components/admin/TournamentAccessPanel";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { resolveServerBotApiUrl } from "@/lib/config";
@@ -25,8 +26,8 @@ export default async function TournamentSettingsPage({
   const targetDiscordId = isDiscordSnowflake(guildId) ? guildId : (profile?.guild_id && isDiscordSnowflake(profile.guild_id) ? profile.guild_id : null);
 
   // Fetch Discord data server-side using BOT_API_SECRET and user session headers
-  let channels: any[] = [];
-  let roles: any[] = [];
+  let channels: { id: string; name: string }[] = [];
+  let roles: { id: string; name: string }[] = [];
 
   const botApiUrl = resolveServerBotApiUrl();
   const botApiSecret = process.env.BOT_API_SECRET;
@@ -34,7 +35,7 @@ export default async function TournamentSettingsPage({
   if (discordEnabled && targetDiscordId && botApiSecret) {
     try {
       const session = await getServerSession(authOptions);
-      const discordId = (session?.user as any)?.id || "";
+      const discordId = (session?.user as { id?: string } | undefined)?.id ?? "";
 
       const headers: HeadersInit = {
         'Authorization': `Bearer ${botApiSecret}`,
@@ -64,14 +65,24 @@ export default async function TournamentSettingsPage({
   }
 
   return (
-    <SettingsClient
-      tournament={tournament}
-      guildId={guildId}
-      discordGuildId={targetDiscordId ?? undefined}
-      discordEnabled={discordEnabled}
-      canManageRoles={canManageRoles}
-      initialChannels={channels}
-      initialRoles={roles}
-    />
+    <div className="space-y-6">
+      <SettingsClient
+        tournament={tournament}
+        guildId={guildId}
+        discordGuildId={targetDiscordId ?? undefined}
+        discordEnabled={discordEnabled}
+        canManageRoles={canManageRoles}
+        initialChannels={channels}
+        initialRoles={roles}
+      />
+      <div className="px-6 md:px-8 pb-8">
+        <TournamentAccessPanel
+          guildId={guildId}
+          tournamentId={tournamentId}
+          isPublic={Boolean(tournament.is_public)}
+          canManageStaff={canManageRoles}
+        />
+      </div>
+    </div>
   );
 }

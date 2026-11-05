@@ -40,7 +40,7 @@ export default function Navbar() {
             <LanguageSwitcher />
             {!session ? (
               <button
-                onClick={() => signIn("discord", { callbackUrl: "/servers" })}
+                onClick={() => signIn("discord", { callbackUrl: "/organizations" })}
                 className="bg-[#151722] hover:bg-[#1a1d2d] text-white px-4 py-2 rounded-md text-sm font-medium transition flex items-center gap-2 border border-slate-800/50"
               >
                 <LogIn size={16} /> {t("nav.loginDiscord")}
@@ -48,7 +48,7 @@ export default function Navbar() {
             ) : (
               <div className="flex items-center gap-4">
                 <Link
-                  href="/servers"
+                  href="/organizations"
                   className="text-slate-300 hover:text-white text-sm font-medium transition"
                 >
                   {t("nav.myServers")}
@@ -108,7 +108,7 @@ export default function Navbar() {
           {!session ? (
             <div className="px-4 py-2">
               <button
-                onClick={() => signIn("discord", { callbackUrl: "/servers" })}
+                onClick={() => signIn("discord", { callbackUrl: "/organizations" })}
                 className="w-full bg-[#151722] hover:bg-[#0a0a0f] border border-slate-800/50 text-white px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2"
               >
                 <LogIn size={16} /> {t("nav.loginDiscord")}
@@ -130,7 +130,7 @@ export default function Navbar() {
                 </span>
               </div>
               <Link
-                href="/servers"
+                href="/organizations"
                 className="block px-3 py-2 rounded-md text-base font-medium text-slate-300 hover:text-white hover:bg-[#151722]"
                 onClick={() => setIsOpen(false)}
               >

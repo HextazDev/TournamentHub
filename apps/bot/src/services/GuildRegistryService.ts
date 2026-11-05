@@ -116,21 +116,35 @@ export class GuildRegistryService {
 
     if (existingInt) {
       const orgId = existingInt.organization_id as string;
-      const { error: orgUpdateError } = await supabase
-        .from("organizations")
-        .update({
-          name: guild.name,
-          icon_url: guild.icon,
-          logo_url: guild.icon,
-        })
-        .eq("id", orgId);
 
-      if (orgUpdateError) {
-        logger.error(`[GuildRegistry] Mise à jour de l'organisation pour ${guild.id} échouée:`, orgUpdateError);
+      const { data: orgRow, error: orgReadError } = await supabase
+        .from("organizations")
+        .select("id, slug")
+        .eq("id", orgId)
+        .maybeSingle();
+      if (orgReadError) {
+        logger.error(`[GuildRegistry] Lecture de l'organisation pour ${guild.id} échouée:`, orgReadError);
         return false;
       }
 
-      const prevConfig = (existingInt.config as Record<string, unknown> | null) ?? {};
+      // Seule une organisation créée à l'installation du bot suit le profil du serveur : une organisation Web garde le sien.
+      if ((orgRow as { slug?: string } | null)?.slug === `discord-${guild.id}`) {
+        const { error: orgUpdateError } = await supabase
+          .from("organizations")
+          .update({
+            name: guild.name,
+            icon_url: guild.icon,
+            logo_url: guild.icon,
+          })
+          .eq("id", orgId);
+
+        if (orgUpdateError) {
+          logger.error(`[GuildRegistry] Mise à jour de l'organisation pour ${guild.id} échouée:`, orgUpdateError);
+          return false;
+        }
+      }
+
+      const { left_while_enabled: leftWhileEnabled, ...prevConfig } = (existingInt.config as Record<string, unknown> | null) ?? {};
       const nextConfig = {
         ...prevConfig,
         guild_name: guild.name,
@@ -138,12 +152,13 @@ export class GuildRegistryService {
         bot_present: true,
       };
 
+      // SEC-02 : seul le retour du bot rétablit une intégration que son départ avait coupée. Le choix d'un administrateur
+      // de la désactiver survit à tout redémarrage.
       const { error: intUpdateError } = await supabase
         .from("organization_integrations")
         .update({
-          enabled: true,
-          status: "CONNECTED",
           config: nextConfig,
+          ...(leftWhileEnabled === true ? { enabled: true, status: "CONNECTED" } : {}),
         })
         .eq("id", existingInt.id);
 
@@ -151,6 +166,8 @@ export class GuildRegistryService {
         logger.error(`[GuildRegistry] Mise à jour de organization_integrations pour ${guild.id} échouée:`, intUpdateError);
         return false;
       }
+
+      if (!(await this.ensureNativeManager(orgId, guild))) return false;
     } else {
       const slug = `discord-${guild.id}`;
       const language = guild.preferredLocale.toLowerCase().startsWith("en") ? "en" : "fr";
@@ -194,9 +211,43 @@ export class GuildRegistryService {
         logger.error(`[GuildRegistry] Création de l'intégration Discord pour ${guild.id} échouée:`, intInsertError);
         return false;
       }
+
+      if (!(await this.ensureNativeManager(orgId, guild))) return false;
     }
 
     logger.info(`[GuildRegistry] Serveur ${guild.name} (${guild.id}) enregistré.`);
+    return true;
+  }
+
+  /**
+   * ACC-01 (RFC Q5) : le propriétaire du serveur devient responsable natif, seul accès qui survit à la coupure de Discord.
+   * Au plafond de 5 organisations possédées, il reçoit ORG_ADMIN : l'organisation n'est jamais sans responsable.
+   */
+  private static async ensureNativeManager(organizationId: string, guild: GuildLike): Promise<boolean> {
+    const { data: members, error: readError } = await supabase
+      .from("organization_members")
+      .select("role")
+      .eq("organization_id", organizationId);
+    if (readError) {
+      logger.error(`[GuildRegistry] Lecture des membres natifs de ${organizationId} échouée:`, readError);
+      return false;
+    }
+    const hasManager = ((members ?? []) as { role: string }[]).some((m) => m.role === "ORG_OWNER" || m.role === "ORG_ADMIN");
+    if (hasManager) return true;
+
+    const member = (role: "ORG_OWNER" | "ORG_ADMIN") => ({ organization_id: organizationId, user_id: guild.ownerId, role });
+    const { error: ownerError } = await supabase.from("organization_members").insert(member("ORG_OWNER"));
+    if (!ownerError) return true;
+    if (ownerError.code !== "HT001") {
+      logger.error(`[GuildRegistry] Inscription du propriétaire de ${guild.id} échouée:`, ownerError);
+      return false;
+    }
+
+    const { error: adminError } = await supabase.from("organization_members").insert(member("ORG_ADMIN"));
+    if (adminError) {
+      logger.error(`[GuildRegistry] Inscription du responsable de ${guild.id} échouée:`, adminError);
+      return false;
+    }
     return true;
   }
 
@@ -204,7 +255,7 @@ export class GuildRegistryService {
   static async markGuildLeft(guildId: string): Promise<boolean> {
     const { data: existing, error: readError } = await supabase
       .from("organization_integrations")
-      .select("id, config")
+      .select("id, enabled, config")
       .eq("provider", "DISCORD")
       .eq("external_id", guildId)
       .maybeSingle();
@@ -225,7 +276,8 @@ export class GuildRegistryService {
       .update({
         enabled: false,
         status: "DISCONNECTED",
-        config: { ...prevConfig, bot_present: false },
+        // SEC-02 : mémorise que la coupure vient du départ du bot, pas du choix d'un administrateur.
+        config: { ...prevConfig, bot_present: false, left_while_enabled: existing.enabled === true },
       })
       .eq("id", existing.id);
 
@@ -240,7 +292,7 @@ export class GuildRegistryService {
   /** Recalcule les droits d'un membre (changement de rôles, de permissions ou départ). */
   static async syncMemberAdmin(guild: GuildLike, member: MemberLike, roles: AdminRoles): Promise<boolean> {
     const org = await resolveOrganization(guild.id);
-    if (!org) return false;
+    if (!org?.discordEnabled) return false;
 
     const serverReason = resolveAdminReason({
       isOwner: guild.ownerId === member.id,
@@ -338,6 +390,20 @@ export class GuildRegistryService {
 
     const org = await resolveOrganization(guild.id);
     if (!org) return false;
+
+    // SEC-26 : intégration coupée ➜ aucun grant Discord ne doit subsister, même après un événement du serveur.
+    if (!org.discordEnabled) {
+      const { error } = await supabase
+        .from("integration_access_grants")
+        .delete()
+        .eq("organization_id", org.id)
+        .eq("provider", "DISCORD");
+      if (error) {
+        logger.error(`[GuildRegistry] Purge des accès de ${guild.id} échouée:`, error);
+        return false;
+      }
+      return true;
+    }
 
     const members = await guild.members.fetch();
     const records: {
