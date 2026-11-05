@@ -2,6 +2,7 @@ import { Client, Guild, ChannelType, CategoryChannel, PermissionFlagsBits, Overw
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage } from '../i18n';
 import { DomainError } from '../utils/serverError';
+import { IntegrationBus } from './IntegrationBus';
 
 function hasPerm(list: PermissionResolvable[] | undefined, bit: bigint): boolean {
   if (!list) return false;
@@ -22,7 +23,12 @@ function permsToEditData(perm: OverwriteData) {
 }
 
 export class LifecycleService {
-  static async launchTournament(tournamentId: string, guildId: string, discordClient: Client): Promise<boolean> {
+  static async launchTournament(
+    tournamentId: string,
+    guildId: string,
+    discordClient?: Client | null,
+    options?: { skipDiscord?: boolean },
+  ): Promise<boolean> {
     try {
       const { data: tournament, error } = await supabase
         .from('tournaments')
@@ -30,7 +36,43 @@ export class LifecycleService {
         .eq('id', tournamentId)
         .single();
 
-      if (error || !tournament) throw new Error('Tournament not found');
+      if (error || !tournament) throw new DomainError(404, 'Tournament not found');
+
+      // ARC-02: Contrôle d'état strict sur le lancement
+      if (tournament.status === 'ACTIVE' || tournament.status === 'COMPLETED' || tournament.status === 'ARCHIVED') {
+        throw new DomainError(400, 'Le tournoi ne peut pas être lancé depuis son statut actuel.');
+      }
+
+      // ARC-02: Purge des équipes non check-in si le check-in est activé
+      if (tournament.checkin_mode !== 'DISABLED') {
+        const { error: purgeError } = await supabase
+          .from('teams')
+          .delete()
+          .eq('tournament_id', tournamentId)
+          .eq('is_checked_in', false);
+        if (purgeError) throw purgeError;
+      }
+
+      // Mode sans Discord (organisation autonome ou Discord désactivé)
+      if (options?.skipDiscord || !discordClient || !guildId) {
+        const { error: updateError } = await supabase
+          .from('tournaments')
+          .update({
+            status: 'ACTIVE',
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', tournamentId);
+        if (updateError) throw updateError;
+
+        if (tournament.organization_id) {
+          await IntegrationBus.emit('onTournamentLaunched', {
+            organizationId: tournament.organization_id,
+            tournamentId,
+            discordClient: discordClient ?? undefined,
+          });
+        }
+        return true;
+      }
 
       const lang = await getGuildLanguage(guildId);
 
@@ -107,9 +149,18 @@ export class LifecycleService {
         .from('tournaments')
         .update({
           status: 'ACTIVE',
-          discord_category_id: category.id
+          discord_category_id: category.id,
+          updated_at: new Date().toISOString(),
         })
         .eq('id', tournamentId);
+
+      if (tournament.organization_id) {
+        await IntegrationBus.emit('onTournamentLaunched', {
+          organizationId: tournament.organization_id,
+          tournamentId,
+          discordClient,
+        });
+      }
 
       // 5. Optional: announce in general channel
       if (tournament.discord_announcement_channel_id) {

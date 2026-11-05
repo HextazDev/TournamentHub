@@ -153,7 +153,49 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(db.current?.tables.team_members).toHaveLength(2);
   });
 
-  it("SEC-30 / INT-02: permet au capitaine inscrit de faire son check-in sur le Web et refuse un joueur tiers", async () => {
+  it("SEC-30 / ARC-01: respecte la fenêtre de check-in et refuse le check-in hors fenêtre ou désactivé", async () => {
+    const future = new Date(Date.now() + 3600000).toISOString();
+    const past = new Date(Date.now() - 3600000).toISOString();
+
+    // 1. Fenêtre pas encore ouverte (start_at dans le futur)
+    db.current!.tables.tournaments![0]!.checkin_start_at = future;
+    db.current!.tables.tournaments![0]!.checkin_end_at = new Date(Date.now() + 7200000).toISOString();
+    const tooEarly = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/checkin`,
+      headers: { "x-discord-user-id": "cap-1" },
+    });
+    expect(tooEarly.status).toBe(400);
+    expect((tooEarly.body as { error: string }).error).toContain("pas encore ouverte");
+
+    // 2. Fenêtre terminée (end_at dans le passé)
+    db.current!.tables.tournaments![0]!.checkin_start_at = new Date(Date.now() - 7200000).toISOString();
+    db.current!.tables.tournaments![0]!.checkin_end_at = past;
+    const tooLate = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/checkin`,
+      headers: { "x-discord-user-id": "cap-1" },
+    });
+    expect(tooLate.status).toBe(400);
+    expect((tooLate.body as { error: string }).error).toContain("terminée");
+
+    // 3. Check-in désactivé
+    db.current!.tables.tournaments![0]!.checkin_mode = "DISABLED";
+    db.current!.tables.tournaments![0]!.checkin_start_at = null;
+    db.current!.tables.tournaments![0]!.checkin_end_at = null;
+    const disabledRes = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/checkin`,
+      headers: { "x-discord-user-id": "cap-1" },
+    });
+    expect(disabledRes.status).toBe(400);
+    expect((disabledRes.body as { error: string }).error).toContain("désactivé");
+
+    // 4. Fenêtre ouverte ➜ succès
+    db.current!.tables.tournaments![0]!.checkin_mode = "ENABLED";
+    db.current!.tables.tournaments![0]!.checkin_start_at = past;
+    db.current!.tables.tournaments![0]!.checkin_end_at = future;
+
     const intruder = await callRoute(playerRouter, {
       method: "POST",
       path: `/tournaments/${T_WEB}/checkin`,
@@ -170,7 +212,51 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(db.current?.tables.teams?.find((t) => t.id === TEAM_1)?.is_checked_in).toBe(true);
   });
 
-  it("SEC-30 / INT-02: seul un capitaine du match (ou un TO) peut déclarer le score d'un match sur le Web", async () => {
+  it("ARC-02: refuse de lancer un tournoi depuis un statut invalide et purge les équipes non checkées", async () => {
+    // Équipe 1 non checkée, Équipe 2 checkée
+    db.current!.tables.teams![0]!.is_checked_in = false;
+    db.current!.tables.teams![1]!.is_checked_in = true;
+
+    // Refuse le lancement si déjà ACTIVE
+    db.current!.tables.tournaments![0]!.status = "ACTIVE";
+    const invalidLaunch = await callRoute(tournamentRouter, {
+      method: "POST",
+      path: `/${T_WEB}/launch`,
+      adminCheck: orgOwnerCheck,
+    });
+    expect(invalidLaunch.status).toBe(400);
+
+    // Lancement depuis REGISTRATION ➜ purge TEAM_1 non checkée et passe ACTIVE
+    db.current!.tables.tournaments![0]!.status = "REGISTRATION";
+    const validLaunch = await callRoute(tournamentRouter, {
+      method: "POST",
+      path: `/${T_WEB}/launch`,
+      adminCheck: orgOwnerCheck,
+    });
+    expect(validLaunch.status).toBe(200);
+    expect(db.current?.tables.tournaments?.[0]?.status).toBe("ACTIVE");
+    // TEAM_1 non checkée doit être purgée
+    expect(db.current?.tables.teams?.find((t) => t.id === TEAM_1)).toBeUndefined();
+    // TEAM_2 checkée doit être conservée
+    expect(db.current?.tables.teams?.find((t) => t.id === TEAM_2)).toBeDefined();
+  });
+
+  it("SEC-02 / SEC-30: flux de score complet avec validation adverse, atomicité et contrôle tournoi ACTIVE", async () => {
+    // 1. Refus si le tournoi n'est pas ACTIVE
+    db.current!.tables.tournaments![0]!.status = "REGISTRATION";
+    const notActiveRes = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/matches/${MATCH_1}/report-score`,
+      headers: { "x-discord-user-id": "cap-1" },
+      body: { team1_score: 3, team2_score: 1 },
+    });
+    expect(notActiveRes.status).toBe(400);
+    expect((notActiveRes.body as { error: string }).error).toContain("actif");
+
+    // Le tournoi passe ACTIVE
+    db.current!.tables.tournaments![0]!.status = "ACTIVE";
+
+    // 2. Refus pour un utilisateur tiers
     const outsider = await callRoute(playerRouter, {
       method: "POST",
       path: `/matches/${MATCH_1}/report-score`,
@@ -180,18 +266,51 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(outsider.status).toBe(403);
     expect(db.current?.tables.matches?.[0]?.status).toBe("PENDING");
 
-    const captainReport = await callRoute(playerRouter, {
+    // 3. Le capitaine de Team 1 soumet le score ➜ WAITING_VALIDATION (sans progression de bracket)
+    const cap1Report = await callRoute(playerRouter, {
       method: "POST",
       path: `/matches/${MATCH_1}/report-score`,
       headers: { "x-discord-user-id": "cap-1" },
       body: { team1_score: 3, team2_score: 1 },
     });
-    expect(captainReport.status).toBe(200);
+    expect(cap1Report.status).toBe(200);
     expect(db.current?.tables.matches?.[0]).toMatchObject({
       team1_score: 3,
       team2_score: 1,
-      status: "COMPLETED",
+      status: "WAITING_VALIDATION",
+      reported_by_team_id: TEAM_1,
     });
+    expect(progressTeams).not.toHaveBeenCalled();
+
+    // 4. Le même capitaine tente de revalider son propre score ➜ refus 400
+    const cap1SelfConfirm = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/matches/${MATCH_1}/report-score`,
+      headers: { "x-discord-user-id": "cap-1" },
+      body: { team1_score: 3, team2_score: 1 },
+    });
+    expect(cap1SelfConfirm.status).toBe(400);
+    expect((cap1SelfConfirm.body as { error: string }).error).toContain("capitaine adverse");
+
+    // 5. Le capitaine adverse (Team 2) confirme ➜ COMPLETED et progression
+    const cap2Confirm = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/matches/${MATCH_1}/report-score`,
+      headers: { "x-discord-user-id": "cap-2" },
+      body: { team1_score: 3, team2_score: 1 },
+    });
+    expect(cap2Confirm.status).toBe(200);
+    expect(db.current?.tables.matches?.[0]?.status).toBe("COMPLETED");
     expect(progressTeams).toHaveBeenCalledTimes(1);
+
+    // 6. Concurrence : une seconde confirmation sur le match déjà COMPLETED ➜ refusé (0 progression supplémentaire)
+    const duplicateConfirm = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/matches/${MATCH_1}/report-score`,
+      headers: { "x-discord-user-id": "cap-2" },
+      body: { team1_score: 3, team2_score: 1 },
+    });
+    expect(duplicateConfirm.status).toBe(400);
+    expect(progressTeams).toHaveBeenCalledTimes(1); // Toujours 1 seule fois !
   });
 });

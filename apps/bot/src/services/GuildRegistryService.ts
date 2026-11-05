@@ -3,6 +3,7 @@ import type { GuildDirectoryReason } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { resolveAdminReason } from "../utils/adminAccess";
+import { resolveOrganization } from "../utils/tenant";
 
 /** Sous-ensemble de GuildMember utilisé ici (facilite les tests sans client Discord). */
 export interface MemberLike {
@@ -58,22 +59,7 @@ export async function readToRoleId(guildId: string): Promise<{ ok: true; toRoleI
   const config = row?.config;
   const toRoleId =
     config && typeof config === "object" && typeof config.to_role_id === "string" ? config.to_role_id : null;
-  if (toRoleId) {
-    return { ok: true, toRoleId };
-  }
-
-  // Fallback historique (server_settings) pour la compatibilité des fixtures de test existantes
-  const { data: legacyData, error: legacyError } = await supabase
-    .from("server_settings")
-    .select("to_role_id")
-    .eq("guild_id", guildId)
-    .maybeSingle();
-  if (!legacyError && legacyData) {
-    const legacyTo = (legacyData as { to_role_id?: string | null }).to_role_id ?? null;
-    if (legacyTo) return { ok: true, toRoleId: legacyTo };
-  }
-
-  return { ok: true, toRoleId: null };
+  return { ok: true, toRoleId };
 }
 
 export interface TournamentToRole {
@@ -253,24 +239,87 @@ export class GuildRegistryService {
 
   /** Recalcule les droits d'un membre (changement de rôles, de permissions ou départ). */
   static async syncMemberAdmin(guild: GuildLike, member: MemberLike, roles: AdminRoles): Promise<boolean> {
-    const reason = memberDirectoryReason(guild, member, roles);
-    const { error } = reason
+    const org = await resolveOrganization(guild.id);
+    if (!org) return false;
+
+    const serverReason = resolveAdminReason({
+      isOwner: guild.ownerId === member.id,
+      hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
+      hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
+      hasToRole: !!roles.toRoleId && member.roles.cache.has(roles.toRoleId),
+    });
+
+    let grant: {
+      organization_id: string;
+      provider: "DISCORD";
+      user_id: string;
+      scope_type: "ORGANIZATION" | "TOURNAMENT";
+      tournament_id?: string | null;
+      granted_role: "ORG_OWNER" | "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
+      reason: GuildDirectoryReason;
+      synced_at: string;
+    } | null = null;
+
+    const now = new Date().toISOString();
+
+    if (serverReason) {
+      grant = {
+        organization_id: org.id,
+        provider: "DISCORD",
+        user_id: member.id,
+        scope_type: "ORGANIZATION",
+        tournament_id: null,
+        granted_role: serverReason === "TO_ROLE" ? "ORG_TO" : "ORG_ADMIN",
+        reason: serverReason,
+        synced_at: now,
+      };
+    } else {
+      const match = roles.tournamentRoles.find((tr) => member.roles.cache.has(tr.roleId));
+      if (match) {
+        grant = {
+          organization_id: org.id,
+          provider: "DISCORD",
+          user_id: member.id,
+          scope_type: "TOURNAMENT",
+          tournament_id: match.tournamentId,
+          granted_role: "TOURNAMENT_TO",
+          reason: "TOURNAMENT_TO_ROLE",
+          synced_at: now,
+        };
+      }
+    }
+
+    const { error } = grant
       ? await supabase
-          .from("guild_admins")
-          .upsert({ guild_id: guild.id, discord_id: member.id, reason }, { onConflict: "guild_id,discord_id" })
-      : await supabase.from("guild_admins").delete().eq("guild_id", guild.id).eq("discord_id", member.id);
+          .from("integration_access_grants")
+          .upsert(grant, { onConflict: "organization_id,provider,user_id,scope_type,tournament_id" })
+      : await supabase
+          .from("integration_access_grants")
+          .delete()
+          .eq("organization_id", org.id)
+          .eq("provider", "DISCORD")
+          .eq("user_id", member.id);
 
     if (error) {
       logger.error(`[GuildRegistry] Synchronisation des droits de ${member.id} sur ${guild.id} échouée:`, error);
       return false;
     }
-    logger.info(`[GuildRegistry] Droits de ${member.id} sur ${guild.id} : ${reason ?? "aucun"}.`);
+    logger.info(`[GuildRegistry] Droits de ${member.id} sur ${guild.id} : ${grant?.reason ?? "aucun"}.`);
     return true;
   }
 
   /** Retire un membre ayant quitté le serveur. */
   static async removeMember(guildId: string, discordId: string): Promise<boolean> {
-    const { error } = await supabase.from("guild_admins").delete().eq("guild_id", guildId).eq("discord_id", discordId);
+    const org = await resolveOrganization(guildId);
+    if (!org) return false;
+
+    const { error } = await supabase
+      .from("integration_access_grants")
+      .delete()
+      .eq("organization_id", org.id)
+      .eq("provider", "DISCORD")
+      .eq("user_id", discordId);
+
     if (error) {
       logger.error(`[GuildRegistry] Retrait des droits de ${discordId} sur ${guildId} échoué:`, error);
       return false;
@@ -279,7 +328,7 @@ export class GuildRegistryService {
   }
 
   /**
-   * Reconstruit guild_admins pour tout le serveur (démarrage du bot, changement du rôle TO du serveur ou d'un
+   * Reconstruit integration_access_grants pour tout le serveur (démarrage du bot, changement du rôle TO du serveur ou d'un
    * tournoi, archivage, rôle supprimé).
    * Les admins qui ont perdu leurs droits sont purgés ; rien n'est supprimé si la lecture initiale échoue.
    */
@@ -287,25 +336,79 @@ export class GuildRegistryService {
     const roles = await readAdminRoles(guild.id);
     if (!roles.ok) return false;
 
+    const org = await resolveOrganization(guild.id);
+    if (!org) return false;
+
     const members = await guild.members.fetch();
-    const records: { guild_id: string; discord_id: string; reason: GuildDirectoryReason }[] = [];
+    const records: {
+      organization_id: string;
+      provider: "DISCORD";
+      user_id: string;
+      scope_type: "ORGANIZATION" | "TOURNAMENT";
+      tournament_id?: string | null;
+      granted_role: "ORG_OWNER" | "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
+      reason: GuildDirectoryReason;
+      synced_at: string;
+    }[] = [];
+
+    const now = new Date().toISOString();
     for (const member of members.values()) {
       if (member.user.bot) continue;
-      const reason = memberDirectoryReason(guild, member, roles);
-      if (reason) records.push({ guild_id: guild.id, discord_id: member.id, reason });
+      const serverReason = resolveAdminReason({
+        isOwner: guild.ownerId === member.id,
+        hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
+        hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
+        hasToRole: !!roles.toRoleId && member.roles.cache.has(roles.toRoleId),
+      });
+
+      if (serverReason) {
+        records.push({
+          organization_id: org.id,
+          provider: "DISCORD",
+          user_id: member.id,
+          scope_type: "ORGANIZATION",
+          tournament_id: null,
+          granted_role: serverReason === "TO_ROLE" ? "ORG_TO" : "ORG_ADMIN",
+          reason: serverReason,
+          synced_at: now,
+        });
+      } else {
+        const match = roles.tournamentRoles.find((tr) => member.roles.cache.has(tr.roleId));
+        if (match) {
+          records.push({
+            organization_id: org.id,
+            provider: "DISCORD",
+            user_id: member.id,
+            scope_type: "TOURNAMENT",
+            tournament_id: match.tournamentId,
+            granted_role: "TOURNAMENT_TO",
+            reason: "TOURNAMENT_TO_ROLE",
+            synced_at: now,
+          });
+        }
+      }
     }
 
     if (records.length > 0) {
-      const { error } = await supabase.from("guild_admins").upsert(records, { onConflict: "guild_id,discord_id" });
+      const { error } = await supabase.from("integration_access_grants").upsert(records, {
+        onConflict: "organization_id,provider,user_id,scope_type,tournament_id",
+      });
       if (error) {
         logger.error(`[GuildRegistry] Écriture des admins de ${guild.id} échouée:`, error);
         return false;
       }
     }
 
-    const keep = `(${records.map((r) => `"${r.discord_id}"`).join(",")})`;
-    let purge = supabase.from("guild_admins").delete().eq("guild_id", guild.id);
-    if (records.length > 0) purge = purge.not("discord_id", "in", keep);
+    const keepUserIds = Array.from(new Set(records.map((r) => r.user_id)));
+    let purge = supabase
+      .from("integration_access_grants")
+      .delete()
+      .eq("organization_id", org.id)
+      .eq("provider", "DISCORD");
+    if (keepUserIds.length > 0) {
+      const keep = `(${keepUserIds.map((id) => `"${id}"`).join(",")})`;
+      purge = purge.not("user_id", "in", keep);
+    }
     const { error: purgeError } = await purge;
     if (purgeError) {
       logger.error(`[GuildRegistry] Purge des anciens admins de ${guild.id} échouée:`, purgeError);

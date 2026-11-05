@@ -24,10 +24,6 @@ function roleChanged(requested: unknown, current: string | null): boolean {
   return requested !== undefined && (requested || null) !== current;
 }
 
-async function safeResolveOrg(identifier: string) {
-  return resolveOrganization(identifier);
-}
-
 // POST /api/tournaments — Create a new tournament (defaults to DRAFT)
 tournamentRouter.post("/", requireServerLevel, async (req, res) => {
   try {
@@ -56,22 +52,7 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       return res.status(400).json({ error: "language must be 'fr' or 'en'" });
     }
 
-    const org = await safeResolveOrg(targetGuildId);
-
-    // Fetch server default settings only when not resolved as an organization (legacy fallback)
-    let serverSettings: Record<string, unknown> | null = null;
-    if (!org) {
-      const { data: settingsData, error: settingsError } = await supabase
-        .from("server_settings")
-        .select("*")
-        .eq("guild_id", targetGuildId)
-        .maybeSingle();
-      if (settingsError && settingsError.code !== "42P01" && settingsError.code !== "PGRST205") {
-        throw settingsError;
-      }
-      serverSettings = (settingsData as Record<string, unknown> | null) ?? null;
-    }
-
+    const org = await resolveOrganization(targetGuildId);
     const discordCfg = org?.discordConfig ?? {};
     const insertPayload: Record<string, unknown> = {
       guild_id: org ? org.discordGuildId : targetGuildId,
@@ -86,29 +67,24 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       discord_registration_channel_id:
         discord_registration_channel_id ||
         (typeof discordCfg.registration_channel_id === "string" ? discordCfg.registration_channel_id : null) ||
-        (typeof serverSettings?.registration_channel_id === "string" ? serverSettings.registration_channel_id : null) ||
         null,
       discord_announcement_channel_id:
         discord_announcement_channel_id ||
         (typeof discordCfg.announcement_channel_id === "string" ? discordCfg.announcement_channel_id : null) ||
-        (typeof serverSettings?.announcement_channel_id === "string" ? serverSettings.announcement_channel_id : null) ||
         null,
       discord_checkin_channel_id:
         discord_checkin_channel_id ||
         (typeof discordCfg.checkin_channel_id === "string" ? discordCfg.checkin_channel_id : null) ||
-        (typeof serverSettings?.checkin_channel_id === "string" ? serverSettings.checkin_channel_id : null) ||
         null,
       discord_captain_role_id:
         discord_captain_role_id ||
         (typeof discordCfg.captain_role_id === "string" ? discordCfg.captain_role_id : null) ||
-        (typeof serverSettings?.captain_role_id === "string" ? serverSettings.captain_role_id : null) ||
         null,
       discord_to_role_id:
         discord_to_role_id ||
         (typeof discordCfg.to_role_id === "string" ? discordCfg.to_role_id : null) ||
-        (typeof serverSettings?.to_role_id === "string" ? serverSettings.to_role_id : null) ||
         null,
-      language: requestedLanguage.data ?? org?.language ?? (typeof serverSettings?.language === "string" ? serverSettings.language : undefined) ?? "fr",
+      language: requestedLanguage.data ?? org?.language ?? "fr",
     };
 
     const { data: created, error } = await supabase
@@ -309,21 +285,22 @@ tournamentRouter.post("/:id/launch", tournamentScope, async (req, res) => {
     // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
     const discordClient = req.app.locals.discordClient;
     const targetGuildId = authGuildId;
-    const org = await safeResolveOrg(targetGuildId);
+    const org = await resolveOrganization(targetGuildId);
 
-    if (org && !org.discordEnabled) {
-      const { error } = await supabase
-        .from("tournaments")
-        .update({ status: "ACTIVE", updated_at: new Date().toISOString() })
-        .eq("id", tournamentId);
-      if (error) throw error;
-      await IntegrationBus.emit("onTournamentLaunched", {
-        organizationId: org.id,
+    const skipDiscord = Boolean(org && !org.discordEnabled);
+    if (skipDiscord) {
+      await LifecycleService.launchTournament(
         tournamentId,
+        org?.discordGuildId ?? targetGuildId,
         discordClient,
-      });
+        { skipDiscord: true },
+      );
     } else {
-      await LifecycleService.launchTournament(tournamentId, org?.discordGuildId ?? targetGuildId, discordClient);
+      await LifecycleService.launchTournament(
+        tournamentId,
+        org?.discordGuildId ?? targetGuildId,
+        discordClient,
+      );
     }
     res.json({ success: true, message: "Tournament launched successfully." });
   } catch (error: unknown) {
@@ -343,7 +320,7 @@ tournamentRouter.post("/:id/close", tournamentScope, async (req, res) => {
     // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
     const discordClient = req.app.locals.discordClient;
     const targetGuildId = authGuildId;
-    const org = await safeResolveOrg(targetGuildId);
+    const org = await resolveOrganization(targetGuildId);
 
     if (org && !org.discordEnabled) {
       const { error } = await supabase
@@ -401,7 +378,7 @@ tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) =>
       return res.status(400).json({ error: "Cannot open registrations: The tournament has already reached the check-in phase or has already started." });
     }
 
-    const org = await safeResolveOrg(authGuildId);
+    const org = await resolveOrganization(authGuildId);
     const isWebOnlyRegistration = Boolean(org && !org.discordEnabled && !tournament.discord_registration_channel_id);
 
     if (!isWebOnlyRegistration) {

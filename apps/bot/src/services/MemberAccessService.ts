@@ -7,6 +7,7 @@ import type {
   TournamentStaffRole,
 } from "@hub/shared";
 import { supabase } from "../lib/supabase";
+import { logger } from "../utils/logger";
 import { resolveAdminReason } from "../utils/adminAccess";
 import { resolveOrganization, type ResolvedOrganization } from "../utils/tenant";
 import { readToRoleId, readTournamentToRoles } from "./GuildRegistryService";
@@ -180,7 +181,13 @@ async function computeOrganizationAccess(
 }
 
 async function computeAccess(client: DiscordClientLike, guildIdOrOrg: string, discordId: string): Promise<MemberAccessDecision> {
-  const org = await resolveOrganization(guildIdOrOrg).catch(() => null);
+  let org: ResolvedOrganization | null = null;
+  try {
+    org = await resolveOrganization(guildIdOrOrg);
+  } catch (error) {
+    logger.error(`[MemberAccess] Erreur lors de la résolution de l'organisation pour ${guildIdOrOrg}:`, error);
+    return { allowed: false, code: "CHECK_FAILED" };
+  }
   if (org) {
     return computeOrganizationAccess(client, org, discordId);
   }

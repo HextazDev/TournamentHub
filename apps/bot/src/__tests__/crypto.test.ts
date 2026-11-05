@@ -26,7 +26,7 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       };
 
       const encrypted = encryptSecretPayload(payload);
-      expect(encrypted).toMatch(/^v1:[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/);
+      expect(encrypted).toMatch(/^v1:\d+:[0-9a-f]{24}:[0-9a-f]{32}:[0-9a-f]+$/);
 
       const decrypted = decryptSecretPayload<typeof payload>(encrypted);
       expect(decrypted).toEqual(payload);
@@ -64,27 +64,27 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
     });
   });
 
-  describe("Garde-fou de production (SEC-01)", () => {
-    it("lève une exception bloquante si NODE_ENV === 'production' et qu'aucune clé n'est configurée (chiffrement)", () => {
+  describe("Garde-fou de production et SEC-03", () => {
+    it("lève une exception bloquante si NODE_ENV !== 'test' et qu'aucune clé n'est configurée (chiffrement)", () => {
       process.env.NODE_ENV = "production";
       delete process.env.INTEGRATION_ENCRYPTION_KEY;
       delete process.env.BOT_API_SECRET;
 
       expect(() => {
         encryptSecretPayload({ secret: "should-not-encrypt" });
-      }).toThrowError("SEC-01: Aucune clé de chiffrement valide configurée en production (INTEGRATION_ENCRYPTION_KEY ou BOT_API_SECRET requis)");
+      }).toThrowError("SEC-03: Variable INTEGRATION_ENCRYPTION_KEY obligatoire pour le chiffrement des intégrations");
     });
 
-    it("lève une exception bloquante si NODE_ENV === 'production' et qu'aucune clé n'est configurée (déchiffrement)", () => {
+    it("lève une exception bloquante si NODE_ENV !== 'test' et qu'aucune clé n'est configurée (déchiffrement)", () => {
       process.env.NODE_ENV = "production";
       delete process.env.INTEGRATION_ENCRYPTION_KEY;
       delete process.env.BOT_API_SECRET;
 
-      const dummyEncrypted = "v1:0123456789abcdef01234567:0123456789abcdef0123456789abcdef:01234567";
+      const dummyEncrypted = "v1:1:0123456789abcdef01234567:0123456789abcdef0123456789abcdef:01234567";
 
       expect(() => {
         decryptSecretPayload(dummyEncrypted);
-      }).toThrowError("SEC-01: Aucune clé de chiffrement valide configurée en production (INTEGRATION_ENCRYPTION_KEY ou BOT_API_SECRET requis)");
+      }).toThrowError("SEC-03: Variable INTEGRATION_ENCRYPTION_KEY obligatoire pour le chiffrement des intégrations");
     });
 
     it("fonctionne en production si INTEGRATION_ENCRYPTION_KEY est défini", () => {
@@ -99,16 +99,14 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       expect(decrypted).toEqual(payload);
     });
 
-    it("fonctionne en production si BOT_API_SECRET est défini en repli", () => {
+    it("SEC-03: refuse BOT_API_SECRET comme repli et exige INTEGRATION_ENCRYPTION_KEY", () => {
       process.env.NODE_ENV = "production";
       delete process.env.INTEGRATION_ENCRYPTION_KEY;
       process.env.BOT_API_SECRET = "prod-bot-secret-fallback-12345";
 
-      const payload = { clientSecret: "prod-secret-fallback" };
-      const encrypted = encryptSecretPayload(payload);
-      const decrypted = decryptSecretPayload<typeof payload>(encrypted);
-
-      expect(decrypted).toEqual(payload);
+      expect(() => {
+        encryptSecretPayload({ clientSecret: "prod-secret" });
+      }).toThrowError("SEC-03: Variable INTEGRATION_ENCRYPTION_KEY obligatoire pour le chiffrement des intégrations");
     });
 
     it("fonctionne en production si une rawKey explicite est transmise", () => {

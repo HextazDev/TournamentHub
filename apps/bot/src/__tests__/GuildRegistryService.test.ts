@@ -32,7 +32,20 @@ function fakeSupabase(responses: Record<string, Result> = {}) {
     const call: Call = { table, op: "select", filters: [] };
     const result = () => {
       if (!calls.includes(call)) calls.push(call);
-      return Promise.resolve(responses[`${table}.${call.op}`] ?? { data: null, error: null });
+      if (responses[`${table}.${call.op}`]) return Promise.resolve(responses[`${table}.${call.op}`]);
+      if (table === "organization_integrations" && call.op === "select") {
+        return Promise.resolve({
+          data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: {} },
+          error: null,
+        });
+      }
+      if (table === "organizations" && call.op === "select") {
+        return Promise.resolve({
+          data: { id: "org-1", slug: "guild-g1", name: "Guild One" },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: null, error: null });
     };
     const builder = {
       select: () => builder,
@@ -45,7 +58,7 @@ function fakeSupabase(responses: Record<string, Result> = {}) {
       not: (col: string, _op: string, val: unknown) => (call.filters.push(["not", col, val]), builder),
       single: result,
       maybeSingle: result,
-      then: (resolve: (r: Result) => unknown, reject: (e: unknown) => unknown) => result().then(resolve, reject),
+      then: (resolve?: (r: Result | undefined) => unknown, reject?: (e: unknown) => unknown) => result().then(resolve, reject),
     };
     return builder;
   }) as unknown as typeof supabase.from);
@@ -185,19 +198,30 @@ describe("GuildRegistryService.syncMemberAdmin", () => {
   it("DISC-08: un membre portant le rôle TO est enregistré comme TO_ROLE", async () => {
     const calls = fakeSupabase();
     await expect(GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { roles: ["to"] }), roles("to"))).resolves.toBe(true);
-    expect(calls.find((c) => c.op === "upsert")?.payload).toEqual({ guild_id: "g1", discord_id: "u1", reason: "TO_ROLE" });
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "upsert")?.payload).toMatchObject({
+      organization_id: "org-1",
+      provider: "DISCORD",
+      user_id: "u1",
+      scope_type: "ORGANIZATION",
+      granted_role: "ORG_TO",
+      reason: "TO_ROLE",
+    });
   });
 
-  it("DISC-08: un membre sans droit est retiré de guild_admins", async () => {
+  it("DISC-08: un membre sans droit est retiré des accès", async () => {
     const calls = fakeSupabase();
     await GuildRegistryService.syncMemberAdmin(guild([]), member("u1"), roles("to"));
-    const del = calls.find((c) => c.op === "delete");
-    expect(del?.filters).toEqual([["eq", "guild_id", "g1"], ["eq", "discord_id", "u1"]]);
+    const del = calls.find((c) => c.table === "integration_access_grants" && c.op === "delete");
+    expect(del?.filters).toEqual([
+      ["eq", "organization_id", "org-1"],
+      ["eq", "provider", "DISCORD"],
+      ["eq", "user_id", "u1"],
+    ]);
   });
 
   it("DISC-08: un échec d'écriture est journalisé et aucun succès n'est annoncé", async () => {
     const err = { message: "boom" };
-    fakeSupabase({ "guild_admins.upsert": { data: null, error: err } });
+    fakeSupabase({ "integration_access_grants.upsert": { data: null, error: err } });
     await expect(GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { admin: true }), roles(null))).resolves.toBe(false);
     expect(logger.error).toHaveBeenCalledWith(expect.any(String), err);
     expect(logger.info).not.toHaveBeenCalled();
@@ -207,19 +231,26 @@ describe("GuildRegistryService.syncMemberAdmin", () => {
 describe("GuildRegistryService.syncGuildAdmins", () => {
   it("DISC-08: recalcule tous les admins avec le rôle TO courant et purge les anciens", async () => {
     const calls = fakeSupabase({
-      "organization_integrations.select": { data: { config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": {
+        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } },
+        error: null,
+      },
     });
     const members = [member("owner"), member("u-to", { roles: ["to"] }), member("u-manage", { manage: true }), member("u-none")];
     await expect(GuildRegistryService.syncGuildAdmins(guild(members))).resolves.toBe(true);
 
-    const upsert = calls.find((c) => c.op === "upsert");
+    const upsert = calls.find((c) => c.table === "integration_access_grants" && c.op === "upsert");
     expect(upsert?.payload).toEqual([
-      { guild_id: "g1", discord_id: "owner", reason: "SERVER_OWNER" },
-      { guild_id: "g1", discord_id: "u-to", reason: "TO_ROLE" },
-      { guild_id: "g1", discord_id: "u-manage", reason: "MANAGE_GUILD" },
+      expect.objectContaining({ organization_id: "org-1", provider: "DISCORD", user_id: "owner", reason: "SERVER_OWNER" }),
+      expect.objectContaining({ organization_id: "org-1", provider: "DISCORD", user_id: "u-to", reason: "TO_ROLE" }),
+      expect.objectContaining({ organization_id: "org-1", provider: "DISCORD", user_id: "u-manage", reason: "MANAGE_GUILD" }),
     ]);
-    const del = calls.find((c) => c.op === "delete");
-    expect(del?.filters).toEqual([["eq", "guild_id", "g1"], ["not", "discord_id", '("owner","u-to","u-manage")']]);
+    const del = calls.find((c) => c.table === "integration_access_grants" && c.op === "delete");
+    expect(del?.filters).toEqual([
+      ["eq", "organization_id", "org-1"],
+      ["eq", "provider", "DISCORD"],
+      ["not", "user_id", '("owner","u-to","u-manage")'],
+    ]);
   });
 
   it("DISC-08: ne purge rien si la lecture des paramètres échoue", async () => {
@@ -229,47 +260,69 @@ describe("GuildRegistryService.syncGuildAdmins", () => {
   });
 });
 
-describe("annuaire guild_admins : rôle TO de tournoi (#67, DISC-08 / SEC-24)", () => {
+describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08 / SEC-24)", () => {
   const tRole = { tournamentId: "t1", roleId: "t-role" };
 
   it("un membre qui n'a que le rôle TO d'un tournoi est enregistré comme TOURNAMENT_TO_ROLE", async () => {
     const calls = fakeSupabase();
     await expect(GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { roles: ["t-role"] }), roles("to", [tRole]))).resolves.toBe(true);
-    expect(calls.find((c) => c.op === "upsert")?.payload).toEqual({ guild_id: "g1", discord_id: "u1", reason: "TOURNAMENT_TO_ROLE" });
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "upsert")?.payload).toMatchObject({
+      organization_id: "org-1",
+      provider: "DISCORD",
+      user_id: "u1",
+      scope_type: "TOURNAMENT",
+      tournament_id: "t1",
+      granted_role: "TOURNAMENT_TO",
+      reason: "TOURNAMENT_TO_ROLE",
+    });
   });
 
   it("le motif serveur l'emporte sur le rôle TO d'un tournoi", async () => {
     const calls = fakeSupabase();
     await GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { roles: ["t-role", "to"] }), roles("to", [tRole]));
-    expect(calls.find((c) => c.op === "upsert")?.payload).toMatchObject({ reason: "TO_ROLE" });
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "upsert")?.payload).toMatchObject({
+      scope_type: "ORGANIZATION",
+      reason: "TO_ROLE",
+    });
   });
 
   it("un membre qui perd le rôle du tournoi (ou dont le rôle a changé) est retiré", async () => {
     const calls = fakeSupabase();
     await GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { roles: ["t-role"] }), roles(null, [{ tournamentId: "t1", roleId: "new-role" }]));
-    expect(calls.some((c) => c.op === "upsert")).toBe(false);
-    expect(calls.find((c) => c.op === "delete")?.filters).toEqual([["eq", "guild_id", "g1"], ["eq", "discord_id", "u1"]]);
+    expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "upsert")).toBe(false);
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "delete")?.filters).toEqual([
+      ["eq", "organization_id", "org-1"],
+      ["eq", "provider", "DISCORD"],
+      ["eq", "user_id", "u1"],
+    ]);
   });
 
   it("syncGuildAdmins inclut les TO de tournoi et purge ceux d'un tournoi archivé (absent de la lecture)", async () => {
     const calls = fakeSupabase({
-      "organization_integrations.select": { data: { config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": {
+        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } },
+        error: null,
+      },
       "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
     });
     const members = [member("owner"), member("u-t", { roles: ["t-role"] }), member("u-archived", { roles: ["old-role"] })];
     await expect(GuildRegistryService.syncGuildAdmins(guild(members))).resolves.toBe(true);
-    expect(calls.find((c) => c.op === "upsert")?.payload).toEqual([
-      { guild_id: "g1", discord_id: "owner", reason: "SERVER_OWNER" },
-      { guild_id: "g1", discord_id: "u-t", reason: "TOURNAMENT_TO_ROLE" },
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "upsert")?.payload).toEqual([
+      expect.objectContaining({ organization_id: "org-1", provider: "DISCORD", user_id: "owner", reason: "SERVER_OWNER" }),
+      expect.objectContaining({ organization_id: "org-1", provider: "DISCORD", user_id: "u-t", reason: "TOURNAMENT_TO_ROLE", tournament_id: "t1" }),
     ]);
-    expect(calls.find((c) => c.op === "delete")?.filters).toEqual([["eq", "guild_id", "g1"], ["not", "discord_id", '("owner","u-t")']]);
+    expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "delete")?.filters).toEqual([
+      ["eq", "organization_id", "org-1"],
+      ["eq", "provider", "DISCORD"],
+      ["not", "user_id", '("owner","u-t")'],
+    ]);
     // SEC-23 : seuls les tournois non archivés comptent.
     expect(calls.find((c) => c.table === "tournaments")?.filters).toContainEqual(["neq", "status", "ARCHIVED"]);
   });
 
   it("ne purge rien si la lecture des rôles de tournoi échoue", async () => {
     const calls = fakeSupabase({
-      "organization_integrations.select": { data: { config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } }, error: null },
       "tournaments.select": { data: null, error: { message: "down" } },
     });
     await expect(GuildRegistryService.syncGuildAdmins(guild([member("owner")]))).resolves.toBe(false);
@@ -278,7 +331,7 @@ describe("annuaire guild_admins : rôle TO de tournoi (#67, DISC-08 / SEC-24)", 
 
   it("readAdminRoles renvoie le rôle TO du serveur et ceux des tournois", async () => {
     fakeSupabase({
-      "organization_integrations.select": { data: { config: { to_role_id: "to" } }, error: null },
+      "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", config: { to_role_id: "to" } }, error: null },
       "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
     });
     await expect(readAdminRoles("g1")).resolves.toEqual({ ok: true, toRoleId: "to", tournamentRoles: [tRole] });

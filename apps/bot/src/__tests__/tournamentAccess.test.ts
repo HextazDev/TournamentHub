@@ -47,7 +47,9 @@ const T_B = "tournament-b";
 function seed(tournaments: Record<string, unknown>[]) {
   db.failTournaments = false;
   db.current = new FakeSupabase({
-    server_settings: [{ guild_id: GUILD, to_role_id: "server-to" }],
+    organization_integrations: [
+      { provider: "DISCORD", external_id: GUILD, config: { to_role_id: "server-to" } },
+    ],
     tournaments,
     phases: [
       { id: "phase-a", tournament_id: T_A },

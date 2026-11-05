@@ -23,11 +23,15 @@ export const MAX_FAKE_TEAMS = 64;
 // SEC-27 / RFC 0001 : plafond d'organisations possédées (ORG_OWNER) par un même utilisateur.
 export const MAX_OWNED_ORGANIZATIONS = 5;
 
+const UUID_SLUG_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const OrganizationSlugSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .regex(/^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/, "Slug d'organisation invalide (3 à 48 caractères alphanumériques ou tirets)");
+  .regex(/^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/, "Slug d'organisation invalide (3 à 48 caractères alphanumériques ou tirets)")
+  .refine((slug) => !/^\d+$/.test(slug), "Le slug d'organisation ne peut pas être composé uniquement de chiffres")
+  .refine((slug) => !UUID_SLUG_REGEX.test(slug), "Le slug d'organisation ne peut pas être un UUID");
 
 export const OrganizationRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO"]);
 export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;

@@ -84,10 +84,7 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
     const { data } = await supabaseAdmin.from("organizations").select("*").eq("id", guildIdOrSlug).maybeSingle();
     if (data) orgRow = data as Record<string, unknown>;
   }
-  if (!orgRow) {
-    const { data } = await supabaseAdmin.from("organizations").select("*").eq("slug", guildIdOrSlug).maybeSingle();
-    if (data) orgRow = data as Record<string, unknown>;
-  }
+  // SEC-01 : résoudre l'external_id Discord AVANT le slug pour empêcher le squat de snowflakes
   if (!orgRow) {
     const { data: intRow } = await supabaseAdmin
       .from("organization_integrations")
@@ -99,6 +96,11 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
       const { data } = await supabaseAdmin.from("organizations").select("*").eq("id", intRow.organization_id).maybeSingle();
       if (data) orgRow = data as Record<string, unknown>;
     }
+  }
+  // Slug en dernier
+  if (!orgRow) {
+    const { data } = await supabaseAdmin.from("organizations").select("*").eq("slug", guildIdOrSlug).maybeSingle();
+    if (data) orgRow = data as Record<string, unknown>;
   }
 
   if (orgRow && typeof orgRow.id === "string" && typeof orgRow.slug === "string") {
@@ -151,11 +153,7 @@ export const getReadableTournament = cache(async (guildId: string, tournamentId:
   if (!data) return null;
   const tournament = data as Tournament & { organization_id?: string | null };
   const profile = await getServerProfile(guildId);
-  const matchesRoute =
-    tournament.guild_id === guildId ||
-    tournament.organization_id === guildId ||
-    (!!profile?.organization_id && tournament.organization_id === profile.organization_id) ||
-    (!!profile?.guild_id && tournament.guild_id === profile.guild_id);
+  const matchesRoute = Boolean(profile?.organization_id && tournament.organization_id === profile.organization_id);
 
   if (!matchesRoute) return null;
   if (tournament.is_public) return tournament;
@@ -195,9 +193,8 @@ export const getManagedTournament = cache(async (guildId: string, tournamentId: 
   }
   if (!data) return null;
   const row = data as Tournament & { organization_id?: string | null };
-  if (row.guild_id === guildId || row.organization_id === guildId) return row;
   const profile = await getServerProfile(guildId);
-  if (profile && (row.organization_id === profile.organization_id || row.guild_id === profile.guild_id)) {
+  if (profile?.organization_id && row.organization_id === profile.organization_id) {
     return row;
   }
   return null;

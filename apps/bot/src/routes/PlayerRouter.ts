@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
-import { canPerform, WebRegisterTeamSchema, WebReportScoreSchema } from "@hub/shared";
+import { canPerform, MAX_FAKE_TEAMS, WebRegisterTeamSchema, WebReportScoreSchema } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { sendServerError } from "../utils/serverError";
 import { IntegrationBus } from "../services/IntegrationBus";
 import { LeaderboardService } from "../services/LeaderboardService";
 import { ScoreService } from "../services/ScoreService";
 import { resolveMemberAccess, type DiscordClientLike } from "../services/MemberAccessService";
+import { isCheckinWindowOpen } from "../utils/manualTeamCheckin";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -57,11 +58,36 @@ playerRouter.post("/tournaments/:tournamentId/register", async (req, res) => {
       return res.status(400).json({ error: "Les inscriptions ne sont pas ouvertes pour ce tournoi." });
     }
 
+    // DAT-01 / SEC-10: Tournoi privé ➜ vérification que le joueur appartient à l'organisation
+    if (tRow.is_public === false) {
+      if (!tRow.organization_id) {
+        return res.status(403).json({ error: "Ce tournoi est privé.", code: "PRIVATE_TOURNAMENT" });
+      }
+      const { data: memberData } = await supabase
+        .from("organization_members")
+        .select("role")
+        .eq("organization_id", tRow.organization_id)
+        .eq("user_id", callerId)
+        .maybeSingle();
+      if (!memberData) {
+        return res.status(403).json({
+          error: "Ce tournoi est privé : réservé aux membres de l'organisation.",
+          code: "PRIVATE_TOURNAMENT",
+        });
+      }
+    }
+
     const { data: existingTeams } = await supabase
       .from("teams")
       .select("id, name, captain_discord_id")
       .eq("tournament_id", tournamentId);
     const list = (existingTeams ?? []) as { id: string; name: string; captain_discord_id: string }[];
+
+    // DAT-01: Contrôle de capacité max
+    if (list.length >= MAX_FAKE_TEAMS) {
+      return res.status(400).json({ error: "La capacité maximale d'équipes pour ce tournoi est atteinte." });
+    }
+
     if (
       list.some(
         (t) =>
@@ -117,8 +143,12 @@ playerRouter.post("/tournaments/:tournamentId/register", async (req, res) => {
       })),
     ];
 
+    // DAT-01: Si l'insertion des membres échoue, rollback immédiat de l'équipe pour éviter les orphelins
     const { error: membersErr } = await supabase.from("team_members").insert(memberRows);
-    if (membersErr) throw membersErr;
+    if (membersErr) {
+      await supabase.from("teams").delete().eq("id", teamId);
+      throw membersErr;
+    }
 
     if (typeof tRow.organization_id === "string") {
       await IntegrationBus.emit("onTeamRegistered", {
@@ -168,7 +198,8 @@ playerRouter.delete("/tournaments/:tournamentId/register", async (req, res) => {
       return res.status(404).json({ error: "Aucune équipe inscrite trouvée pour ce capitaine." });
     }
 
-    await supabase.from("team_members").delete().eq("team_id", teamRow.id);
+    const { error: memErr } = await supabase.from("team_members").delete().eq("team_id", teamRow.id);
+    if (memErr) throw memErr;
     const { error: delErr } = await supabase.from("teams").delete().eq("id", teamRow.id);
     if (delErr) throw delErr;
 
@@ -196,7 +227,24 @@ playerRouter.post("/tournaments/:tournamentId/checkin", async (req, res) => {
     const tRow = tournament as Record<string, unknown> | null;
     if (!tRow) return res.status(404).json({ error: "Tournament not found" });
 
-    if (tRow.status !== "REGISTRATION") {
+    // ARC-01: Validation stricte de la fenêtre de check-in (parité Web & Discord)
+    const windowCheck = isCheckinWindowOpen({
+      status: typeof tRow.status === "string" ? tRow.status : "",
+      checkin_mode: (tRow.checkin_mode as any) ?? null,
+      checkin_start_at: typeof tRow.checkin_start_at === "string" ? tRow.checkin_start_at : null,
+      checkin_end_at: typeof tRow.checkin_end_at === "string" ? tRow.checkin_end_at : null,
+    });
+
+    if (!windowCheck.open) {
+      if (windowCheck.reason === "DISABLED") {
+        return res.status(400).json({ error: "Le check-in est désactivé pour ce tournoi." });
+      }
+      if (windowCheck.reason === "NOT_STARTED") {
+        return res.status(400).json({ error: "La fenêtre de check-in n'est pas encore ouverte." });
+      }
+      if (windowCheck.reason === "ENDED") {
+        return res.status(400).json({ error: "La fenêtre de check-in est terminée." });
+      }
       return res.status(400).json({ error: "Le check-in n'est pas ouvert pour ce tournoi." });
     }
 
@@ -277,6 +325,18 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
       return res.status(404).json({ error: "Phase not found" });
     }
 
+    // SEC-02: Contrôle obligatoire que le tournoi est ACTIVE
+    const { data: tourney, error: tourneyErr } = await supabase
+      .from("tournaments")
+      .select("status, organization_id, guild_id")
+      .eq("id", phase.tournament_id)
+      .maybeSingle();
+    if (tourneyErr) throw tourneyErr;
+    const tObj = tourney as { status?: string; organization_id?: string | null; guild_id?: string | null } | null;
+    if (!tObj || tObj.status !== "ACTIVE") {
+      return res.status(400).json({ error: "Le tournoi n'est pas actif." });
+    }
+
     // SEC-30 : vérifier que l'appelant est capitaine de team1 ou team2, ou staff autorisé (SCORE_MATCH)
     const teamIds = [match.team1_id, match.team2_id].filter((id): id is string => typeof id === "string");
     const { data: teamsData } =
@@ -286,25 +346,17 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
     const matchTeams = (teamsData ?? []) as { id: string; captain_discord_id: string }[];
     const callerTeam = matchTeams.find((t) => t.captain_discord_id === callerId);
 
-    let authorized = Boolean(callerTeam);
-    if (!authorized) {
-      const { data: tourney } = await supabase
-        .from("tournaments")
-        .select("organization_id, guild_id")
-        .eq("id", phase.tournament_id)
-        .maybeSingle();
-      const tObj = tourney as { organization_id?: string | null; guild_id?: string | null } | null;
-      const tenantKey = tObj?.organization_id ?? tObj?.guild_id;
-      if (tenantKey) {
-        const client = (req.app?.locals?.discordClient as DiscordClientLike | undefined) ?? FALLBACK_DISCORD_CLIENT;
-        const decision = await resolveMemberAccess(client, tenantKey, callerId);
-        if (decision.allowed && canPerform(decision.access, "SCORE_MATCH", phase.tournament_id)) {
-          authorized = true;
-        }
+    let isStaff = false;
+    const tenantKey = tObj.organization_id ?? tObj.guild_id;
+    if (tenantKey) {
+      const client = (req.app?.locals?.discordClient as DiscordClientLike | undefined) ?? FALLBACK_DISCORD_CLIENT;
+      const decision = await resolveMemberAccess(client, tenantKey, callerId);
+      if (decision.allowed && canPerform(decision.access, "SCORE_MATCH", phase.tournament_id)) {
+        isStaff = true;
       }
     }
 
-    if (!authorized) {
+    if (!callerTeam && !isStaff) {
       return res.status(403).json({
         error: "Seul un capitaine participant au match ou un membre du staff peut déclarer le score.",
         code: "NO_RIGHTS",
@@ -319,25 +371,6 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
       return res.status(400).json({ error: "Une égalité n'est pas autorisée en phase à élimination." });
     }
 
-    const { error: updateErr } = await supabase
-      .from("matches")
-      .update({
-        team1_score,
-        team2_score,
-        status: "COMPLETED",
-        reported_by_team_id: callerTeam?.id ?? null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", matchId);
-    if (updateErr) throw updateErr;
-
-    const updatedMatch = {
-      ...match,
-      team1_score,
-      team2_score,
-      status: "COMPLETED",
-    };
-
     let winnerId: string | null = null;
     let loserId: string | null = null;
     if (team1_score > team2_score) {
@@ -348,19 +381,113 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
       loserId = typeof match.team1_id === "string" ? match.team1_id : null;
     }
 
-    if (typeof match.group_id === "string") {
-      await LeaderboardService.calculateGroupStandings(match.group_id);
+    // 1. Staff arbitre (SCORE_MATCH) : validation directe et immédiate
+    if (isStaff && !callerTeam) {
+      const { data: updated, error: updateErr } = await supabase
+        .from("matches")
+        .update({
+          team1_score,
+          team2_score,
+          status: "COMPLETED",
+          reported_by_team_id: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", matchId)
+        .in("status", ["PENDING", "IN_PROGRESS", "WAITING_VALIDATION"])
+        .select();
+
+      if (updateErr) throw updateErr;
+      if (!updated || updated.length === 0) {
+        return res.status(400).json({ error: "Ce match est déjà terminé." });
+      }
+
+      if (typeof match.group_id === "string") {
+        await LeaderboardService.calculateGroupStandings(match.group_id);
+      }
+      await ScoreService.progressTeams(
+        { ...match, team1_score, team2_score, status: "COMPLETED" },
+        undefined,
+        winnerId,
+        loserId,
+        req.app?.locals?.discordClient,
+      );
+      return res.status(200).json({ message: "Score validé par le staff", match: updated[0] });
     }
 
-    await ScoreService.progressTeams(
-      updatedMatch,
-      undefined,
-      winnerId,
-      loserId,
-      req.app?.locals?.discordClient,
-    );
+    // 2. Capitaine déclarant : passage en WAITING_VALIDATION atomique si PENDING / IN_PROGRESS
+    if (match.status === "PENDING" || match.status === "IN_PROGRESS") {
+      const { data: updated, error: updateErr } = await supabase
+        .from("matches")
+        .update({
+          team1_score,
+          team2_score,
+          status: "WAITING_VALIDATION",
+          reported_by_team_id: callerTeam!.id,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", matchId)
+        .in("status", ["PENDING", "IN_PROGRESS"])
+        .select();
 
-    return res.status(200).json({ message: "Score enregistré", match: updatedMatch });
+      if (updateErr) throw updateErr;
+      if (!updated || updated.length === 0) {
+        return res.status(400).json({ error: "Ce match est déjà en cours de validation ou terminé." });
+      }
+
+      return res.status(200).json({
+        message: "Score soumis, en attente de validation par le capitaine adverse.",
+        match: updated[0],
+      });
+    }
+
+    // 3. Match déjà en WAITING_VALIDATION
+    if (match.status === "WAITING_VALIDATION") {
+      // Interdiction de s'auto-valider son propre score
+      if (callerTeam!.id === match.reported_by_team_id) {
+        return res.status(400).json({
+          error: "En attente de confirmation par le capitaine adverse.",
+        });
+      }
+
+      // Capitaine adverse ➜ transition atomique WAITING_VALIDATION ➜ COMPLETED (SCR-05)
+      const { data: updated, error: updateErr } = await supabase
+        .from("matches")
+        .update({
+          status: "COMPLETED",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", matchId)
+        .eq("status", "WAITING_VALIDATION")
+        .select();
+
+      if (updateErr) throw updateErr;
+      if (!updated || updated.length === 0) {
+        return res.status(400).json({ error: "Ce match est déjà terminé." });
+      }
+
+      const completedMatch = {
+        ...match,
+        team1_score,
+        team2_score,
+        status: "COMPLETED",
+      };
+
+      if (typeof match.group_id === "string") {
+        await LeaderboardService.calculateGroupStandings(match.group_id);
+      }
+
+      await ScoreService.progressTeams(
+        completedMatch,
+        undefined,
+        winnerId,
+        loserId,
+        req.app?.locals?.discordClient,
+      );
+
+      return res.status(200).json({ message: "Score validé avec succès", match: completedMatch });
+    }
+
+    return res.status(400).json({ error: "Ce match est déjà terminé." });
   } catch (error: unknown) {
     return sendServerError(res, error, "PlayerRouter.reportScore");
   }

@@ -32,15 +32,7 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
     }
   }
 
-  if (!orgRow) {
-    const { data, error } = await supabase.from("organizations").select("*").eq("slug", identifier).maybeSingle();
-    if (error && error.code !== "PGRST116") throw error;
-    const candidate = data as Record<string, unknown> | null;
-    if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
-      orgRow = candidate;
-    }
-  }
-
+  // SEC-01 : résoudre l'external_id Discord AVANT le slug pour empêcher le squat de snowflakes
   if (!orgRow) {
     const { data: intData, error: intError } = await supabase
       .from("organization_integrations")
@@ -57,6 +49,16 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
       if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
         orgRow = candidate;
       }
+    }
+  }
+
+  // Slug en dernier
+  if (!orgRow) {
+    const { data, error } = await supabase.from("organizations").select("*").eq("slug", identifier).maybeSingle();
+    if (error && error.code !== "PGRST116") throw error;
+    const candidate = data as Record<string, unknown> | null;
+    if (candidate && typeof candidate.id === "string" && typeof candidate.slug === "string") {
+      orgRow = candidate;
     }
   }
 
@@ -144,12 +146,9 @@ async function matchesTenant(
   expectedTenantId: string,
 ): Promise<boolean> {
   if (!row) return false;
-  if (row.guild_id === expectedTenantId || row.organization_id === expectedTenantId) {
-    return true;
-  }
   const org = await resolveOrganization(expectedTenantId);
   if (!org) return false;
-  return row.organization_id === org.id || (org.discordGuildId !== null && row.guild_id === org.discordGuildId);
+  return row.organization_id === org.id;
 }
 
 /**

@@ -8,7 +8,7 @@ import { logger } from "./logger";
  * Toute autre erreur (Supabase, Discord, exception inattendue) reste technique et masquée.
  */
 export class DomainError extends Error {
-  constructor(public readonly status: 400 | 409, message: string) {
+  constructor(public readonly status: 400 | 404 | 409, message: string) {
     super(message);
     this.name = "DomainError";
   }

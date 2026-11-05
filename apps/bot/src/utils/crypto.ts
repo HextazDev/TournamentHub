@@ -4,44 +4,60 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 
 function resolveKey(rawKey?: string): Buffer {
-  const configured = rawKey ?? process.env.INTEGRATION_ENCRYPTION_KEY ?? process.env.BOT_API_SECRET;
+  const configured = rawKey ?? process.env.INTEGRATION_ENCRYPTION_KEY;
   if (!configured) {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error(
-        "SEC-01: Aucune clé de chiffrement valide configurée en production (INTEGRATION_ENCRYPTION_KEY ou BOT_API_SECRET requis)"
-      );
+    if (process.env.NODE_ENV === "test") {
+      return createHash("sha256").update("test-integration-key").digest();
     }
+    throw new Error(
+      "SEC-03: Variable INTEGRATION_ENCRYPTION_KEY obligatoire pour le chiffrement des intégrations",
+    );
   }
-  const source = configured ?? "dev-integration-key";
-  if (/^[0-9a-fA-F]{64}$/.test(source)) {
-    return Buffer.from(source, "hex");
+  if (/^[0-9a-fA-F]{64}$/.test(configured)) {
+    return Buffer.from(configured, "hex");
   }
-  return createHash("sha256").update(source).digest();
+  return createHash("sha256").update(configured).digest();
 }
 
 /**
- * SEC-28 : chiffre un objet secret (ex: clé API BYOK, refresh token OAuth) en AES-256-GCM
- * avec un IV aléatoire de 96 bits et un tag d'authenticité de 128 bits.
+ * SEC-28 / SEC-03: Chiffre un objet secret en AES-256-GCM.
+ * Format du blob: v1:<key_version>:<iv>:<tag>:<ciphertext>
  */
-export function encryptSecretPayload(payload: unknown, rawKey?: string): string {
+export function encryptSecretPayload(payload: unknown, rawKey?: string, keyVersion = 1): string {
   const key = resolveKey(rawKey);
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const plaintext = JSON.stringify(payload);
   const encrypted = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
   const authTag = cipher.getAuthTag();
-  return `v1:${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted.toString("hex")}`;
+  return `v1:${keyVersion}:${iv.toString("hex")}:${authTag.toString("hex")}:${encrypted.toString("hex")}`;
 }
 
 /**
- * SEC-28 : déchiffre et vérifie l'authenticité GCM d'un secret stocké dans `organization_integration_secrets`.
+ * SEC-28 / SEC-03: Déchiffre et vérifie l'authenticité GCM d'un secret.
+ * Supporte le format v1:<key_version>:<iv>:<tag>:<ciphertext> (5 segments)
+ * et rétro-compatible avec v1:<iv>:<tag>:<ciphertext> (4 segments).
  */
 export function decryptSecretPayload<T = Record<string, unknown>>(encryptedPayload: string, rawKey?: string): T {
   const parts = encryptedPayload.split(":");
-  if (parts.length !== 4 || parts[0] !== "v1") {
+  if (parts[0] !== "v1") {
     throw new Error("Format de secret chiffré invalide");
   }
-  const [, ivHex, tagHex, cipherHex] = parts;
+
+  let ivHex: string | undefined;
+  let tagHex: string | undefined;
+  let cipherHex: string | undefined;
+
+  if (parts.length === 5) {
+    // Format v1:<key_version>:<iv>:<tag>:<cipher>
+    [, , ivHex, tagHex, cipherHex] = parts;
+  } else if (parts.length === 4) {
+    // Format legacy v1:<iv>:<tag>:<cipher>
+    [, ivHex, tagHex, cipherHex] = parts;
+  } else {
+    throw new Error("Format de secret chiffré invalide");
+  }
+
   if (!ivHex || !tagHex || !cipherHex) {
     throw new Error("Composants du secret chiffré manquants");
   }
