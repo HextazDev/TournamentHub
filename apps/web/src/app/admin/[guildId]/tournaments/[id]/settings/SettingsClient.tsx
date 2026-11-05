@@ -11,17 +11,28 @@ import { useRouter } from "next/navigation";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 import { discordListQuery } from "@/lib/accessRules";
+import { isDiscordSnowflake } from "@hub/shared";
 
 interface SettingsClientProps {
   tournament: any;
   guildId: string;
+  discordGuildId?: string;
+  discordEnabled?: boolean;
   /** SEC-22 : faux pour un TO de tournoi, qui ne peut pas changer les rôles TO / Capitaine de son tournoi. */
   canManageRoles: boolean;
   initialChannels?: any[];
   initialRoles?: any[];
 }
 
-export function SettingsClient({ tournament, guildId, canManageRoles, initialChannels = [], initialRoles = [] }: SettingsClientProps) {
+export function SettingsClient({
+  tournament,
+  guildId,
+  discordGuildId,
+  discordEnabled = true,
+  canManageRoles,
+  initialChannels = [],
+  initialRoles = [],
+}: SettingsClientProps) {
   const router = useRouter();
   const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
@@ -29,20 +40,20 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
 
   const [channels, setChannels] = useState<any[]>(initialChannels);
   const [roles, setRoles] = useState<any[]>(initialRoles);
-  const [isLoadingDiscord, setIsLoadingDiscord] = useState(true);
+  const [isLoadingDiscord, setIsLoadingDiscord] = useState(discordEnabled);
   const [discordError, setDiscordError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchDiscordData = async () => {
-
-      if (!guildId) {
+      const targetGuildId = discordGuildId || (isDiscordSnowflake(guildId) ? guildId : null);
+      if (!discordEnabled || !targetGuildId || !isDiscordSnowflake(targetGuildId)) {
         setIsLoadingDiscord(false);
         return;
       }
       try {
         const [channelsRes, rolesRes] = await Promise.all([
-          fetch(`/api/bot/discord/channels?${discordListQuery(guildId, tournament.id)}`),
-          fetch(`/api/bot/discord/roles?${discordListQuery(guildId, tournament.id)}`)
+          fetch(`/api/bot/discord/channels?${discordListQuery(targetGuildId, tournament.id)}`),
+          fetch(`/api/bot/discord/roles?${discordListQuery(targetGuildId, tournament.id)}`)
         ]);
 
         if (channelsRes.ok) {
@@ -209,137 +220,141 @@ export function SettingsClient({ tournament, guildId, canManageRoles, initialCha
           )}
         </div>
 
-        <h2 className="text-xl font-bold text-white mb-4 mt-8 flex items-center gap-2">
-          <MessageSquare className="w-5 h-5 text-indigo-400" />
-          {t("adminSettingsPage.channelsSection")}
-        </h2>
+        {discordEnabled && (
+          <>
+            <h2 className="text-xl font-bold text-white mb-4 mt-8 flex items-center gap-2">
+              <MessageSquare className="w-5 h-5 text-indigo-400" />
+              {t("adminSettingsPage.channelsSection")}
+            </h2>
 
-        {isLoadingDiscord ? (
-          <div className="text-slate-400 text-sm animate-pulse">{t("adminSettingsPage.loadingDiscord")}</div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {isLoadingDiscord ? (
+              <div className="text-slate-400 text-sm animate-pulse">{t("adminSettingsPage.loadingDiscord")}</div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
-            <div className="space-y-3">
-              <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.regChannel")}</label>
-              <select
-                {...register("discord_registration_channel_id")}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
-              >
-                <option value="">{t("adminSettingsPage.noChannel")}</option>
-                {tournament.discord_registration_channel_id &&
-                  !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
-                    <option value={tournament.discord_registration_channel_id} disabled className="text-amber-400 bg-slate-800">
-                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_registration_channel_id})
-                    </option>
-                  )}
-                {channels.map((ch: any) => (
-                  <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                ))}
-              </select>
-              {tournament.discord_registration_channel_id &&
-                !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
-                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    {t("adminSettingsPage.channelInaccessibleNotice")}
-                  </p>
-                )}
-            </div>
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.regChannel")}</label>
+                  <select
+                    {...register("discord_registration_channel_id")}
+                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                  >
+                    <option value="">{t("adminSettingsPage.noChannel")}</option>
+                    {tournament.discord_registration_channel_id &&
+                      !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                        <option value={tournament.discord_registration_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_registration_channel_id})
+                        </option>
+                      )}
+                    {channels.map((ch: any) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {tournament.discord_registration_channel_id &&
+                    !channels.some((ch: any) => ch.id === tournament.discord_registration_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettingsPage.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </div>
 
-            <div className="space-y-3">
-              <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.annChannel")}</label>
-              <select
-                {...register("discord_announcement_channel_id")}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
-              >
-                <option value="">{t("adminSettingsPage.noChannel")}</option>
-                {tournament.discord_announcement_channel_id &&
-                  !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
-                    <option value={tournament.discord_announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
-                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_announcement_channel_id})
-                    </option>
-                  )}
-                {channels.map((ch: any) => (
-                  <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                ))}
-              </select>
-              {tournament.discord_announcement_channel_id &&
-                !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
-                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    {t("adminSettingsPage.channelInaccessibleNotice")}
-                  </p>
-                )}
-            </div>
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.annChannel")}</label>
+                  <select
+                    {...register("discord_announcement_channel_id")}
+                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                  >
+                    <option value="">{t("adminSettingsPage.noChannel")}</option>
+                    {tournament.discord_announcement_channel_id &&
+                      !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                        <option value={tournament.discord_announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_announcement_channel_id})
+                        </option>
+                      )}
+                    {channels.map((ch: any) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {tournament.discord_announcement_channel_id &&
+                    !channels.some((ch: any) => ch.id === tournament.discord_announcement_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettingsPage.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </div>
 
-            <div className="space-y-3">
-              <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinChannelLabel")}</label>
-              <select
-                {...register("discord_checkin_channel_id")}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
-              >
-                <option value="">{t("adminSettingsPage.noChannel")}</option>
-                {tournament.discord_checkin_channel_id &&
-                  !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
-                    <option value={tournament.discord_checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
-                      {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_checkin_channel_id})
-                    </option>
-                  )}
-                {channels.map((ch: any) => (
-                  <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                ))}
-              </select>
-              {tournament.discord_checkin_channel_id &&
-                !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
-                  <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                    {t("adminSettingsPage.channelInaccessibleNotice")}
-                  </p>
-                )}
-            </div>
-          </div>
-        )}
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.checkinChannelLabel")}</label>
+                  <select
+                    {...register("discord_checkin_channel_id")}
+                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all outline-none"
+                  >
+                    <option value="">{t("adminSettingsPage.noChannel")}</option>
+                    {tournament.discord_checkin_channel_id &&
+                      !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                        <option value={tournament.discord_checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
+                          {t("adminSettingsPage.channelInaccessibleOption")} (#{tournament.discord_checkin_channel_id})
+                        </option>
+                      )}
+                    {channels.map((ch: any) => (
+                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                    ))}
+                  </select>
+                  {tournament.discord_checkin_channel_id &&
+                    !channels.some((ch: any) => ch.id === tournament.discord_checkin_channel_id) && (
+                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        {t("adminSettingsPage.channelInaccessibleNotice")}
+                      </p>
+                    )}
+                </div>
+              </div>
+            )}
 
-        <h2 className="text-xl font-bold text-white mb-4 mt-8 flex items-center gap-2">
-          <Shield className="w-5 h-5 text-purple-400" />
-          {t("adminSettingsPage.rolesSection")}
-        </h2>
+            <h2 className="text-xl font-bold text-white mb-4 mt-8 flex items-center gap-2">
+              <Shield className="w-5 h-5 text-purple-400" />
+              {t("adminSettingsPage.rolesSection")}
+            </h2>
 
-        {!canManageRoles && (
-          <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4">
-            {t("adminSettingsPage.rolesReserved")}
-          </p>
-        )}
+            {!canManageRoles && (
+              <p className="text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4">
+                {t("adminSettingsPage.rolesReserved")}
+              </p>
+            )}
 
-        {!isLoadingDiscord && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-3">
-              <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.captainRoleLabel")}</label>
-              <select
-                {...register("discord_captain_role_id")}
-                disabled={!canManageRoles}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <option value="">{t("adminSettingsPage.noRole")}</option>
-                {roles.map((ro: any) => (
-                  <option key={ro.id} value={ro.id}>@{ro.name}</option>
-                ))}
-              </select>
-            </div>
+            {!isLoadingDiscord && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.captainRoleLabel")}</label>
+                  <select
+                    {...register("discord_captain_role_id")}
+                    disabled={!canManageRoles}
+                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <option value="">{t("adminSettingsPage.noRole")}</option>
+                    {roles.map((ro: any) => (
+                      <option key={ro.id} value={ro.id}>@{ro.name}</option>
+                    ))}
+                  </select>
+                </div>
 
-            <div className="space-y-3">
-              <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.toRoleLabel")}</label>
-              <select
-                {...register("discord_to_role_id")}
-                disabled={!canManageRoles}
-                className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                <option value="">{t("adminSettingsPage.noRole")}</option>
-                {roles.map((ro: any) => (
-                  <option key={ro.id} value={ro.id}>@{ro.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
+                <div className="space-y-3">
+                  <label className="block text-sm font-semibold text-slate-300">{t("adminSettingsPage.toRoleLabel")}</label>
+                  <select
+                    {...register("discord_to_role_id")}
+                    disabled={!canManageRoles}
+                    className="w-full bg-slate-900/80 border border-slate-700 rounded-lg p-3 text-white focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-all outline-none disabled:opacity-60 disabled:cursor-not-allowed"
+                  >
+                    <option value="">{t("adminSettingsPage.noRole")}</option>
+                    {roles.map((ro: any) => (
+                      <option key={ro.id} value={ro.id}>@{ro.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
+          </>
         )}
 
         <h2 className="text-xl font-bold text-white mb-2 mt-8 flex items-center gap-2">

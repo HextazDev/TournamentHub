@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { getBotApiUrl } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
+import { formatRoundName } from "@hub/shared";
 
 import { useRouter } from "next/navigation";
 import { Search, Trophy, Check, X, CalendarDays, Loader2, ArrowLeft, Users, AlertCircle } from "lucide-react";
@@ -63,7 +64,7 @@ export function PhaseMatchesClient({ tournamentId, guildId, phase, initialMatche
     };
 
     try {
-      const res = await fetch(`${getBotApiUrl()}/api/matches/${selectedMatch.id}/force-score`, {
+      const res = await botApiFetch(`/api/matches/${selectedMatch.id}/force-score`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(finalData)
@@ -502,7 +503,7 @@ export function PhaseMatchesClient({ tournamentId, guildId, phase, initialMatche
             {/* Header */}
             <div className="p-6 pb-0 flex flex-col items-center text-center shrink-0">
                <h2 className="text-slate-400 font-bold uppercase tracking-wider text-xs mb-4">
-                 {t("adminMatches.editMatchTitle", { round: selectedMatch.round_number, match: selectedMatch.match_number })}
+                 {formatRoundName(selectedMatch.round_number, phase?.format)} • {t("common.match")} #{selectedMatch.match_number}
                </h2>
                <div className="flex items-center gap-12 w-full justify-center">
                  <span className="text-2xl font-bold text-slate-200 flex-1 text-right truncate bg-[#0f111a] px-4 py-2 rounded-lg border border-slate-700/50">{selectedMatch.team1?.name}</span>

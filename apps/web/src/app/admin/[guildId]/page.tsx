@@ -148,8 +148,8 @@ export default async function AdminDashboard({ params }: { params: Promise<{ gui
         canConfigureServer={canConfigureServer}
       />
 
-      {/* Widget de Santé Discord (uniquement niveau SERVER, SEC-21) */}
-      {access.access.level === "SERVER" && (
+      {/* Widget de Santé Discord (uniquement niveau SERVER et si Discord est activé, SEC-21) */}
+      {access.access.level === "SERVER" && Boolean(settings?.discord_enabled) && (
         <DiscordHealthWidget
           guildId={guildId}
           settings={settings}

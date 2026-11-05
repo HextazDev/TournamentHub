@@ -6,6 +6,7 @@ import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Monitor, Users } from "lucide-react";
 import { cookies } from "next/headers";
+import { formatRoundName } from "@hub/shared";
 import { t } from "@/i18n";
 import { Locale } from "@/i18n/types";
 
@@ -46,7 +47,7 @@ export default async function PublicTournamentOverview({
     const phaseIds = phases.map(p => p.id);
     const { data } = await supabaseAdmin
       .from("matches")
-      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order)")
+      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order, format)")
       .in("phase_id", phaseIds);
     if (data) matches = data;
   }
@@ -151,7 +152,7 @@ export default async function PublicTournamentOverview({
                 return (
                   <div key={match.id} className="bg-[#151722] border border-slate-800/50 hover:bg-[#1a1d2d] transition-colors rounded overflow-hidden flex flex-col font-mono text-sm shadow-sm cursor-pointer group">
                     <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d]">
-                      {match.phase?.name || 'Match'} • Round {match.round_number || '?'}
+                      {match.phase?.name || t(locale, 'common.match')} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format, locale) : 'Round ?'}
                     </div>
                     <div className="flex flex-col p-2">
                       <div className="flex justify-between items-center py-1.5 px-2 hover:bg-slate-800/20 rounded">
@@ -204,7 +205,7 @@ export default async function PublicTournamentOverview({
               upcomingMatches.map(match => (
                 <div key={match.id} className="bg-[#151722] border border-slate-800/50 hover:bg-[#1a1d2d] transition-colors rounded overflow-hidden flex flex-col font-mono text-sm shadow-sm cursor-pointer group">
                   <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d]">
-                    {match.phase?.name || 'Match'} • Round {match.round_number || '?'}
+                    {match.phase?.name || t(locale, 'common.match')} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format, locale) : 'Round ?'}
                   </div>
                   <div className="flex flex-col p-2 text-slate-300">
                     <div className="flex justify-between items-center py-1.5 px-2 hover:bg-slate-800/20 rounded">

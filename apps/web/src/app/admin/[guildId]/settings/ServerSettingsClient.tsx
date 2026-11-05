@@ -5,7 +5,7 @@ import { botApiFetch } from '@/utils/api';
 import { Save, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
-import { DiscordInviteUrlSchema } from "@hub/shared";
+import { DiscordInviteUrlSchema, isDiscordSnowflake } from "@hub/shared";
 
 /** Formulaire des paramètres du serveur : rendu uniquement si canPerform(..., "MANAGE_SERVER_SETTINGS") (SEC-16). */
 export function ServerSettingsClient({ guildId }: { guildId: string }) {
@@ -36,6 +36,9 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
     async function loadData() {
       setLoading(true);
       try {
+        let activeDiscord = isDiscordSnowflake(guildId);
+        let targetDiscordGuildId: string | null = isDiscordSnowflake(guildId) ? guildId : null;
+
         try {
           const orgRes = await fetch(`/api/bot/organizations/${guildId}`);
           if (orgRes.ok) {
@@ -44,10 +47,13 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
               invite_url?: string;
               public_contact_url?: string;
               discordEnabled?: boolean;
+              discordGuildId?: string | null;
               discordConfig?: Record<string, string | null>;
             };
             setHasOrgRecord(true);
-            setDiscordEnabled(Boolean(orgData.discordEnabled));
+            activeDiscord = Boolean(orgData.discordEnabled);
+            setDiscordEnabled(activeDiscord);
+            targetDiscordGuildId = orgData.discordGuildId || (isDiscordSnowflake(guildId) ? guildId : null);
             const cfg = orgData.discordConfig ?? {};
             setSettings({
               captain_role_id: cfg.captain_role_id || "",
@@ -63,24 +69,25 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           console.error(orgErr);
         }
 
-        try {
-          const rolesRes = await fetch(`/api/bot/discord/roles?guildId=${guildId}`);
-          if (rolesRes.ok) {
-            const roles = await rolesRes.json();
-            setDiscordRoles(roles);
+        if (activeDiscord && targetDiscordGuildId && isDiscordSnowflake(targetDiscordGuildId)) {
+          try {
+            const rolesRes = await fetch(`/api/bot/discord/roles?guildId=${targetDiscordGuildId}`);
+            if (rolesRes.ok) {
+              const roles = await rolesRes.json();
+              setDiscordRoles(roles);
+            }
+          } catch {
+            setApiError(t("adminSettings.botError"));
           }
-        } catch {
-          setApiError(t("adminSettings.botError"));
+
+          try {
+            const channelsRes = await fetch(`/api/bot/discord/channels?guildId=${targetDiscordGuildId}`);
+            if (channelsRes.ok) {
+              const channels = await channelsRes.json();
+              setDiscordChannels(channels);
+            }
+          } catch {}
         }
-
-        try {
-          const channelsRes = await fetch(`/api/bot/discord/channels?guildId=${guildId}`);
-          if (channelsRes.ok) {
-            const channels = await channelsRes.json();
-            setDiscordChannels(channels);
-          }
-        } catch {}
-
       } catch (err) {
         console.error(err);
       }
@@ -213,8 +220,12 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
   return (
     <div className="p-6 md:p-8 w-full max-w-[1600px] mx-auto space-y-8">
       <div>
-        <h1 className="text-3xl font-bold text-white mb-2">{t("adminSettings.title")}</h1>
-        <p className="text-slate-400">{t("adminSettings.subtitle")}</p>
+        <h1 className="text-3xl font-bold text-white mb-2">
+          {hasOrgRecord ? t("adminSettings.orgTitle") : t("adminSettings.title")}
+        </h1>
+        <p className="text-slate-400">
+          {hasOrgRecord ? t("adminSettings.orgSubtitle") : t("adminSettings.subtitle")}
+        </p>
 
         {apiError && (
           <div className="mt-4 bg-yellow-900/30 border border-yellow-700/50 p-4 rounded-xl text-yellow-400 text-sm flex items-center">
@@ -250,220 +261,235 @@ export function ServerSettingsClient({ guildId }: { guildId: string }) {
           </div>
         )}
 
-        {/* RÔLES */}
-        <div className="space-y-6">
-          <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.rolesSection")}</h2>
+        {/* RÔLES ET SALONS DISCORD */}
+        {discordEnabled ? (
+          <>
+            {/* RÔLES */}
+            <div className="space-y-6">
+              <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.rolesSection")}</h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="flex flex-col gap-2">
-              <label htmlFor="captain_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.captainRole")}</label>
-              {discordRoles.length > 0 ? (
-                <select
-                  id="captain_role_id"
-                  name="captain_role_id"
-                  value={settings.captain_role_id}
-                  onChange={handleChange}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="">{t("adminSettings.selectRole")}</option>
-                  {discordRoles.map((role) => (
-                    <option key={role.id} value={role.id}>{role.name}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  id="captain_role_id"
-                  type="text"
-                  name="captain_role_id"
-                  value={settings.captain_role_id}
-                  onChange={handleChange}
-                  placeholder={t("adminSettings.roleIdPlaceholder")}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
-                />
-              )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="captain_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.captainRole")}</label>
+                  {discordRoles.length > 0 ? (
+                    <select
+                      id="captain_role_id"
+                      name="captain_role_id"
+                      value={settings.captain_role_id}
+                      onChange={handleChange}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">{t("adminSettings.selectRole")}</option>
+                      {discordRoles.map((role) => (
+                        <option key={role.id} value={role.id}>{role.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="captain_role_id"
+                      type="text"
+                      name="captain_role_id"
+                      value={settings.captain_role_id}
+                      onChange={handleChange}
+                      placeholder={t("adminSettings.roleIdPlaceholder")}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
+                    />
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="to_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.toRole")}</label>
+                  {discordRoles.length > 0 ? (
+                    <select
+                      id="to_role_id"
+                      name="to_role_id"
+                      value={settings.to_role_id}
+                      onChange={handleChange}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                    >
+                      <option value="">{t("adminSettings.selectRole")}</option>
+                      {discordRoles.map((role) => (
+                        <option key={role.id} value={role.id}>{role.name}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      id="to_role_id"
+                      type="text"
+                      name="to_role_id"
+                      value={settings.to_role_id}
+                      onChange={handleChange}
+                      placeholder={t("adminSettings.roleIdPlaceholder")}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
+                    />
+                  )}
+                </div>
+              </div>
             </div>
 
-            <div className="flex flex-col gap-2">
-              <label htmlFor="to_role_id" className="text-sm font-medium text-slate-400">{t("adminSettings.toRole")}</label>
-              {discordRoles.length > 0 ? (
-                <select
-                  id="to_role_id"
-                  name="to_role_id"
-                  value={settings.to_role_id}
-                  onChange={handleChange}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="">{t("adminSettings.selectRole")}</option>
-                  {discordRoles.map((role) => (
-                    <option key={role.id} value={role.id}>{role.name}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  id="to_role_id"
-                  type="text"
-                  name="to_role_id"
-                  value={settings.to_role_id}
-                  onChange={handleChange}
-                  placeholder={t("adminSettings.roleIdPlaceholder")}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
-                />
-              )}
+            {/* SALONS */}
+            <div className="space-y-6 pt-4">
+              <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.channelsSection")}</h2>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="checkin_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.checkinChannel")}</label>
+                  {discordChannels.length > 0 ? (
+                    <>
+                      <select
+                        id="checkin_channel_id"
+                        name="checkin_channel_id"
+                        value={settings.checkin_channel_id}
+                        onChange={handleChange}
+                        className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="">{t("adminSettings.selectChannel")}</option>
+                        {settings.checkin_channel_id &&
+                          !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
+                            <option value={settings.checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
+                              {t("adminSettings.channelInaccessibleOption")} (#{settings.checkin_channel_id})
+                            </option>
+                          )}
+                        {discordChannels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                        ))}
+                      </select>
+                      {settings.checkin_channel_id &&
+                        !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
+                          <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            {t("adminSettings.channelInaccessibleNotice")}
+                          </p>
+                        )}
+                    </>
+                  ) : (
+                    <input
+                      id="checkin_channel_id"
+                      type="text"
+                      name="checkin_channel_id"
+                      value={settings.checkin_channel_id}
+                      onChange={handleChange}
+                      placeholder={t("adminSettings.channelIdPlaceholder")}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
+                    />
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <label htmlFor="announcement_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.announcementChannel")}</label>
+                  {discordChannels.length > 0 ? (
+                    <>
+                      <select
+                        id="announcement_channel_id"
+                        name="announcement_channel_id"
+                        value={settings.announcement_channel_id}
+                        onChange={handleChange}
+                        className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="">{t("adminSettings.selectChannel")}</option>
+                        {settings.announcement_channel_id &&
+                          !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
+                            <option value={settings.announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
+                              {t("adminSettings.channelInaccessibleOption")} (#{settings.announcement_channel_id})
+                            </option>
+                          )}
+                        {discordChannels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                        ))}
+                      </select>
+                      {settings.announcement_channel_id &&
+                        !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
+                          <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            {t("adminSettings.channelInaccessibleNotice")}
+                          </p>
+                        )}
+                    </>
+                  ) : (
+                    <input
+                      id="announcement_channel_id"
+                      type="text"
+                      name="announcement_channel_id"
+                      value={settings.announcement_channel_id}
+                      onChange={handleChange}
+                      placeholder={t("adminSettings.channelIdPlaceholder")}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
+                    />
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2 md:col-span-2">
+                  <label htmlFor="registration_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.registrationChannel")}</label>
+                  {discordChannels.length > 0 ? (
+                    <>
+                      <select
+                        id="registration_channel_id"
+                        name="registration_channel_id"
+                        value={settings.registration_channel_id}
+                        onChange={handleChange}
+                        className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
+                      >
+                        <option value="">{t("adminSettings.selectRegistrationChannel")}</option>
+                        {settings.registration_channel_id &&
+                          !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
+                            <option value={settings.registration_channel_id} disabled className="text-amber-400 bg-slate-800">
+                              {t("adminSettings.channelInaccessibleOption")} (#{settings.registration_channel_id})
+                            </option>
+                          )}
+                        {discordChannels.map((ch) => (
+                          <option key={ch.id} value={ch.id}>#{ch.name}</option>
+                        ))}
+                      </select>
+                      {settings.registration_channel_id &&
+                        !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
+                          <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            {t("adminSettings.channelInaccessibleNotice")}
+                          </p>
+                        )}
+                    </>
+                  ) : (
+                    <input
+                      id="registration_channel_id"
+                      type="text"
+                      name="registration_channel_id"
+                      value={settings.registration_channel_id}
+                      onChange={handleChange}
+                      placeholder={t("adminSettings.channelIdPlaceholder")}
+                      className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
+                    />
+                  )}
+                </div>
+              </div>
             </div>
+          </>
+        ) : hasOrgRecord ? (
+          <div className="bg-slate-900/50 border border-slate-700/60 p-4 rounded-xl text-slate-400 text-sm">
+            {t("adminSettings.discordSectionNotice")}
           </div>
-        </div>
+        ) : null}
 
-        {/* SALONS */}
-        <div className="space-y-6 pt-4">
-          <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.channelsSection")}</h2>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="flex flex-col gap-2">
-              <label htmlFor="checkin_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.checkinChannel")}</label>
-              {discordChannels.length > 0 ? (
-                <>
-                  <select
-                    id="checkin_channel_id"
-                    name="checkin_channel_id"
-                    value={settings.checkin_channel_id}
-                    onChange={handleChange}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="">{t("adminSettings.selectChannel")}</option>
-                    {settings.checkin_channel_id &&
-                      !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
-                        <option value={settings.checkin_channel_id} disabled className="text-amber-400 bg-slate-800">
-                          {t("adminSettings.channelInaccessibleOption")} (#{settings.checkin_channel_id})
-                        </option>
-                      )}
-                    {discordChannels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                    ))}
-                  </select>
-                  {settings.checkin_channel_id &&
-                    !discordChannels.some((ch) => ch.id === settings.checkin_channel_id) && (
-                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        {t("adminSettings.channelInaccessibleNotice")}
-                      </p>
-                    )}
-                </>
-              ) : (
-                <input
-                  id="checkin_channel_id"
-                  type="text"
-                  name="checkin_channel_id"
-                  value={settings.checkin_channel_id}
-                  onChange={handleChange}
-                  placeholder={t("adminSettings.channelIdPlaceholder")}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
-                />
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <label htmlFor="announcement_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.announcementChannel")}</label>
-              {discordChannels.length > 0 ? (
-                <>
-                  <select
-                    id="announcement_channel_id"
-                    name="announcement_channel_id"
-                    value={settings.announcement_channel_id}
-                    onChange={handleChange}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="">{t("adminSettings.selectChannel")}</option>
-                    {settings.announcement_channel_id &&
-                      !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
-                        <option value={settings.announcement_channel_id} disabled className="text-amber-400 bg-slate-800">
-                          {t("adminSettings.channelInaccessibleOption")} (#{settings.announcement_channel_id})
-                        </option>
-                      )}
-                    {discordChannels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                    ))}
-                  </select>
-                  {settings.announcement_channel_id &&
-                    !discordChannels.some((ch) => ch.id === settings.announcement_channel_id) && (
-                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        {t("adminSettings.channelInaccessibleNotice")}
-                      </p>
-                    )}
-                </>
-              ) : (
-                <input
-                  id="announcement_channel_id"
-                  type="text"
-                  name="announcement_channel_id"
-                  value={settings.announcement_channel_id}
-                  onChange={handleChange}
-                  placeholder={t("adminSettings.channelIdPlaceholder")}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
-                />
-              )}
-            </div>
-
-            <div className="flex flex-col gap-2 md:col-span-2">
-              <label htmlFor="registration_channel_id" className="text-sm font-medium text-slate-400">{t("adminSettings.registrationChannel")}</label>
-              {discordChannels.length > 0 ? (
-                <>
-                  <select
-                    id="registration_channel_id"
-                    name="registration_channel_id"
-                    value={settings.registration_channel_id}
-                    onChange={handleChange}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
-                  >
-                    <option value="">{t("adminSettings.selectRegistrationChannel")}</option>
-                    {settings.registration_channel_id &&
-                      !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
-                        <option value={settings.registration_channel_id} disabled className="text-amber-400 bg-slate-800">
-                          {t("adminSettings.channelInaccessibleOption")} (#{settings.registration_channel_id})
-                        </option>
-                      )}
-                    {discordChannels.map((ch) => (
-                      <option key={ch.id} value={ch.id}>#{ch.name}</option>
-                    ))}
-                  </select>
-                  {settings.registration_channel_id &&
-                    !discordChannels.some((ch) => ch.id === settings.registration_channel_id) && (
-                      <p className="text-xs text-amber-300 flex items-center gap-1.5 mt-1">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        {t("adminSettings.channelInaccessibleNotice")}
-                      </p>
-                    )}
-                </>
-              ) : (
-                <input
-                  id="registration_channel_id"
-                  type="text"
-                  name="registration_channel_id"
-                  value={settings.registration_channel_id}
-                  onChange={handleChange}
-                  placeholder={t("adminSettings.channelIdPlaceholder")}
-                  className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white"
-                />
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* INVITATION PUBLIQUE */}
+        {/* INVITATION PUBLIQUE OU CONTACT */}
         <div className="space-y-4 pt-4">
-          <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">{t("adminSettings.inviteSection")}</h2>
+          <h2 className="text-xl font-semibold text-slate-200 border-b border-slate-700 pb-2">
+            {discordEnabled ? t("adminSettings.inviteSection") : t("adminSettings.contactLabel")}
+          </h2>
           <div className="flex flex-col gap-2 max-w-xl">
-            <label htmlFor="invite_url" className="text-sm font-medium text-slate-400">{t("adminSettings.inviteLabel")}</label>
+            <label htmlFor="invite_url" className="text-sm font-medium text-slate-400">
+              {discordEnabled ? t("adminSettings.inviteLabel") : t("adminSettings.contactLabel")}
+            </label>
             <input
               id="invite_url"
               type="url"
               name="invite_url"
               value={settings.invite_url}
               onChange={handleChange}
-              placeholder={t("adminSettings.invitePlaceholder")}
+              placeholder={discordEnabled ? t("adminSettings.invitePlaceholder") : "https://..."}
               className="w-full bg-slate-900 border border-slate-600 rounded-lg p-3 text-white focus:border-blue-500 focus:outline-none"
             />
-            <p className="text-xs text-slate-400">{t("adminSettings.inviteDesc")}</p>
+            <p className="text-xs text-slate-400">
+              {discordEnabled ? t("adminSettings.inviteDesc") : t("adminSettings.contactDesc")}
+            </p>
           </div>
         </div>
 

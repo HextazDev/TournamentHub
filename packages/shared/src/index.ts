@@ -527,6 +527,40 @@ export const TEAM_MEMBERS_MAX = 10;
 export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
 
 /**
+ * Vérifie si une chaîne correspond à un snowflake Discord réel valide (17 à 20 chiffres numériques).
+ * Utilisé pour filtrer les identifiants d'organisation (slugs, UUID) des appels Discord API (SEC-11 / ORG-04).
+ */
+export function isDiscordSnowflake(id: string | null | undefined): boolean {
+  return typeof id === "string" && /^\d{17,20}$/.test(id);
+}
+
+/**
+ * Formate un libellé convivial pour un numéro de round.
+ * Gère notamment la numérotation technique du Double Élimination :
+ * - Winners Bracket : r < 10 -> "Winners - Round {r}"
+ * - Losers Bracket  : 11 <= r < 21 -> "Losers - Round {r - 10}"
+ * - Grand Final     : r === 21 -> "Grande Finale" / "Grand Final"
+ * - GF Reset        : r === 22 -> "Grande Finale (Reset)" / "Grand Final (Reset)"
+ */
+export function formatRoundName(roundNumber: number, phaseFormat?: string, locale: "fr" | "en" = "fr"): string {
+  if (phaseFormat === "DOUBLE_ELIM") {
+    if (roundNumber < 10) {
+      return `Winners - Round ${roundNumber}`;
+    }
+    if (roundNumber >= 11 && roundNumber < 21) {
+      return `Losers - Round ${roundNumber - 10}`;
+    }
+    if (roundNumber === 21) {
+      return locale === "fr" ? "Grande Finale" : "Grand Final";
+    }
+    if (roundNumber === 22) {
+      return locale === "fr" ? "Grande Finale (Reset)" : "Grand Final (Reset)";
+    }
+  }
+  return `Round ${roundNumber}`;
+}
+
+/**
  * Génère un identifiant Discord synthétique (18 chiffres, préfixe 000000)
  * pour les équipes manuelles ou tournois fermés sans compte Discord (#15).
  * Les snowflakes Discord réels étant des entiers sans zéro de tête, le préfixe 000000

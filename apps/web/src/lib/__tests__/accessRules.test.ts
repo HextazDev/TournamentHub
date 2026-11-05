@@ -178,6 +178,12 @@ describe("buildBotInviteUrl", () => {
     expect(url.searchParams.get("disable_guild_select")).toBe("true");
     expect(BigInt(url.searchParams.get("permissions") ?? "0") & BigInt(8)).toBe(BigInt(0));
   });
+
+  it("ignore le guild_id s'il s'agit d'un slug d'organisation non-numérique", () => {
+    const url = new URL(buildBotInviteUrl("123", "inklings-arena"));
+    expect(url.searchParams.get("guild_id")).toBeNull();
+    expect(url.searchParams.get("disable_guild_select")).toBeNull();
+  });
 });
 
 describe("SEC-21: panel d'un TO de tournoi", () => {

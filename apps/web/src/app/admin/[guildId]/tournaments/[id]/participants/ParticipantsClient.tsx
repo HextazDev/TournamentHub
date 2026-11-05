@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getBotApiUrl, botApiFetch } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
 import { discordListQuery } from "@/lib/accessRules";
 
 import { useRouter } from "next/navigation";
@@ -9,7 +9,7 @@ import { CheckCircle2, XCircle, UserPlus, Trash2, Search, Pencil, Sparkles } fro
 import { useToast } from "@/context/ToastContext";
 import { PromptModal } from "@/components/ui/PromptModal";
 import { useTranslation } from "@/i18n/LanguageContext";
-import { MAX_FAKE_TEAMS, generateSyntheticDiscordId, isSyntheticDiscordId } from "@hub/shared";
+import { MAX_FAKE_TEAMS, generateSyntheticDiscordId, isSyntheticDiscordId, isDiscordSnowflake } from "@hub/shared";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 
 export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { tournamentId: string; guildId: string; initialTeams: any[] }) {
@@ -47,16 +47,16 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!guildId) return;
+    if (!guildId || !isDiscordSnowflake(guildId)) return;
     if (isAdding && members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
+      botApiFetch(`/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) setMembers(data);
         })
         .catch((err) => console.error(err));
     }
-  }, [isAdding]);
+  }, [isAdding, guildId, tournamentId, members.length]);
 
   // Click outside to close dropdown
   useEffect(() => {
@@ -279,9 +279,9 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
     for(let i=1; i<6; i++) editMembers[i].is_captain = false;
     setTeamMembers(editMembers);
 
-    if (!guildId) return;
+    if (!guildId || !isDiscordSnowflake(guildId)) return;
     if (members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
+      botApiFetch(`/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) {

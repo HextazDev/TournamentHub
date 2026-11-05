@@ -146,13 +146,15 @@ export function tournamentNextStep(
   return "placementAndLaunch";
 }
 
-export function buildBotInviteUrl(clientId: string, guildId: string): string {
+export function buildBotInviteUrl(clientId: string, guildId?: string | null): string {
   const url = new URL("https://discord.com/oauth2/authorize");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("scope", "bot applications.commands");
   url.searchParams.set("permissions", BOT_INVITE_PERMISSIONS);
-  url.searchParams.set("guild_id", guildId);
-  url.searchParams.set("disable_guild_select", "true");
+  if (guildId && /^\d+$/.test(guildId)) {
+    url.searchParams.set("guild_id", guildId);
+    url.searchParams.set("disable_guild_select", "true");
+  }
   return url.toString();
 }
 
