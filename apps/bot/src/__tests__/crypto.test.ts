@@ -165,4 +165,47 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       expect(() => decryptSecretPayload(encrypted, "b".repeat(64))).toThrow();
     });
   });
+
+  describe("CLN-03: rotation de clés par version", () => {
+    it("déchiffre un secret de version 2 avec INTEGRATION_ENCRYPTION_KEY_V2 alors que la clé courante a changé", () => {
+      process.env.NODE_ENV = "test";
+      const keyV1 = "a".repeat(64);
+      const keyV2 = "b".repeat(64);
+      process.env.INTEGRATION_ENCRYPTION_KEY = keyV1;
+      process.env.INTEGRATION_ENCRYPTION_KEY_V2 = keyV2;
+
+      const payload = { clientSecret: "rotated-secret" };
+      const encrypted = encryptSecretPayload(payload, keyV2, 2);
+      expect(encrypted).toMatch(/^v1:2:/);
+
+      const decrypted = decryptSecretPayload<typeof payload>(encrypted);
+      expect(decrypted).toEqual(payload);
+    });
+
+    it("échoue avec un message explicite si aucune clé n'est configurée pour la version du blob", () => {
+      process.env.NODE_ENV = "production";
+      process.env.INTEGRATION_ENCRYPTION_KEY = "a".repeat(64);
+      delete process.env.INTEGRATION_ENCRYPTION_KEY_V2;
+      delete process.env.BOT_API_SECRET;
+
+      const encrypted = encryptSecretPayload({ clientSecret: "x" }, "b".repeat(64), 2);
+      expect(() => decryptSecretPayload(encrypted)).toThrowError(
+        "SEC-03: Aucune clé configurée pour la version 2 (INTEGRATION_ENCRYPTION_KEY_V2)",
+      );
+    });
+
+    it("chiffre par défaut avec la version courante et reste déchiffrable après configuration d'une V2", () => {
+      process.env.NODE_ENV = "test";
+      const keyV1 = "c".repeat(64);
+      const keyV2 = "d".repeat(64);
+      process.env.INTEGRATION_ENCRYPTION_KEY = keyV1;
+      process.env.INTEGRATION_ENCRYPTION_KEY_V2 = keyV2;
+
+      const payload = { apiKey: "still-v1" };
+      const encrypted = encryptSecretPayload(payload);
+      expect(encrypted).toMatch(/^v1:1:/);
+
+      expect(decryptSecretPayload<typeof payload>(encrypted)).toEqual(payload);
+    });
+  });
 });

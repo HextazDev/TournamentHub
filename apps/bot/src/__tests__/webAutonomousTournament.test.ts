@@ -154,6 +154,64 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(db.current?.tables.team_members).toHaveLength(2);
   });
 
+  it("PERF-02: contrôle capacité et doublons par des count() ciblés sans charger toutes les équipes", async () => {
+    db.current!.tables.tournaments![0]!.is_registration_open = true;
+    db.current!.reads.length = 0;
+
+    const regRes = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-3" },
+      body: { name: "Deep Cut", captain_ingame_name: "Shiver", captain_friend_code: "SW-1234-5678-9012" },
+    });
+
+    expect(regRes.status).toBe(201);
+    const teamReads = db.current!.reads.filter((r) => r.table === "teams");
+    expect(teamReads.length).toBeGreaterThan(0);
+    for (const read of teamReads) {
+      expect(read.counting).toBe(true);
+    }
+  });
+
+  it("PERF-02: refuse l'inscription quand la capacité MAX_FAKE_TEAMS est atteinte", async () => {
+    db.current!.tables.tournaments![0]!.is_registration_open = true;
+    const { MAX_FAKE_TEAMS } = await import("@hub/shared");
+    db.current!.tables.teams = Array.from({ length: MAX_FAKE_TEAMS }, (_, i) => ({
+      id: `team-cap-${i}`, tournament_id: T_WEB, name: `Team ${i}`, captain_discord_id: `cap-${i}`,
+    }));
+
+    const res = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-3" },
+      body: { name: "Deep Cut", captain_ingame_name: "Shiver", captain_friend_code: "SW-1234-5678-9012" },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ code: "TOURNAMENT_FULL" });
+  });
+
+  it("PERF-02: refuse un doublon de capitaine ou de nom d'équipe (insensible à la casse)", async () => {
+    db.current!.tables.tournaments![0]!.is_registration_open = true;
+
+    const dupCaptain = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-1" },
+      body: { name: "Fresh Name", captain_ingame_name: "x", captain_friend_code: "SW-1234-5678-9012" },
+    });
+    expect(dupCaptain.status).toBe(409);
+    expect(dupCaptain.body).toMatchObject({ code: "ALREADY_REGISTERED" });
+
+    const dupName = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-3" },
+      body: { name: "squids", captain_ingame_name: "x", captain_friend_code: "SW-1234-5678-9012" },
+    });
+    expect(dupName.status).toBe(409);
+    expect(dupName.body).toMatchObject({ code: "ALREADY_REGISTERED" });
+  });
+
   it("SEC-30 / ARC-01: respecte la fenêtre de check-in et refuse le check-in hors fenêtre ou désactivé", async () => {
     const future = new Date(Date.now() + 3600000).toISOString();
     const past = new Date(Date.now() - 3600000).toISOString();

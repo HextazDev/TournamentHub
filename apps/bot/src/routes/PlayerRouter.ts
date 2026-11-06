@@ -14,6 +14,11 @@ const UNIQUE_VIOLATION = "23505";
 
 export const playerRouter = Router();
 
+/**
+ * Identité de l'appelant. CLN-05 : la confiance en `x-discord-user-id` ne tient QUE parce que
+ * `authMiddleware` exige le Bearer BOT_API_SECRET sur tout `/api` et que ce header est injecté
+ * côté serveur par le proxy Next.js — jamais par le client. Ne jamais monter ces routes sans ce middleware.
+ */
 function getCallerId(req: Request): string | null {
   const fromHeader = req.headers["x-discord-user-id"];
   if (typeof fromHeader === "string" && fromHeader.length > 0) return fromHeader;
@@ -132,24 +137,23 @@ playerRouter.post("/tournaments/:tournamentId/register", async (req, res) => {
       });
     }
 
-    const { data: existingTeams } = await supabase
+    // PERF-02 / DAT-01: contrôles par count() ciblés, sans charger toutes les équipes du tournoi.
+    const { count: teamCount } = await supabase
       .from("teams")
-      .select("id, name, captain_discord_id")
+      .select("id", { count: "exact", head: true })
       .eq("tournament_id", tournamentId);
-    const list = (existingTeams ?? []) as { id: string; name: string; captain_discord_id: string }[];
-
-    // DAT-01: Contrôle de capacité max
-    if (list.length >= MAX_FAKE_TEAMS) {
+    if ((teamCount ?? 0) >= MAX_FAKE_TEAMS) {
       return res.status(400).json({ error: "La capacité maximale d'équipes pour ce tournoi est atteinte.", code: "TOURNAMENT_FULL" });
     }
 
-    if (
-      list.some(
-        (t) =>
-          t.captain_discord_id === callerId ||
-          t.name.toLowerCase() === parsed.data.name.toLowerCase(),
-      )
-    ) {
+    const escapedName = parsed.data.name.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const [captainCountRes, nameCountRes] = await Promise.all([
+      supabase.from("teams").select("id", { count: "exact", head: true })
+        .eq("tournament_id", tournamentId).eq("captain_discord_id", callerId),
+      supabase.from("teams").select("id", { count: "exact", head: true })
+        .eq("tournament_id", tournamentId).ilike("name", escapedName),
+    ]);
+    if ((captainCountRes.count ?? 0) > 0 || (nameCountRes.count ?? 0) > 0) {
       return res.status(409).json({
         error: "Vous êtes déjà inscrit comme capitaine ou ce nom d'équipe est déjà pris.",
         code: "ALREADY_REGISTERED",

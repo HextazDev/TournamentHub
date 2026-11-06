@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Request } from "express";
 import { supabase } from "../lib/supabase";
 
@@ -14,12 +15,40 @@ export interface ResolvedOrganization {
   discordConfig: Record<string, unknown>;
 }
 
+const requestTenantCache = new AsyncLocalStorage<Map<string, ResolvedOrganization>>();
+
+/**
+ * PERF-01 : ouvre un cache de résolution d'organisation borné à la requête HTTP courante
+ * (monté sur `/api` dans `index.ts`). Aucun état partagé entre requêtes : zéro staleness inter-requêtes.
+ */
+export function runWithRequestTenantCache<T>(fn: () => T): T {
+  return requestTenantCache.run(new Map(), fn);
+}
+
+/** PERF-01 : purge du cache de la requête courante après une mutation d'organisation ou d'intégration. */
+export function clearOrganizationCache(): void {
+  requestTenantCache.getStore()?.clear();
+}
+
 /**
  * Résout une organisation par son `id` UUID, son `slug` ou le `guild_id` Discord de son intégration.
  * Renvoie `null` si aucune ligne `organizations` ne correspond (ex: fixture de test purement `server_settings`).
+ * PERF-01 : à l'intérieur d'une requête HTTP, les résolutions réussies sont mémoïsées pour amortir
+ * les chaînes `verify*Guild` (une même requête API peut sinon déclencher 8-10 lectures Supabase de
+ * résolution de tenant). Les échecs (`null`) ne sont jamais mémoïsés : la base est relue à chaque tentative.
+ * Hors requête HTTP (planificateur, scripts, tests), la base est toujours relue.
  */
 export async function resolveOrganization(identifier: string): Promise<ResolvedOrganization | null> {
   if (!identifier) return null;
+  const memo = requestTenantCache.getStore();
+  if (memo?.has(identifier)) return memo.get(identifier) ?? null;
+
+  const org = await resolveOrganizationUncached(identifier);
+  if (org) memo?.set(identifier, org);
+  return org;
+}
+
+async function resolveOrganizationUncached(identifier: string): Promise<ResolvedOrganization | null> {
 
   let orgRow: Record<string, unknown> | null = null;
 

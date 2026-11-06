@@ -18,7 +18,7 @@ import {
 import { supabase } from "../lib/supabase";
 import { encryptSecretPayload } from "../utils/crypto";
 import { DomainError, sendServerError } from "../utils/serverError";
-import { resolveOrganization, verifyTournamentGuild, type ResolvedOrganization } from "../utils/tenant";
+import { clearOrganizationCache, resolveOrganization, verifyTournamentGuild, type ResolvedOrganization } from "../utils/tenant";
 import {
   checkGuildManageRights,
   invalidateGuildAccess,
@@ -39,6 +39,11 @@ const INVALID_TRANSFER = "HT004";
 
 const NATIVE_MANAGER_ROLES: ReadonlySet<string> = new Set(["ORG_OWNER", "OWNER", "ORG_ADMIN", "ADMIN"]);
 
+/**
+ * Identité de l'appelant. CLN-05 : la confiance en `x-discord-user-id` ne tient QUE parce que
+ * `authMiddleware` exige le Bearer BOT_API_SECRET sur tout `/api` et que ce header est injecté
+ * côté serveur par le proxy Next.js — jamais par le client. Ne jamais monter ces routes sans ce middleware.
+ */
 function getCallerId(req: Request): string | null {
   const fromCheck = req.adminCheck?.discordId;
   if (fromCheck) return fromCheck;
@@ -104,6 +109,7 @@ function invalidateOrganizationCaches(org: ResolvedOrganization, extraGuildId?: 
   invalidateGuildAccess(org.slug);
   if (org.discordGuildId) invalidateGuildAccess(org.discordGuildId);
   if (extraGuildId) invalidateGuildAccess(extraGuildId);
+  clearOrganizationCache();
 }
 
 const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");

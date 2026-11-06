@@ -15,6 +15,7 @@ import {
   tournamentFrom,
 } from "./middleware/auth";
 import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
+import { runWithRequestTenantCache } from "./utils/tenant";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
@@ -68,6 +69,9 @@ client.on("warn", (info) => logger.warn("[Discord] Client warning:", info));
 const app = express();
 app.use(express.json());
 app.use(cors({ origin: process.env.FRONTEND_URL || false }));
+
+// PERF-01 : cache de résolution de tenant borné à la requête, actif sur tout /api.
+app.use("/api", (req, res, next) => runWithRequestTenantCache(() => next()));
 
 // Apply authentication middleware to all API routes
 app.use("/api", authMiddleware);

@@ -18,6 +18,34 @@ function resolveKey(rawKey?: string): Buffer {
   return key;
 }
 
+/**
+ * CLN-03: Résout la clé correspondant à la version du blob (`v1:<key_version>:...`).
+ * Version 1 : INTEGRATION_ENCRYPTION_KEY ; versions suivantes : INTEGRATION_ENCRYPTION_KEY_V<n>.
+ * Une `rawKey` explicite court-circuite la résolution (tests et appels internes). En test sans clé
+ * configurée, la clé dérivée de dev s'applique à toutes les versions.
+ */
+function resolveKeyForVersion(keyVersion: number, rawKey?: string): Buffer {
+  if (rawKey) return resolveKey(rawKey);
+  if (keyVersion === 1) return resolveKey();
+
+  const versioned = process.env[`INTEGRATION_ENCRYPTION_KEY_V${keyVersion}`];
+  if (!versioned) {
+    if (!process.env.INTEGRATION_ENCRYPTION_KEY && process.env.NODE_ENV === "test") {
+      return resolveKey();
+    }
+    throw new Error(
+      `SEC-03: Aucune clé configurée pour la version ${keyVersion} (INTEGRATION_ENCRYPTION_KEY_V${keyVersion})`,
+    );
+  }
+  const key = parseIntegrationKey(versioned);
+  if (!key) {
+    throw new Error(
+      `SEC-03: INTEGRATION_ENCRYPTION_KEY_V${keyVersion} doit contenir 32 octets (64 caractères hex ou base64)`,
+    );
+  }
+  return key;
+}
+
 /** Clé maîtresse de 32 octets en hexadécimal ou en base64 (RFC 5.2) ; `null` pour tout autre format. */
 export function parseIntegrationKey(value: string): Buffer | null {
   if (/^[0-9a-fA-F]{64}$/.test(value)) return Buffer.from(value, "hex");
@@ -30,7 +58,7 @@ export function parseIntegrationKey(value: string): Buffer | null {
  * Format du blob: v1:<key_version>:<iv>:<tag>:<ciphertext>
  */
 export function encryptSecretPayload(payload: unknown, rawKey?: string, keyVersion = 1): string {
-  const key = resolveKey(rawKey);
+  const key = resolveKeyForVersion(keyVersion, rawKey);
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);
   const plaintext = JSON.stringify(payload);
@@ -54,8 +82,15 @@ export function decryptSecretPayload<T = Record<string, unknown>>(encryptedPaylo
   let tagHex: string | undefined;
   let cipherHex: string | undefined;
 
+  let keyVersion = 1;
+
   if (parts.length === 5) {
     // Format v1:<key_version>:<iv>:<tag>:<cipher>
+    const parsedVersion = Number.parseInt(parts[1] ?? "", 10);
+    if (!Number.isInteger(parsedVersion) || parsedVersion < 1) {
+      throw new Error("Version de clé de chiffrement invalide");
+    }
+    keyVersion = parsedVersion;
     [, , ivHex, tagHex, cipherHex] = parts;
   } else if (parts.length === 4) {
     // Format legacy v1:<iv>:<tag>:<cipher>
@@ -67,7 +102,7 @@ export function decryptSecretPayload<T = Record<string, unknown>>(encryptedPaylo
   if (!ivHex || !tagHex || !cipherHex) {
     throw new Error("Composants du secret chiffré manquants");
   }
-  const key = resolveKey(rawKey);
+  const key = resolveKeyForVersion(keyVersion, rawKey);
   const decipher = createDecipheriv(ALGORITHM, key, Buffer.from(ivHex, "hex"));
   decipher.setAuthTag(Buffer.from(tagHex, "hex"));
   const decrypted = Buffer.concat([decipher.update(Buffer.from(cipherHex, "hex")), decipher.final()]);

@@ -138,4 +138,31 @@ describe("INT-01: IntegrationBus asynchrone et fail-safe", () => {
     const row = db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord");
     expect(row).toMatchObject({ status: "CONNECTED", last_error: null });
   });
+
+  it("CLN-04: un succès tardif après timeout est réconcilié et repasse l'intégration en CONNECTED", async () => {
+    let resolveWork: () => void = () => undefined;
+    IntegrationBus.registerPlugin({
+      provider: "DISCORD",
+      onRegistrationOpened: () =>
+        new Promise<void>((resolve) => {
+          resolveWork = resolve;
+        }),
+    });
+
+    const warnings = await IntegrationBus.emit(
+      "onRegistrationOpened",
+      { organizationId: ORG_ID, tournamentId: "t1" },
+      { timeoutMs: 10 },
+    );
+    expect(warnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_TIMEOUT" }]);
+    expect(db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord")?.status).toBe("DEGRADED");
+
+    resolveWork();
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(db.current?.tables.organization_integrations?.find((r) => r.id === "int-discord")).toMatchObject({
+      status: "CONNECTED",
+      last_error: null,
+    });
+  });
 });

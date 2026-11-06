@@ -1,3 +1,4 @@
+import type { Client } from "discord.js";
 import type { IntegrationProvider, IntegrationWarning, OrganizationIntegration } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
@@ -10,7 +11,7 @@ export interface IntegrationEventContext {
   teamId?: string;
   guildId?: string | null;
   integration: OrganizationIntegration;
-  discordClient?: unknown;
+  discordClient?: Client;
   data?: Record<string, unknown>;
 }
 
@@ -48,7 +49,7 @@ export interface EmitIntegrationPayload {
   matchId?: string;
   teamId?: string;
   guildId?: string | null;
-  discordClient?: unknown;
+  discordClient?: Client;
   data?: Record<string, unknown>;
 }
 
@@ -62,8 +63,16 @@ const SLOW_EVENTS: ReadonlySet<IntegrationEventName> = new Set(["onTournamentLau
 
 class IntegrationTimeoutError extends Error {}
 
-/** Le handler n'est pas annulable : il continue en arrière-plan et sa fin tardive est seulement journalisée. */
-async function runWithTimeout(work: Promise<void>, timeoutMs: number, label: string): Promise<void> {
+/**
+ * Le handler n'est pas annulable : il continue en arrière-plan. CLN-04 : s'il finit par réussir
+ * après le timeout, `onLateSuccess` réconcile le statut (DEGRADED ➜ CONNECTED) ; un échec tardif est journalisé.
+ */
+async function runWithTimeout(
+  work: Promise<void>,
+  timeoutMs: number,
+  label: string,
+  onLateSuccess?: () => Promise<void> | void,
+): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new IntegrationTimeoutError(`${label} : délai de ${timeoutMs} ms dépassé`)), timeoutMs);
@@ -72,7 +81,9 @@ async function runWithTimeout(work: Promise<void>, timeoutMs: number, label: str
     await Promise.race([work, timeout]);
   } catch (err) {
     if (err instanceof IntegrationTimeoutError) {
-      work.catch((late: unknown) => logger.error(`[IntegrationBus] Échec tardif de ${label}:`, late));
+      work
+        .then(() => onLateSuccess?.())
+        .catch((late: unknown) => logger.error(`[IntegrationBus] Échec tardif de ${label}:`, late));
     }
     throw err;
   } finally {
@@ -147,7 +158,9 @@ export class IntegrationBus {
     };
 
     try {
-      await runWithTimeout(handler.call(plugin, ctx), timeoutMs, `${provider}.${event}`);
+      await runWithTimeout(handler.call(plugin, ctx), timeoutMs, `${provider}.${event}`, () =>
+        this.recordHealth(integration.id, { status: "CONNECTED", last_error: null, last_sync_at: new Date().toISOString() }),
+      );
       if (integration.status === "DEGRADED") {
         await this.recordHealth(integration.id, { status: "CONNECTED", last_error: null, last_sync_at: new Date().toISOString() });
       }

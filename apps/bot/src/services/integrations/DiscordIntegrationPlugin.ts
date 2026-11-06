@@ -8,7 +8,7 @@ import { supabase } from "../../lib/supabase";
 function requireDiscord(ctx: IntegrationEventContext): { client: Client; guildId: string } {
   const guildId = ctx.guildId ?? ctx.integration.external_id;
   if (!ctx.discordClient || !guildId) throw new Error("Intégration Discord active sans client ou sans serveur lié");
-  return { client: ctx.discordClient as Client, guildId };
+  return { client: ctx.discordClient, guildId };
 }
 
 /**

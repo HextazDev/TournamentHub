@@ -31,6 +31,9 @@ export function readBotEnvironment(env: NodeJS.ProcessEnv) {
   }
   const encryptionKey = result.data.INTEGRATION_ENCRYPTION_KEY;
   if (encryptionKey && !parseIntegrationKey(encryptionKey)) throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY");
+  for (const name of Object.keys(env).filter((key) => /^INTEGRATION_ENCRYPTION_KEY_V\d+$/.test(key))) {
+    if (!parseIntegrationKey(env[name] ?? "")) throw new Error(`Invalid bot environment: ${name}`);
+  }
   if (production) {
     if (!encryptionKey) throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY");
     if (result.data.BOT_API_SECRET.length < 32) throw new Error("Invalid bot environment: BOT_API_SECRET");

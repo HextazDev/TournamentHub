@@ -750,7 +750,7 @@ export const en: typeof fr = {
     createTitle: "New Organization",
     createSubtitle: "Create a standalone organization on the website, with or without a Discord server.",
     nameLabel: "Organization Name",
-    namePlaceholder: "Splatoon France",
+    namePlaceholder: "e.g. Splatoon Europe",
     slugLabel: "URL Identifier (slug)",
     slugPlaceholder: "splat-fr",
     createSubmit: "Create Organization",
