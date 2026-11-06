@@ -30,7 +30,7 @@ export default function Home() {
           </Link>
           {!session ? (
             <button
-              onClick={() => signIn("discord", { callbackUrl: "/servers" })}
+              onClick={() => signIn("discord", { callbackUrl: "/organizations" })}
               className="w-full sm:w-auto flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold py-4 px-8 rounded-xl shadow-lg transition-transform hover:scale-105"
             >
               <LogIn size={24} />
@@ -38,7 +38,7 @@ export default function Home() {
             </button>
           ) : (
             <Link
-              href="/servers"
+              href="/organizations"
               className="w-full sm:w-auto flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold py-4 px-8 rounded-xl shadow-lg transition-transform hover:scale-105"
             >
               {t("home.accessServers")}

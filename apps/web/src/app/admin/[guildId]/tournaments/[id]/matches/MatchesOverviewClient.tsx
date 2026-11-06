@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { formatRoundName } from "@hub/shared";
 import { Trophy, Clock, CheckCircle2, ShieldAlert } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 
@@ -33,7 +34,7 @@ export function MatchesOverviewClient({ guildId, tournamentId, allMatches }: { g
             <div className="p-2 bg-indigo-500/10 rounded-lg">
               <Trophy className="w-5 h-5 text-indigo-400" />
             </div>
-            <h3 className="font-semibold text-slate-300">{t("admin.totalTournaments")}</h3>
+            <h3 className="font-semibold text-slate-300">{t("adminMatches.totalMatches")}</h3>
           </div>
           <p className="text-3xl font-bold text-white">{stats.total}</p>
         </div>
@@ -86,7 +87,7 @@ export function MatchesOverviewClient({ guildId, tournamentId, allMatches }: { g
               {allMatches.map((match) => (
                 <tr key={match.id} className="hover:bg-slate-800/30 transition-colors">
                   <td className="px-4 py-3">{match.phase?.name || "-"}</td>
-                  <td className="px-4 py-3">R{match.round_number} - M{match.match_number}</td>
+                  <td className="px-4 py-3">{formatRoundName(match.round_number, match.phase?.format)} - M{match.match_number}</td>
                   <td className="px-4 py-3 text-white font-medium">{match.team1?.name || t("common.tbd")}</td>
                   <td className="px-4 py-3 text-center text-slate-400 font-mono">
                     {match.status === "PENDING" ? "-" : `${match.team1_score ?? 0} - ${match.team2_score ?? 0}`}

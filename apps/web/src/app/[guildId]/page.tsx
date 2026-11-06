@@ -13,15 +13,19 @@ export default async function GuildHubPage({ params }: { params: Promise<{ guild
   const locale = await getServerLocale();
 
   const [viewer, profile, access] = await Promise.all([getViewer(), getServerProfile(guildId), getGuildAdminAccess(guildId)]);
-  const isMember = memberGuildIds(viewer).has(guildId);
+  const isMember = memberGuildIds(viewer).has(guildId) || access.allowed;
 
-  // SEC-10 : les tournois privés ne sont lus que pour les membres du serveur.
+  // SEC-10 : les tournois privés ne sont lus que pour les membres du serveur / organisation.
   let query = supabaseAdmin
     .from("tournaments")
     .select("*")
-    .eq("guild_id", guildId)
     .neq("status", "ARCHIVED")
     .order("created_at", { ascending: false });
+  if (profile?.organization_id) {
+    query = query.or(`organization_id.eq.${profile.organization_id},guild_id.eq.${guildId}`);
+  } else {
+    query = query.eq("guild_id", guildId);
+  }
   if (!isMember) query = query.eq("is_public", true);
   const { data, error } = await query;
   if (error) throw new Error(`tournaments read failed: ${error.message}`);

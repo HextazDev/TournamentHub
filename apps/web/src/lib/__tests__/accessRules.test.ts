@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildBotInviteUrl,
   canManageFromOAuth,
-  canViewTournament,
+  canViewPrivateTournament,
   discordListQuery,
   managedTournamentIds,
   panelCapabilities,
@@ -12,21 +12,15 @@ import {
   tournamentNextStep,
 } from "../accessRules";
 
-describe("canViewTournament", () => {
-  const members = new Set(["g1"]);
+describe("canViewPrivateTournament (SEC-10)", () => {
+  const none = { isOrganizationMember: false, isTournamentStaff: false, isParticipant: false, hasValidInvite: false, isActiveDiscordMember: false };
 
-  it("SEC-10: un tournoi public est visible de tous, même sans connexion", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g2", new Set())).toBe(true);
+  it("refuse par défaut", () => {
+    expect(canViewPrivateTournament(none)).toBe(false);
   });
 
-  it("SEC-10: un tournoi privé n'est visible que des membres de son serveur", () => {
-    expect(canViewTournament({ guild_id: "g1", is_public: false }, "g1", members)).toBe(true);
-    expect(canViewTournament({ guild_id: "g2", is_public: false }, "g2", members)).toBe(false);
-    expect(canViewTournament({ guild_id: "g2", is_public: null }, "g2", members)).toBe(false);
-  });
-
-  it("SEC-10: une URL dont le serveur ne correspond pas au tournoi est refusée (même public)", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g1", members)).toBe(false);
+  it.each(Object.keys(none))("accepte %s à lui seul", (fact) => {
+    expect(canViewPrivateTournament({ ...none, [fact]: true })).toBe(true);
   });
 });
 
@@ -160,6 +154,13 @@ describe("tournamentNextStep", () => {
     expect(tournamentNextStep(disabled, ctx)).toBe("waitParticipants");
     expect(tournamentNextStep(disabled, { ...ctx, teamsCount: 2 })).toBe("placementAndLaunch");
   });
+
+  it("INT-02: si discordEnabled === false, saute serverSetup et registrationChannel pour un tournoi Web autonome", () => {
+    const webTournament = { ...base, discord_registration_channel_id: null };
+    const ctx = { phasesCount: 0, teamsCount: 0, serverSetupComplete: false, discordEnabled: false };
+    expect(tournamentNextStep(webTournament, ctx)).toBe("structure");
+    expect(tournamentNextStep(webTournament, { ...ctx, phasesCount: 1 })).toBe("openRegistrations");
+  });
 });
 
 describe("buildBotInviteUrl", () => {
@@ -170,6 +171,12 @@ describe("buildBotInviteUrl", () => {
     expect(url.searchParams.get("guild_id")).toBe("456");
     expect(url.searchParams.get("disable_guild_select")).toBe("true");
     expect(BigInt(url.searchParams.get("permissions") ?? "0") & BigInt(8)).toBe(BigInt(0));
+  });
+
+  it("ignore le guild_id s'il s'agit d'un slug d'organisation non-numérique", () => {
+    const url = new URL(buildBotInviteUrl("123", "inklings-arena"));
+    expect(url.searchParams.get("guild_id")).toBeNull();
+    expect(url.searchParams.get("disable_guild_select")).toBeNull();
   });
 });
 

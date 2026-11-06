@@ -33,19 +33,101 @@ async function loadTournaments(guildIds: string[]) {
 }
 
 async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, ServerSettings>> {
-  const ids = [...new Set(tournaments.map((t) => t.guild_id))];
-  if (ids.length === 0) return new Map();
-  const { data, error } = await supabaseAdmin.from("server_settings").select("*").in("guild_id", ids);
-  if (error) throw new Error(`server profiles read failed: ${error.message}`);
-  return new Map(((data ?? []) as ServerSettings[]).map((p) => [p.guild_id, p]));
+  const guildIds = [...new Set(tournaments.map((t) => t.guild_id).filter((id): id is string => Boolean(id)))];
+  const orgIds = [...new Set(tournaments.map((t) => t.organization_id).filter((id): id is string => Boolean(id)))];
+  const map = new Map<string, ServerSettings>();
+
+  if (guildIds.length === 0 && orgIds.length === 0) return map;
+
+  const [orgsByIdRes, discordIntsByExtRes] = await Promise.all([
+    orgIds.length > 0
+      ? supabaseAdmin.from("organizations").select("*").in("id", orgIds)
+      : Promise.resolve({ data: [], error: null }),
+    guildIds.length > 0
+      ? supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("external_id", guildIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
+  const allOrgIds = new Set<string>(orgIds);
+  for (const intRow of (discordIntsByExtRes.data ?? []) as Record<string, unknown>[]) {
+    if (typeof intRow.organization_id === "string") {
+      allOrgIds.add(intRow.organization_id);
+    }
+  }
+
+  const missingOrgIds = [...allOrgIds].filter((id) => !(orgsByIdRes.data ?? []).some((o: Record<string, unknown>) => o.id === id));
+  const extraOrgsRes =
+    missingOrgIds.length > 0
+      ? await supabaseAdmin.from("organizations").select("*").in("id", missingOrgIds)
+      : { data: [], error: null };
+
+  const allOrgs = [...((orgsByIdRes.data ?? []) as Record<string, unknown>[]), ...((extraOrgsRes.data ?? []) as Record<string, unknown>[])];
+  const allOrgIntegrationsRes =
+    allOrgs.length > 0
+      ? await supabaseAdmin
+          .from("organization_integrations")
+          .select("*")
+          .eq("provider", "DISCORD")
+          .in(
+            "organization_id",
+            allOrgs.map((o) => String(o.id)),
+          )
+      : { data: [], error: null };
+
+  const discordByOrgId = new Map<string, Record<string, unknown>>();
+  for (const intRow of (allOrgIntegrationsRes.data ?? []) as Record<string, unknown>[]) {
+    if (typeof intRow.organization_id === "string") {
+      discordByOrgId.set(intRow.organization_id, intRow);
+    }
+  }
+
+  for (const orgRow of allOrgs) {
+    if (typeof orgRow.id !== "string" || typeof orgRow.slug !== "string") continue;
+    const discordInt = discordByOrgId.get(orgRow.id);
+    const cfg = (discordInt?.config ?? {}) as Record<string, unknown>;
+    const discordEnabled = Boolean(discordInt?.enabled);
+    const externalGuildId = typeof discordInt?.external_id === "string" ? discordInt.external_id : orgRow.slug;
+
+    const profile: ServerSettings = {
+      guild_id: externalGuildId,
+      guild_name: typeof orgRow.name === "string" ? orgRow.name : orgRow.slug,
+      guild_icon: typeof orgRow.icon_url === "string" ? orgRow.icon_url : null,
+      bot_present: discordEnabled && Boolean(cfg.bot_present ?? true),
+      to_role_id: typeof cfg.to_role_id === "string" ? cfg.to_role_id : null,
+      captain_role_id: typeof cfg.captain_role_id === "string" ? cfg.captain_role_id : null,
+      registration_channel_id: typeof cfg.registration_channel_id === "string" ? cfg.registration_channel_id : null,
+      announcement_channel_id: typeof cfg.announcement_channel_id === "string" ? cfg.announcement_channel_id : null,
+      checkin_channel_id: typeof cfg.checkin_channel_id === "string" ? cfg.checkin_channel_id : null,
+      language: orgRow.language === "en" ? "en" : "fr",
+      invite_url:
+        typeof orgRow.invite_url === "string"
+          ? orgRow.invite_url
+          : typeof orgRow.public_contact_url === "string"
+            ? orgRow.public_contact_url
+            : null,
+      updated_at: typeof orgRow.updated_at === "string" ? orgRow.updated_at : new Date().toISOString(),
+    };
+
+    map.set(orgRow.id, profile);
+    map.set(orgRow.slug, profile);
+    if (typeof discordInt?.external_id === "string") {
+      map.set(discordInt.external_id, profile);
+    }
+  }
+
+  return map;
 }
 
 function Grid({ list, profiles, locale }: { list: Tournament[]; profiles: Map<string, ServerSettings>; locale: Locale }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {list.map((tourn) => (
-        <TournamentCard key={tourn.id} tournament={tourn} profile={profiles.get(tourn.guild_id) ?? null} locale={locale} showOrganizer />
-      ))}
+      {list.map((tourn) => {
+        const profile =
+          (tourn.guild_id ? profiles.get(tourn.guild_id) : undefined) ??
+          (tourn.organization_id ? profiles.get(tourn.organization_id) : undefined) ??
+          null;
+        return <TournamentCard key={tourn.id} tournament={tourn} profile={profile} locale={locale} showOrganizer />;
+      })}
     </div>
   );
 }

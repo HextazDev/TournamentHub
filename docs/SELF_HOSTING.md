@@ -56,6 +56,7 @@ Edit the private files; Git and the Docker build context exclude `*.env`. Never 
 | `SUPABASE_SERVICE_ROLE_KEY` | Private key from that same Supabase instance; required |
 | `BOT_API_SECRET` | Random shared server-to-server secret, at least 32 characters in production; required |
 | `FRONTEND_URL` | Optional exact web origin for CORS; absent means no browser CORS access |
+| `INTEGRATION_ENCRYPTION_KEY` | AES-256-GCM master key for integration secrets, 32 bytes in hex or base64 (`openssl rand -hex 32`); required in production. Back it up: stored secrets cannot be decrypted without it |
 | `WEBHOOK_SECRET` | Optional additional webhook credential; defaults to `BOT_API_SECRET` |
 | `DISCORD_GUILD_ID` | Test guild for explicit guild command registration |
 | `DISCORD_COMMAND_SCOPE` | `global` (default) or `guild`, only used by the container command registration entrypoint |

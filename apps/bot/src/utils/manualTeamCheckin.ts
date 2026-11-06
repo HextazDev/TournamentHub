@@ -20,3 +20,41 @@ export function defaultCheckedInOnManualAdd(tournament: ManualAddTournament, now
   const checkinStart = new Date(tournament.checkin_start_at).getTime();
   return !Number.isNaN(checkinStart) && now.getTime() >= checkinStart;
 }
+
+export type CheckinWindowResult =
+  | { open: true }
+  | { open: false; reason: "DISABLED" | "NOT_REGISTRATION" | "NOT_STARTED" | "ENDED" };
+
+/**
+ * ARC-01: Règle unifiée d'ouverture de la fenêtre de check-in (Discord & Web).
+ */
+export function isCheckinWindowOpen(
+  tournament: {
+    status: Tournament["status"] | string;
+    checkin_mode?: Tournament["checkin_mode"] | null;
+    checkin_start_at?: string | null;
+    checkin_end_at?: string | null;
+  },
+  now: Date = new Date(),
+): CheckinWindowResult {
+  if (tournament.checkin_mode === "DISABLED") {
+    return { open: false, reason: "DISABLED" };
+  }
+  if (tournament.status !== "REGISTRATION") {
+    return { open: false, reason: "NOT_REGISTRATION" };
+  }
+  const nowMs = now.getTime();
+  if (tournament.checkin_start_at) {
+    const startMs = new Date(tournament.checkin_start_at).getTime();
+    if (!Number.isNaN(startMs) && nowMs < startMs) {
+      return { open: false, reason: "NOT_STARTED" };
+    }
+  }
+  if (tournament.checkin_end_at) {
+    const endMs = new Date(tournament.checkin_end_at).getTime();
+    if (!Number.isNaN(endMs) && nowMs > endMs) {
+      return { open: false, reason: "ENDED" };
+    }
+  }
+  return { open: true };
+}

@@ -47,7 +47,9 @@ const T_B = "tournament-b";
 function seed(tournaments: Record<string, unknown>[]) {
   db.failTournaments = false;
   db.current = new FakeSupabase({
-    server_settings: [{ guild_id: GUILD, to_role_id: "server-to" }],
+    organization_integrations: [
+      { provider: "DISCORD", external_id: GUILD, config: { to_role_id: "server-to" } },
+    ],
     tournaments,
     phases: [
       { id: "phase-a", tournament_id: T_A },
@@ -297,5 +299,99 @@ describe("getAuthenticatedGuildId : fermé par défaut pour le niveau TOURNAMENT
     const empty: GuildAccess = { level: "TOURNAMENT", tournamentIds: [] };
     const q = req<{ id: string }>({ adminCheck: { discordId: "u1", guildId: GUILD, access: empty }, params: { id: T_A } });
     expect((await run(requireTournamentScope(tournamentFrom.param("id")), q)).statusCode).toBe(403);
+  });
+});
+
+describe("RFC 0001 / SEC-26 : accès natifs Web (organization_members / tournament_staff) et révocation d'intégration", () => {
+  const ORG_ID = "00000000-0000-0000-0000-000000000011";
+  const ORG_SLUG = "splatoon-fr";
+
+  it("un ORG_OWNER natif accède à l'organisation (par UUID ou slug) même sans bot Discord sur un serveur", async () => {
+    db.current = new FakeSupabase({
+      organizations: [{ id: ORG_ID, slug: ORG_SLUG, name: "Splatoon FR", language: "fr" }],
+      organization_members: [{ organization_id: ORG_ID, user_id: "u-owner", role: "ORG_OWNER" }],
+      organization_integrations: [],
+      tournaments: [],
+      tournament_staff: [],
+    });
+
+    const noBotClient = {
+      guilds: { fetch: () => Promise.reject(new Error("Unknown Guild")) },
+    };
+
+    const bySlug = await resolveMemberAccess(noBotClient, ORG_SLUG, "u-owner");
+    expect(bySlug).toEqual({
+      allowed: true,
+      access: { level: "SERVER", reason: "SERVER_OWNER", nativeRole: "ORG_OWNER", source: "NATIVE" },
+    });
+
+    clearMemberAccessCache();
+    const byId = await resolveMemberAccess(noBotClient, ORG_ID, "u-owner");
+    expect(byId).toEqual({
+      allowed: true,
+      access: { level: "SERVER", reason: "SERVER_OWNER", nativeRole: "ORG_OWNER", source: "NATIVE" },
+    });
+  });
+
+  it("un membre natif de tournament_staff (TOURNAMENT_TO) obtient un accès borné à ce tournoi sans Discord", async () => {
+    db.current = new FakeSupabase({
+      organizations: [{ id: ORG_ID, slug: ORG_SLUG, name: "Splatoon FR", language: "fr" }],
+      organization_members: [],
+      organization_integrations: [],
+      tournaments: [{ id: T_A, organization_id: ORG_ID, status: "ACTIVE", discord_to_role_id: null }],
+      tournament_staff: [{ tournament_id: T_A, user_id: "u-staff", role: "TOURNAMENT_TO" }],
+    });
+
+    const noBotClient = {
+      guilds: { fetch: () => Promise.reject(new Error("Unknown Guild")) },
+    };
+
+    const decision = await resolveMemberAccess(noBotClient, ORG_SLUG, "u-staff");
+    expect(decision).toEqual({
+      allowed: true,
+      access: {
+        level: "TOURNAMENT",
+        tournamentIds: [T_A],
+        tournamentRoles: { [T_A]: "TOURNAMENT_TO" },
+        source: "NATIVE",
+      },
+    });
+  });
+
+  it("SEC-26: désactiver l'intégration Discord (enabled = false) révoque immédiatement les TO issus de Discord mais préserve ORG_OWNER", async () => {
+    const integrations = [
+      {
+        id: "int-1",
+        organization_id: ORG_ID,
+        provider: "DISCORD",
+        external_id: GUILD,
+        enabled: true,
+        config: { to_role_id: "server-to" },
+      },
+    ];
+    db.current = new FakeSupabase({
+      organizations: [{ id: ORG_ID, slug: ORG_SLUG, name: "Splatoon FR", language: "fr" }],
+      organization_members: [{ organization_id: ORG_ID, user_id: "u-owner", role: "ORG_OWNER" }],
+      organization_integrations: integrations,
+      tournaments: [{ id: T_A, organization_id: ORG_ID, guild_id: GUILD, status: "ACTIVE", discord_to_role_id: "role-a" }],
+      tournament_staff: [],
+    });
+
+    // Tant que Discord est activé, le TO Discord (server-to) a accès
+    const beforeDisable = await resolveMemberAccess(discord({ roles: ["server-to"] }), ORG_SLUG, "u-discord-to");
+    expect(beforeDisable.allowed).toBe(true);
+
+    // Désactivation de l'intégration Discord + invalidation
+    integrations[0]!.enabled = false;
+    invalidateGuildAccess(ORG_SLUG);
+    invalidateGuildAccess(ORG_ID);
+    invalidateGuildAccess(GUILD);
+
+    const afterDisable = await resolveMemberAccess(discord({ roles: ["server-to"] }), ORG_SLUG, "u-discord-to");
+    expect(afterDisable).toEqual({ allowed: false, code: "NO_RIGHTS" });
+
+    // Le propriétaire natif conserve son accès complet
+    const ownerDecision = await resolveMemberAccess(discord(null), ORG_SLUG, "u-owner");
+    expect(ownerDecision.allowed).toBe(true);
   });
 });

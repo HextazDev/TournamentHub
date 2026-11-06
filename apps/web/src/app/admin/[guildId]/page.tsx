@@ -22,23 +22,27 @@ export default async function AdminDashboard({ params }: { params: Promise<{ gui
   // SEC-21 : un TO de tournoi ne compte que ses tournois et ne voit pas la configuration du serveur.
   const scope = managedTournamentIds(access.access);
 
-  // 1. Requête des tournois du serveur (filtrés par scope si portée restreinte)
+  const settings = await getServerProfile(guildId);
+
+  // 1. Requête des tournois du serveur / organisation (filtrés par scope si portée restreinte)
   let tournamentsQuery = supabaseAdmin
     .from("tournaments")
     .select(
       "id, name, status, created_at, start_at, is_registration_open, discord_category_id, phases(id, name, phase_order, format, bracket_size)",
     )
-    .eq("guild_id", guildId)
     .order("created_at", { ascending: false });
+
+  if (settings?.organization_id) {
+    tournamentsQuery = tournamentsQuery.or(`organization_id.eq.${settings.organization_id},guild_id.eq.${guildId}`);
+  } else {
+    tournamentsQuery = tournamentsQuery.eq("guild_id", guildId);
+  }
 
   if (scope) {
     tournamentsQuery = tournamentsQuery.in("id", [...scope]);
   }
 
-  const [tournamentsRes, settings] = await Promise.all([
-    tournamentsQuery,
-    getServerProfile(guildId),
-  ]);
+  const tournamentsRes = await tournamentsQuery;
 
   if (tournamentsRes.error) {
     throw new Error(`tournaments query failed: ${tournamentsRes.error.message}`);
@@ -144,8 +148,8 @@ export default async function AdminDashboard({ params }: { params: Promise<{ gui
         canConfigureServer={canConfigureServer}
       />
 
-      {/* Widget de Santé Discord (uniquement niveau SERVER, SEC-21) */}
-      {access.access.level === "SERVER" && (
+      {/* Widget de Santé Discord (uniquement niveau SERVER et si Discord est activé, SEC-21) */}
+      {access.access.level === "SERVER" && Boolean(settings?.discord_enabled) && (
         <DiscordHealthWidget
           guildId={guildId}
           settings={settings}

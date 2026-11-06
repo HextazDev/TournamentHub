@@ -9,8 +9,24 @@ vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+vi.mock("../utils/tenant", () => ({
+  resolveOrganization: vi.fn(),
+}));
 
 import { ArchiveService } from "../services/ArchiveService";
+import { resolveOrganization } from "../utils/tenant";
+
+function mockOrg(config: { captain_role_id?: string | null; checkin_channel_id?: string | null } = {}) {
+  vi.mocked(resolveOrganization).mockResolvedValue({
+    id: "org-1",
+    slug: "org-1",
+    name: "Org 1",
+    language: "fr",
+    discordGuildId: "guild-123",
+    discordEnabled: true,
+    discordConfig: config,
+  });
+}
 
 describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
   beforeEach(() => {
@@ -31,6 +47,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     const GUILD = "guild-1";
     const CAPTAIN_ROLE_ID = "role-captain";
 
+    mockOrg({ captain_role_id: CAPTAIN_ROLE_ID, checkin_channel_id: null });
     // Supabase simulation:
     // non-archived tournaments: [ { id: "t-active", discord_captain_role_id: CAPTAIN_ROLE_ID } ]
     // active teams: [ { captain_discord_id: "user-active-captain" } ]
@@ -53,15 +70,6 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
             in: () => Promise.resolve({
               data: [{ captain_discord_id: "user-active-captain" }],
               error: null,
-            }),
-          }),
-        };
-      }
-      if (table === "server_settings") {
-        return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: { captain_role_id: CAPTAIN_ROLE_ID, checkin_channel_id: null }, error: null }),
             }),
           }),
         };
@@ -118,6 +126,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     const GUILD = "guild-1";
     const SHARED_CHANNEL_ID = "chan-shared";
 
+    mockOrg({ captain_role_id: null, checkin_channel_id: SHARED_CHANNEL_ID });
     db.from.mockImplementation((table: string) => {
       if (table === "tournaments") {
         return {
@@ -135,15 +144,6 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
         return {
           select: () => ({
             in: () => Promise.resolve({ data: [], error: null }),
-          }),
-        };
-      }
-      if (table === "server_settings") {
-        return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: { captain_role_id: null, checkin_channel_id: SHARED_CHANNEL_ID }, error: null }),
-            }),
           }),
         };
       }
@@ -185,6 +185,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     const ARCHIVED_CHANNEL_ID = "chan-archived";
     const ACTIVE_CHANNEL_ID = "chan-active";
 
+    mockOrg({ captain_role_id: null, checkin_channel_id: null });
     db.from.mockImplementation((table: string) => {
       if (table === "tournaments") {
         return {
@@ -202,15 +203,6 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
         return {
           select: () => ({
             in: () => Promise.resolve({ data: [], error: null }),
-          }),
-        };
-      }
-      if (table === "server_settings") {
-        return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: null, error: null }),
-            }),
           }),
         };
       }
@@ -287,6 +279,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
   });
 
   it("fail-closed : interrompt le nettoyage si la requête des équipes actives échoue", async () => {
+    mockOrg();
     db.from.mockImplementation((table: string) => {
       if (table === "tournaments") {
         return {
@@ -304,15 +297,6 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
         return {
           select: () => ({
             in: () => Promise.resolve({ data: null, error: new Error("DB teams error") }),
-          }),
-        };
-      }
-      if (table === "server_settings") {
-        return {
-          select: () => ({
-            eq: () => ({
-              single: () => Promise.resolve({ data: null, error: null }),
-            }),
           }),
         };
       }

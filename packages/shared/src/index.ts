@@ -20,9 +20,100 @@ export type CheckinMode = z.infer<typeof CheckinModeSchema>;
 // Plafond de génération d'équipes fictives (back-office de test) : borne l'UI et l'API bot.
 export const MAX_FAKE_TEAMS = 64;
 
+// SEC-27 / RFC 0001 : plafond d'organisations possédées (ORG_OWNER) par un même utilisateur.
+export const MAX_OWNED_ORGANIZATIONS = 5;
+
+/** Segments de routes du site : un slug identique rendrait la page publique de l'organisation inaccessible (CLN-01). */
+export const RESERVED_ORGANIZATION_SLUGS: ReadonlySet<string> = new Set([
+  "admin", "api", "developers", "invite", "organizations", "overlay", "servers", "settings", "tournaments",
+]);
+
+const UUID_SLUG_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export const OrganizationSlugSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .regex(/^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/, "Slug d'organisation invalide (3 à 48 caractères alphanumériques ou tirets)")
+  .refine((slug) => !/^\d+$/.test(slug), "Le slug d'organisation ne peut pas être composé uniquement de chiffres")
+  .refine((slug) => !UUID_SLUG_REGEX.test(slug), "Le slug d'organisation ne peut pas être un UUID")
+  .refine((slug) => !RESERVED_ORGANIZATION_SLUGS.has(slug), "Cet identifiant est réservé par le site");
+
+export const OrganizationRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO"]);
+export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
+
+export const OrganizationMemberRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO", "CASTER", "STATISTICIAN", "MEMBER"]);
+export type OrganizationMemberRole = z.infer<typeof OrganizationMemberRoleSchema>;
+
+export const TournamentStaffRoleSchema = z.enum(["TOURNAMENT_TO", "CASTER", "STATISTICIAN"]);
+export type TournamentStaffRole = z.infer<typeof TournamentStaffRoleSchema>;
+
+export const IntegrationProviderSchema = z.enum(["DISCORD", "TWITCH", "AI"]);
+export type IntegrationProvider = z.infer<typeof IntegrationProviderSchema>;
+
+export const IntegrationStatusSchema = z.enum(["CONNECTED", "DEGRADED", "REVOKED", "DISCONNECTED"]);
+export type IntegrationStatus = z.infer<typeof IntegrationStatusSchema>;
+
+export const AccessSourceSchema = z.enum(["NATIVE", "DISCORD", "TWITCH", "AI"]);
+export type AccessSource = z.infer<typeof AccessSourceSchema>;
+
+export interface Organization {
+  id: string;
+  slug: string;
+  name: string;
+  logo_url?: string | null;
+  icon_url?: string | null;
+  language: Locale;
+  invite_url?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationMember {
+  organization_id: string;
+  user_id: string;
+  role: OrganizationMemberRole;
+  created_at: string;
+}
+
+export interface TournamentStaff {
+  tournament_id: string;
+  user_id: string;
+  role: TournamentStaffRole;
+  created_at: string;
+}
+
+export interface OrganizationIntegration {
+  id: string;
+  organization_id: string;
+  provider: IntegrationProvider;
+  type?: IntegrationProvider;
+  external_id: string | null;
+  enabled: boolean;
+  config: Record<string, unknown>;
+  status: IntegrationStatus;
+  last_error?: string | null;
+  last_sync_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface OrganizationInvite {
+  id: string;
+  organization_id: string;
+  role: "ORG_ADMIN" | "ORG_TO" | "CASTER" | "STATISTICIAN" | "MEMBER" | "TOURNAMENT_TO";
+  tournament_id?: string | null;
+  created_by: string;
+  expires_at: string;
+  used_by?: string | null;
+  used_at?: string | null;
+  created_at: string;
+}
+
 // Common Domain Interfaces
 export interface Tournament {
   id: string;
+  organization_id?: string;
   guild_id: string;
   name: string;
   description?: string | null;
@@ -44,6 +135,7 @@ export interface Tournament {
   discord_checkin_channel_id?: string | null;
   discord_captain_role_id?: string | null;
   discord_to_role_id?: string | null;
+  discord_config?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }
@@ -91,6 +183,8 @@ export interface Match {
 }
 
 // Invitation Discord publique configurée par les TO (doublée par la contrainte SQL server_settings_invite_url_check).
+export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+
 export const DiscordInviteUrlSchema = z
   .string()
   .trim()
@@ -150,14 +244,60 @@ export type GuildDirectoryReason = z.infer<typeof GuildDirectoryReasonSchema>;
  * - TOURNAMENT : rôle TO propre à certains tournois (tournaments.discord_to_role_id), limité à ces tournois.
  */
 export type GuildAccess =
-  | { level: "SERVER"; reason: GuildAdminReason }
-  | { level: "TOURNAMENT"; tournamentIds: readonly string[] };
+  | { level: "SERVER"; reason: GuildAdminReason; nativeRole?: OrganizationRole; source?: AccessSource }
+  | {
+      level: "TOURNAMENT";
+      tournamentIds: readonly string[];
+      tournamentRoles?: Readonly<Record<string, TournamentStaffRole>>;
+      source?: AccessSource;
+    };
+
+/**
+ * Accès généralisé à une organisation (RFC 0001 / #97) :
+ * - ORGANIZATION : rôle natif (ORG_OWNER, ORG_ADMIN, ORG_TO) ou issu d'une intégration active ;
+ * - SERVER : alias historique (compatible avec GuildAccess) ;
+ * - TOURNAMENT : accès limité à certains tournois (TOURNAMENT_TO, CASTER, STATISTICIAN).
+ */
+export type OrganizationAccess =
+  | { level: "ORGANIZATION"; role: OrganizationRole; source?: AccessSource; reason?: GuildAdminReason }
+  | GuildAccess;
 
 /** Validation de `GuildAccess` reçu d'un tiers (réponse du bot côté web). */
 export const GuildAccessSchema = z.discriminatedUnion("level", [
-  z.object({ level: z.literal("SERVER"), reason: GuildAdminReasonSchema }),
-  z.object({ level: z.literal("TOURNAMENT"), tournamentIds: z.array(z.string().min(1)) }),
-]) satisfies z.ZodType<GuildAccess>;
+  z.object({
+    level: z.literal("SERVER"),
+    reason: GuildAdminReasonSchema,
+    nativeRole: OrganizationRoleSchema.optional(),
+    source: AccessSourceSchema.optional(),
+  }),
+  z.object({
+    level: z.literal("TOURNAMENT"),
+    tournamentIds: z.array(z.string().min(1)),
+    tournamentRoles: z.record(z.string(), TournamentStaffRoleSchema).optional(),
+    source: AccessSourceSchema.optional(),
+  }),
+]);
+
+export const OrganizationAccessSchema = z.discriminatedUnion("level", [
+  z.object({
+    level: z.literal("ORGANIZATION"),
+    role: OrganizationRoleSchema,
+    source: AccessSourceSchema.optional(),
+    reason: GuildAdminReasonSchema.optional(),
+  }),
+  z.object({
+    level: z.literal("SERVER"),
+    reason: GuildAdminReasonSchema,
+    nativeRole: OrganizationRoleSchema.optional(),
+    source: AccessSourceSchema.optional(),
+  }),
+  z.object({
+    level: z.literal("TOURNAMENT"),
+    tournamentIds: z.array(z.string().min(1)),
+    tournamentRoles: z.record(z.string(), TournamentStaffRoleSchema).optional(),
+    source: AccessSourceSchema.optional(),
+  }),
+]);
 
 /**
  * MANAGE_TOURNAMENT_ROLES : modifier les rôles d'un tournoi (discord_to_role_id, discord_captain_role_id).
@@ -171,6 +311,18 @@ export const GUILD_ACTIONS = [
   "MANAGE_TOURNAMENT_ROLES",
 ] as const;
 export type GuildAction = (typeof GUILD_ACTIONS)[number];
+
+export const ORGANIZATION_ACTIONS = [
+  ...GUILD_ACTIONS,
+  "MANAGE_ORG_SETTINGS",
+  "MANAGE_INTEGRATIONS",
+  "MANAGE_ORG_MEMBERS",
+  "TRANSFER_OWNERSHIP",
+  "DELETE_ORGANIZATION",
+  "SCORE_MATCH",
+  "VIEW_PRIVATE_TOURNAMENT",
+] as const;
+export type OrganizationAction = (typeof ORGANIZATION_ACTIONS)[number];
 
 /** Motifs de refus d'accès, partagés par le bot (champ `code` des réponses) et le web (messages traduits). */
 export const AccessDeniedCodeSchema = z.enum([
@@ -189,6 +341,15 @@ export const AccessDeniedCodeSchema = z.enum([
 ]);
 export type AccessDeniedCode = z.infer<typeof AccessDeniedCodeSchema>;
 
+export const PermissionResponseSchema = z.discriminatedUnion("hasPermission", [
+  z.object({ hasPermission: z.literal(true), access: OrganizationAccessSchema }),
+  z.object({
+    hasPermission: z.literal(false),
+    reason: z.enum(["NOT_A_MEMBER", "NO_RIGHTS", "BOT_NOT_IN_GUILD"]),
+  }),
+]);
+export type PermissionResponse = z.infer<typeof PermissionResponseSchema>;
+
 /**
  * SEC-19 : code stable d'une réponse 5xx du bot (`{ error: "Internal Server Error", code }`).
  * Le détail de l'erreur reste dans les logs du bot ; le web affiche un message générique traduit.
@@ -199,28 +360,177 @@ export type InternalErrorCode = typeof INTERNAL_ERROR_CODE;
 /** Les paramètres du serveur décident qui est TO : ils restent hors de portée du rôle TO (SEC-16). */
 const SERVER_SETTINGS_REASONS: ReadonlySet<GuildAdminReason> = new Set(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD"]);
 
-/** Règle pure des actions autorisées (SEC-15 / SEC-16), partagée par le bot et le web. Fermée par défaut. */
-export function canPerform(access: GuildAccess, action: GuildAction, tournamentId?: string): boolean {
+function resolveEffectiveOrgRole(access: Exclude<OrganizationAccess, { level: "TOURNAMENT" }>): OrganizationRole {
+  if (access.level === "ORGANIZATION") return access.role;
+  if (access.nativeRole) return access.nativeRole;
+  if (access.reason === "SERVER_OWNER") return "ORG_OWNER";
+  if (SERVER_SETTINGS_REASONS.has(access.reason)) return "ORG_ADMIN";
+  return "ORG_TO";
+}
+
+/** Règle pure des actions autorisées (SEC-15 / SEC-16 / RFC 0001), partagée par le bot et le web. Fermée par défaut. */
+export function canPerform(
+  access: OrganizationAccess,
+  action: OrganizationAction,
+  tournamentId?: string,
+): boolean {
   if (access.level === "TOURNAMENT") {
-    return action === "MANAGE_TOURNAMENT" && tournamentId !== undefined && access.tournamentIds.includes(tournamentId);
+    if (tournamentId === undefined || !access.tournamentIds.includes(tournamentId)) return false;
+    const role: TournamentStaffRole = access.tournamentRoles?.[tournamentId] ?? "TOURNAMENT_TO";
+    switch (action) {
+      case "MANAGE_TOURNAMENT":
+        return role === "TOURNAMENT_TO";
+      case "SCORE_MATCH":
+        return role === "TOURNAMENT_TO" || role === "STATISTICIAN";
+      case "VIEW_PRIVATE_TOURNAMENT":
+        return role === "TOURNAMENT_TO" || role === "STATISTICIAN" || role === "CASTER";
+      default:
+        return false;
+    }
   }
+
+  const orgRole = resolveEffectiveOrgRole(access);
   switch (action) {
+    case "TRANSFER_OWNERSHIP":
+    case "DELETE_ORGANIZATION":
+      return orgRole === "ORG_OWNER";
     case "MANAGE_SERVER_SETTINGS":
-      return SERVER_SETTINGS_REASONS.has(access.reason);
+    case "MANAGE_ORG_SETTINGS":
+    case "MANAGE_INTEGRATIONS":
+    case "MANAGE_ORG_MEMBERS":
+      return orgRole === "ORG_OWNER" || orgRole === "ORG_ADMIN";
     case "CREATE_TOURNAMENT":
     case "DELETE_TOURNAMENT":
     case "MANAGE_TOURNAMENT":
     case "MANAGE_TOURNAMENT_ROLES":
-      return true;
+    case "SCORE_MATCH":
+    case "VIEW_PRIVATE_TOURNAMENT":
+      return orgRole === "ORG_OWNER" || orgRole === "ORG_ADMIN" || orgRole === "ORG_TO";
     default:
       return false;
   }
 }
 
+export const CreateOrganizationSchema = z.object({
+  name: z.string().trim().min(2, "Le nom de l'organisation doit comporter au moins 2 caractères").max(100),
+  slug: OrganizationSlugSchema,
+  language: LocaleSchema.optional().default("fr"),
+  logo_url: z.string().url().optional().nullable(),
+  invite_url: z
+    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v || null)),
+});
+export type CreateOrganizationInput = z.infer<typeof CreateOrganizationSchema>;
+
+export const UpdateOrganizationSchema = z.object({
+  name: z.string().trim().min(2).max(100).optional(),
+  slug: OrganizationSlugSchema.optional(),
+  language: LocaleSchema.optional(),
+  logo_url: z.string().url().optional().nullable(),
+  invite_url: z
+    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v || null)),
+});
+export type UpdateOrganizationInput = z.infer<typeof UpdateOrganizationSchema>;
+
+export const UpsertOrganizationMemberSchema = z.object({
+  user_id: z.string().trim().min(1),
+  role: OrganizationMemberRoleSchema,
+});
+export type UpsertOrganizationMemberInput = z.infer<typeof UpsertOrganizationMemberSchema>;
+
+export const UpsertTournamentStaffSchema = z.object({
+  user_id: z.string().trim().min(1),
+  role: TournamentStaffRoleSchema,
+});
+export type UpsertTournamentStaffInput = z.infer<typeof UpsertTournamentStaffSchema>;
+
+const NullableSnowflake = z
+  .union([DiscordSnowflakeSchema, z.literal(""), z.null()])
+  .transform((value) => value || null);
+
+/** Paramètres non secrets par intégration (RFC 5.2) : toute clé inconnue, donc tout secret mal rangé, est refusée (SEC-08). */
+export const DiscordIntegrationConfigSchema = z
+  .object({
+    to_role_id: NullableSnowflake,
+    captain_role_id: NullableSnowflake,
+    registration_channel_id: NullableSnowflake,
+    announcement_channel_id: NullableSnowflake,
+    checkin_channel_id: NullableSnowflake,
+  })
+  .partial()
+  .strict();
+export const TwitchIntegrationConfigSchema = z
+  .object({ channel_login: z.string().trim().min(1).max(50) })
+  .partial()
+  .strict();
+export const AiIntegrationConfigSchema = z
+  .object({ model: z.string().trim().min(1).max(100) })
+  .partial()
+  .strict();
+
+const IntegrationEnvelope = {
+  enabled: z.boolean().optional(),
+  secret_payload: z.string().trim().min(1).optional(),
+  cleanupExternalResources: z.boolean().optional().default(false),
+};
+
+export const UpdateIntegrationSchema = z.discriminatedUnion("provider", [
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("DISCORD"),
+    external_id: DiscordSnowflakeSchema.optional().nullable(),
+    config: DiscordIntegrationConfigSchema.optional(),
+  }),
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("TWITCH"),
+    external_id: z.string().trim().min(1).optional().nullable(),
+    config: TwitchIntegrationConfigSchema.optional(),
+  }),
+  z.object({
+    ...IntegrationEnvelope,
+    provider: z.literal("AI"),
+    external_id: z.string().trim().min(1).optional().nullable(),
+    config: AiIntegrationConfigSchema.optional(),
+  }),
+]);
+export type UpdateIntegrationInput = z.infer<typeof UpdateIntegrationSchema>;
+
+export const TransferOwnershipSchema = z.object({
+  new_owner_id: z.string().trim().min(1),
+  demote_self: z.boolean().default(false),
+});
+
+/** Le slug retapé confirme une suppression irréversible (cascade sur tous les tournois). */
+export const DeleteOrganizationSchema = z.object({ confirm_slug: z.string().trim().min(1) });
+
+export const INVITE_MAX_HOURS = 24 * 30;
+
+/** Invitation à l'organisation (sans tournoi) ou au staff d'un tournoi. Jamais ORG_OWNER : la propriété se transfère. */
+export const CreateInviteSchema = z
+  .object({
+    role: z.enum(["ORG_ADMIN", "ORG_TO", "CASTER", "STATISTICIAN", "MEMBER", "TOURNAMENT_TO"]),
+    tournament_id: z.string().uuid().optional(),
+    expires_in_hours: z.number().int().min(1).max(INVITE_MAX_HOURS).default(72),
+  })
+  .refine(
+    (invite) =>
+      invite.tournament_id
+        ? ["TOURNAMENT_TO", "CASTER", "STATISTICIAN"].includes(invite.role)
+        : invite.role !== "TOURNAMENT_TO",
+    "Rôle incompatible avec la portée de l'invitation",
+  );
+
+export const AcceptInviteSchema = z.object({ token: z.string().trim().min(32).max(128) });
+
 // Common Zod Schemas
 export const CreateTournamentSchema = z.object({
   name: z.string().min(2, "Le nom du tournoi doit comporter au moins 2 caractères"),
-  guild_id: z.string().min(1, "guild_id obligatoire"),
+  guild_id: z.string().min(1, "guild_id obligatoire").optional(),
+  organization_id: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
   game_type: z.string().default("GENERIC"),
   language: LocaleSchema.optional(),
@@ -229,6 +539,53 @@ export const CreateTournamentSchema = z.object({
   checkin_start_at: z.string().optional().nullable(),
   checkin_end_at: z.string().optional().nullable(),
 });
+
+/** Code ami Nintendo Switch : même format que l'inscription Discord (RegistrationService), normalisé en majuscules. */
+export const FriendCodeSchema = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .regex(/^SW-\d{4}-\d{4}-\d{4}$/, "Code ami invalide (format attendu : SW-1234-5678-9012)");
+
+/** Sort des équipes non check-in au lancement : décision explicite du TO (LCH-01), jamais implicite. */
+export const LaunchTournamentSchema = z.object({
+  uncheckedTeams: z.enum(["keep", "remove"]).optional(),
+});
+export type LaunchTournamentInput = z.infer<typeof LaunchTournamentSchema>;
+
+/** Échec isolé d'une intégration : la mutation métier a réussi, l'effet externe est à rejouer (INT-01). */
+export const IntegrationWarningCodeSchema = z.enum(["INTEGRATION_FAILED", "INTEGRATION_TIMEOUT"]);
+export type IntegrationWarningCode = z.infer<typeof IntegrationWarningCodeSchema>;
+export interface IntegrationWarning {
+  provider: IntegrationProvider;
+  code: IntegrationWarningCode;
+}
+
+/** Déclaration de score Web par le capitaine d'une équipe participante ou un membre du staff (SEC-30 / INT-02). */
+export const WebReportScoreSchema = z.object({
+  team1_score: z.number().int().min(0).max(99),
+  team2_score: z.number().int().min(0).max(99),
+});
+export type WebReportScoreInput = z.infer<typeof WebReportScoreSchema>;
+
+/** Inscription autonome d'une équipe depuis le portail Web (INT-02). */
+export const WebRegisterTeamSchema = z.object({
+  /** Jeton du lien de partage : donne accès à l'inscription d'un tournoi privé (RFC, décision 3). */
+  invite_token: z.string().trim().min(32).max(128).optional(),
+  name: z.string().trim().min(1, "Le nom de l'équipe est obligatoire").max(32),
+  captain_ingame_name: z.string().trim().min(1, "Le pseudo en jeu du capitaine est obligatoire").max(50),
+  captain_friend_code: FriendCodeSchema,
+  members: z
+    .array(
+      z.object({
+        ingame_name: z.string().trim().min(1).max(50),
+        friend_code: FriendCodeSchema,
+      }),
+    )
+    .max(9)
+    .default([]),
+});
+export type WebRegisterTeamInput = z.infer<typeof WebRegisterTeamSchema>;
 
 /** Corps de `PUT /api/tournaments/:id/settings` (mise à jour des paramètres du tournoi, #15). */
 export const TournamentSettingsUpdateSchema = z.object({
@@ -246,7 +603,7 @@ export const TournamentSettingsUpdateSchema = z.object({
 export type TournamentSettingsUpdateInput = z.infer<typeof TournamentSettingsUpdateSchema>;
 
 export const ReportScoreSchema = z.object({
-  match_id: z.uuid(),
+  match_id: z.string().uuid(),
   team1_score: z.number().min(0),
   team2_score: z.number().min(0),
   reported_by_team_id: z.string().optional(),
@@ -270,7 +627,40 @@ export type ForceScoreInput = z.infer<typeof ForceScoreSchema>;
 // Bornes alignées sur le schéma SQL (`teams.name VARCHAR(32)`, `team_members` VARCHAR(50) / VARCHAR(25)).
 export const TEAM_NAME_MAX_LENGTH = 32;
 export const TEAM_MEMBERS_MAX = 10;
-export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
+
+/**
+ * Vérifie si une chaîne correspond à un snowflake Discord réel valide (17 à 20 chiffres numériques).
+ * Utilisé pour filtrer les identifiants d'organisation (slugs, UUID) des appels Discord API (SEC-11 / ORG-04).
+ */
+export function isDiscordSnowflake(id: string | null | undefined): boolean {
+  return typeof id === "string" && /^\d{17,20}$/.test(id);
+}
+
+/**
+ * Formate un libellé convivial pour un numéro de round.
+ * Gère notamment la numérotation technique du Double Élimination :
+ * - Winners Bracket : r < 10 -> "Winners - Round {r}"
+ * - Losers Bracket  : 11 <= r < 21 -> "Losers - Round {r - 10}"
+ * - Grand Final     : r === 21 -> "Grande Finale" / "Grand Final"
+ * - GF Reset        : r === 22 -> "Grande Finale (Reset)" / "Grand Final (Reset)"
+ */
+export function formatRoundName(roundNumber: number, phaseFormat?: string, locale: "fr" | "en" = "fr"): string {
+  if (phaseFormat === "DOUBLE_ELIM") {
+    if (roundNumber < 10) {
+      return `Winners - Round ${roundNumber}`;
+    }
+    if (roundNumber >= 11 && roundNumber < 21) {
+      return `Losers - Round ${roundNumber - 10}`;
+    }
+    if (roundNumber === 21) {
+      return locale === "fr" ? "Grande Finale" : "Grand Final";
+    }
+    if (roundNumber === 22) {
+      return locale === "fr" ? "Grande Finale (Reset)" : "Grand Final (Reset)";
+    }
+  }
+  return `Round ${roundNumber}`;
+}
 
 /**
  * Génère un identifiant Discord synthétique (18 chiffres, préfixe 000000)
@@ -299,7 +689,7 @@ export const CreateTeamMemberSchema = z.object({
  * `is_checked_in` absent ➜ le bot applique la règle par défaut selon l'état du tournoi.
  */
 export const CreateTeamSchema = z.object({
-  tournament_id: z.uuid(),
+  tournament_id: z.string().uuid(),
   name: z.string().trim().min(1, "Le nom de l'équipe est obligatoire").max(TEAM_NAME_MAX_LENGTH),
   captain_discord_id: DiscordSnowflakeSchema,
   is_checked_in: z.boolean().optional(),
@@ -324,7 +714,7 @@ export type UpdateTeamInput = z.infer<typeof UpdateTeamSchema>;
  * `MAX_FAKE_TEAMS` reste accepté : la route le plafonne. Les clés inconnues (`guildId`) sont retirées.
  */
 export const GenerateFakeTeamsSchema = z.object({
-  tournament_id: z.uuid(),
+  tournament_id: z.string().uuid(),
   count: z.number().int().positive(),
 });
 export type GenerateFakeTeamsInput = z.infer<typeof GenerateFakeTeamsSchema>;
@@ -335,7 +725,7 @@ export type GenerateFakeTeamsInput = z.infer<typeof GenerateFakeTeamsSchema>;
 export const MAX_PHASE_SEEDS = 256;
 
 const PhaseSeedSchema = z.object({
-  team_id: z.uuid(),
+  team_id: z.string().uuid(),
   // Seed négatif = départ en bracket perdant (double élimination) ; 0 n'est pas un emplacement.
   seed: z.number().int().min(-MAX_PHASE_SEEDS).max(MAX_PHASE_SEEDS).refine((seed) => seed !== 0, "Seed invalide"),
 });
@@ -386,7 +776,7 @@ export const GroupPointsSettingsSchema = z
     points_loss: GroupPointValueSchema.optional(),
     points_forfeit: GroupPointValueSchema.optional(),
   })
-  .loose();
+  .passthrough();
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

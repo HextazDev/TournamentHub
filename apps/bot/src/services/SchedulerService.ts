@@ -10,6 +10,7 @@ import {
 import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage } from "../i18n";
 import { logger } from "../utils/logger";
+import { resolveActiveDiscordGuild } from "../utils/tenant";
 import type { Tournament } from "@hub/shared";
 
 export type SchedulableTournament = Pick<Tournament, "id"> &
@@ -37,7 +38,7 @@ export class SchedulerService {
     if (tournaments && tournaments.length > 0) {
       logger.info(`[Scheduler] Found ${tournaments.length} active tournaments to schedule.`);
       for (const t of tournaments) {
-        if (t.checkin_start_at && t.checkin_end_at && t.guild_id) {
+        if (t.checkin_start_at && t.checkin_end_at) {
           this.scheduleTournament(t);
         }
       }
@@ -151,11 +152,12 @@ export class SchedulerService {
   private static async catchUpCheckin(tournamentId: string) {
     const { data: tournament } = await supabase
       .from("tournaments")
-      .select("id, checkin_message_id, discord_checkin_channel_id")
+      .select("id, organization_id, checkin_message_id, discord_checkin_channel_id")
       .eq("id", tournamentId)
       .single();
 
     if (!tournament) return;
+    if (!(await resolveActiveDiscordGuild(tournament.organization_id))) return;
 
     // Already has a message ID — the embed was published, skip
     if (tournament.checkin_message_id) {
@@ -223,6 +225,9 @@ export class SchedulerService {
         .single();
 
       if (!tournament) return;
+      // CHK-01 : la fenêtre de check-in vit en base ; sans intégration active, rien n'est publié sur Discord.
+      const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
+      if (!guildId) return;
 
       // Double-check: if message already exists, skip
       if (tournament.checkin_message_id) {
@@ -241,7 +246,7 @@ export class SchedulerService {
       const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;
       if (!channel || !("send" in channel)) return;
 
-      const lang = await getGuildLanguage(tournament.guild_id, tournamentId);
+      const lang = await getGuildLanguage(guildId, tournamentId);
       const mentionsMessage = captainRoleId
         ? tBot(lang, "checkin.openMention", { role: `<@&${captainRoleId}>` })
         : tBot(lang, "checkin.openNoMention");
@@ -289,11 +294,13 @@ export class SchedulerService {
       // Fetch fresh tournament data
       const { data: tournament } = await supabase
         .from("tournaments")
-        .select("guild_id, discord_checkin_channel_id")
+        .select("organization_id, discord_checkin_channel_id")
         .eq("id", tournamentId)
         .single();
 
       if (!tournament?.discord_checkin_channel_id) return;
+      const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
+      if (!guildId) return;
 
       const { data: teams } = await supabase
         .from("teams")
@@ -306,7 +313,7 @@ export class SchedulerService {
       const channel = (await this.client.channels.fetch(tournament.discord_checkin_channel_id)) as TextChannel;
       if (!channel || !("send" in channel)) return;
 
-      const lang = await getGuildLanguage(tournament.guild_id, tournamentId);
+      const lang = await getGuildLanguage(guildId, tournamentId);
       const mentions = teams.map((t) => `<@${t.captain_discord_id}>`).join(" ");
       await channel.send(tBot(lang, "checkin.reminder", { minutes: minutesLeft, mentions }));
     } catch (e) {
@@ -320,11 +327,13 @@ export class SchedulerService {
 
       const { data: latestTournament } = await supabase
         .from("tournaments")
-        .select("guild_id, checkin_message_id, discord_checkin_channel_id")
+        .select("organization_id, checkin_message_id, discord_checkin_channel_id")
         .eq("id", tournamentId)
         .single();
 
       if (!latestTournament?.checkin_message_id) return;
+      const guildId = await resolveActiveDiscordGuild(latestTournament.organization_id);
+      if (!guildId) return;
 
       const checkinChannelId = latestTournament.discord_checkin_channel_id;
       if (!checkinChannelId) return;
@@ -334,7 +343,7 @@ export class SchedulerService {
 
       const msg = await channel.messages.fetch(latestTournament.checkin_message_id).catch(() => null);
       if (msg) {
-        const lang = await getGuildLanguage(latestTournament.guild_id, tournamentId);
+        const lang = await getGuildLanguage(guildId, tournamentId);
         const checkinEmbed = new EmbedBuilder()
           .setTitle(tBot(lang, "checkin.closedTitle"))
           .setDescription(tBot(lang, "checkin.closedDescription"))

@@ -9,6 +9,7 @@ import {
 } from "discord.js";
 import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage, discordLocalizations } from "../i18n";
+import { resolveOrganization } from "../utils/tenant";
 
 export const data = new SlashCommandBuilder()
   .setName("admin-setup-checkin")
@@ -20,14 +21,12 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   if (!interaction.isChatInputCommand()) return;
   const lang = await getGuildLanguage(interaction.guildId);
 
-  // 1. Fetch current server settings to verify TO rights
-  const { data: settings } = await supabase
-    .from("server_settings")
-    .select("to_role_id")
-    .eq("guild_id", interaction.guildId)
-    .single();
-
-  const toRoleId = settings?.to_role_id;
+  // 1. Fetch current organization settings to verify TO rights
+  let toRoleId: string | null = null;
+  if (interaction.guildId) {
+    const org = await resolveOrganization(interaction.guildId);
+    toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
+  }
 
   // 2. Control permissions (Admins or TOs only)
   const isSetupAdmin = interaction.memberPermissions?.has(

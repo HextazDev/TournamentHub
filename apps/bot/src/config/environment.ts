@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { parseIntegrationKey } from "../utils/crypto";
 
-const httpUrl = z.url().refine((value) => /^https?:\/\//.test(value));
+const httpUrl = z.string().url().refine((value) => /^https?:\/\//.test(value));
 const schema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   DISCORD_TOKEN: z.string().min(1),
@@ -9,6 +10,7 @@ const schema = z.object({
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
   BOT_API_SECRET: z.string().min(1),
   FRONTEND_URL: httpUrl.optional(),
+  INTEGRATION_ENCRYPTION_KEY: z.string().optional(),
 });
 
 /** Report field names only: Zod diagnostics can include supplied credentials. */
@@ -27,7 +29,13 @@ export function readBotEnvironment(env: NodeJS.ProcessEnv) {
   if (!result.success) {
     throw new Error(`Invalid bot environment: ${[...new Set(result.error.issues.map((issue) => issue.path.join(".")))].join(", ")}`);
   }
+  const encryptionKey = result.data.INTEGRATION_ENCRYPTION_KEY;
+  if (encryptionKey && !parseIntegrationKey(encryptionKey)) throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY");
+  for (const name of Object.keys(env).filter((key) => /^INTEGRATION_ENCRYPTION_KEY_V\d+$/.test(key))) {
+    if (!parseIntegrationKey(env[name] ?? "")) throw new Error(`Invalid bot environment: ${name}`);
+  }
   if (production) {
+    if (!encryptionKey) throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY");
     if (result.data.BOT_API_SECRET.length < 32) throw new Error("Invalid bot environment: BOT_API_SECRET");
     const placeholders = /dummy|placeholder|ton_token|ta_cle|dev-bot-secret/i;
     for (const key of ["DISCORD_TOKEN", "SUPABASE_SERVICE_ROLE_KEY", "BOT_API_SECRET"] as const) {

@@ -1,10 +1,12 @@
 export const dynamic = 'force-dynamic';
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getReadableTournament } from "@/lib/viewer";
+import { getReadableTournament, getTournamentInviteToken, getViewer } from "@/lib/viewer";
+import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Monitor, Users } from "lucide-react";
 import { cookies } from "next/headers";
+import { formatRoundName } from "@hub/shared";
 import { t } from "@/i18n";
 import { Locale } from "@/i18n/types";
 
@@ -14,7 +16,7 @@ export default async function PublicTournamentOverview({
   params: Promise<{ guildId: string; id: string }>;
 }) {
   const { guildId, id } = await params;
-  const tournament = await getReadableTournament(guildId, id);
+  const [tournament, viewer] = await Promise.all([getReadableTournament(guildId, id), getViewer()]);
   if (!tournament) notFound();
   const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
@@ -22,10 +24,19 @@ export default async function PublicTournamentOverview({
   // Parallel fetching
   const [
     { data: phases },
-    { data: teams }
+    { data: teams },
+    { data: captainTeamRow },
   ] = await Promise.all([
     supabaseAdmin.from("phases").select("id").eq("tournament_id", id),
-    supabaseAdmin.from("teams").select("id").eq("tournament_id", id).eq("is_checked_in", true)
+    supabaseAdmin.from("teams").select("id").eq("tournament_id", id).eq("is_checked_in", true),
+    viewer.discordId
+      ? supabaseAdmin
+          .from("teams")
+          .select("id, name, is_checked_in")
+          .eq("tournament_id", id)
+          .eq("captain_discord_id", viewer.discordId)
+          .maybeSingle()
+      : Promise.resolve({ data: null }),
   ]);
 
   const totalTeams = teams?.length || 0;
@@ -36,7 +47,7 @@ export default async function PublicTournamentOverview({
     const phaseIds = phases.map(p => p.id);
     const { data } = await supabaseAdmin
       .from("matches")
-      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order)")
+      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order, format)")
       .in("phase_id", phaseIds);
     if (data) matches = data;
   }
@@ -70,8 +81,67 @@ export default async function PublicTournamentOverview({
     })
     .slice(0, 4);
 
+  const now = new Date();
+  const checkinStart = tournament.checkin_start_at ? new Date(tournament.checkin_start_at) : null;
+  const checkinEnd = tournament.checkin_end_at ? new Date(tournament.checkin_end_at) : null;
+  const canCheckinNow =
+    tournament.status === "REGISTRATION" &&
+    (!checkinStart || now >= checkinStart) &&
+    (!checkinEnd || now <= checkinEnd);
+
+  // UX-01 : le prochain match du capitaine, quel que soit son état, pour ne jamais faire disparaître son action.
+  const captainMatchRaw = captainTeamRow
+    ? [...matches]
+        .sort((a, b) => (a.round_number || 0) - (b.round_number || 0))
+        .find(
+          (m) =>
+            ["PENDING", "IN_PROGRESS", "WAITING_VALIDATION", "CONTESTED"].includes(m.status) &&
+            (m.team1_id === captainTeamRow.id || m.team2_id === captainTeamRow.id) &&
+            m.team1_id &&
+            m.team2_id,
+        )
+    : null;
+  const inviteToken = await getTournamentInviteToken(id);
+
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
+      <WebPlayerActions
+        tournamentId={id}
+        status={tournament.status}
+        isRegistrationOpen={Boolean(tournament.is_registration_open)}
+        canCheckinNow={canCheckinNow}
+        viewerDiscordId={viewer.discordId}
+        inviteToken={inviteToken}
+        captainTeam={
+          captainTeamRow
+            ? {
+                id: String(captainTeamRow.id),
+                name: String(captainTeamRow.name),
+                is_checked_in: Boolean(captainTeamRow.is_checked_in),
+              }
+            : null
+        }
+        captainMatch={
+          captainMatchRaw
+            ? {
+                id: String(captainMatchRaw.id),
+                state:
+                  captainMatchRaw.status === "CONTESTED"
+                    ? "CONTESTED"
+                    : captainMatchRaw.status !== "WAITING_VALIDATION"
+                      ? "TO_REPORT"
+                      : captainMatchRaw.reported_by_team_id === captainTeamRow?.id
+                        ? "WAITING_OPPONENT"
+                        : "TO_VALIDATE",
+                team1_name: String(captainMatchRaw.team1?.name ?? t(locale, "common.tbd")),
+                team2_name: String(captainMatchRaw.team2?.name ?? t(locale, "common.tbd")),
+                team1_score: Number(captainMatchRaw.team1_score ?? 0),
+                team2_score: Number(captainMatchRaw.team2_score ?? 0),
+              }
+            : null
+        }
+      />
+
       {/* Recent Matches Section - Split into two columns like Toornament overview */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div>
@@ -96,7 +166,7 @@ export default async function PublicTournamentOverview({
                 return (
                   <div key={match.id} className="bg-[#151722] border border-slate-800/50 hover:bg-[#1a1d2d] transition-colors rounded overflow-hidden flex flex-col font-mono text-sm shadow-sm cursor-pointer group">
                     <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d]">
-                      {match.phase?.name || 'Match'} • Round {match.round_number || '?'}
+                      {match.phase?.name || t(locale, 'common.match')} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format, locale) : 'Round ?'}
                     </div>
                     <div className="flex flex-col p-2">
                       <div className="flex justify-between items-center py-1.5 px-2 hover:bg-slate-800/20 rounded">
@@ -149,7 +219,7 @@ export default async function PublicTournamentOverview({
               upcomingMatches.map(match => (
                 <div key={match.id} className="bg-[#151722] border border-slate-800/50 hover:bg-[#1a1d2d] transition-colors rounded overflow-hidden flex flex-col font-mono text-sm shadow-sm cursor-pointer group">
                   <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d]">
-                    {match.phase?.name || 'Match'} • Round {match.round_number || '?'}
+                    {match.phase?.name || t(locale, 'common.match')} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format, locale) : 'Round ?'}
                   </div>
                   <div className="flex flex-col p-2 text-slate-300">
                     <div className="flex justify-between items-center py-1.5 px-2 hover:bg-slate-800/20 rounded">

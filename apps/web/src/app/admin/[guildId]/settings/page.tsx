@@ -2,7 +2,9 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ShieldAlert } from "lucide-react";
 import { canPerform } from "@hub/shared";
-import { getGuildAdminAccess } from "@/lib/viewer";
+import { getGuildAdminAccess, getServerProfile, getViewer } from "@/lib/viewer";
+import { canManageFromOAuth } from "@/lib/accessRules";
+import { OrganizationMembersPanel } from "@/components/admin/OrganizationMembersPanel";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
 import { ServerSettingsClient } from "./ServerSettingsClient";
@@ -33,5 +35,26 @@ export default async function SettingsPage({ params }: { params: Promise<{ guild
     );
   }
 
-  return <ServerSettingsClient guildId={guildId} />;
+  const [viewer, profile] = await Promise.all([getViewer(), getServerProfile(guildId)]);
+  // Liste indicative : le bot revérifie les droits réels sur le serveur choisi (SEC-18).
+  const manageableGuilds = (viewer.guilds ?? [])
+    .filter(canManageFromOAuth)
+    .map((guild) => ({ id: guild.id, name: guild.name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return (
+    <div>
+      <ServerSettingsClient guildId={guildId} manageableGuilds={manageableGuilds} />
+      {profile?.organization_id && profile.slug && viewer.discordId && (
+        <div className="p-6 md:p-8 pt-0 w-full max-w-[1600px] mx-auto">
+          <OrganizationMembersPanel
+            organizationId={profile.organization_id}
+            slug={profile.slug}
+            viewerId={viewer.discordId}
+            canManageOwnership={canPerform(access.access, "TRANSFER_OWNERSHIP")}
+          />
+        </div>
+      )}
+    </div>
+  );
 }

@@ -12,5 +12,4 @@ Bugs **constatés et non encore corrigés**, avec leur impact visible, un contou
 
 | ID | Domaine | Symptôme visible | Contournement | Edge cases | Suivi |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-
-_Aucun problème connu ouvert._
+| `KI-01` | Organisations | Le lien de contact d'une organisation refuse tout lien qui n'est pas une invitation Discord. | Utiliser une invitation Discord, ou laisser le champ vide. | — | #102 |
