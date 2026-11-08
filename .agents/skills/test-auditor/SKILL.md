@@ -1,11 +1,15 @@
 ---
 name: test-auditor
-description: Skill d'audit approfondi et intransigeant de la suite de tests (Staff QA / Test Architect). Évalue la couverture réelle du domaine métier, traque impitoyablement les tests creux (hollow tests), le mocking abusif, le manque de cas limites (égalités, BYE, forfaits) et les tests flaky. Génère une scorecard tabulaire /100 et des prompts prêts à copier pour coder les tests manquants.
+version: "2.0.0"
+description: Skill d'audit approfondi et intransigeant de la suite de tests (Staff QA / Test Architect). Évalue la couverture réelle du domaine métier, traque impitoyamment les tests creux (hollow tests), le mocking abusif, le manque de cas limites (égalités, BYE, forfaits) et les tests flaky. Génère une scorecard tabulaire /100 et un plan de remédiation pour écrire les tests manquants.
+allowed-tools: "Read Grep Glob Bash(make test:*) Bash(npx vitest:*) Bash(git diff:*) Bash(rg:*)"
+metadata:
+  report-id-prefix: AUD-
 ---
 
 # 🧪 Test Auditor - TournamentHub
 
-Ce skill transforme Claude Code ou Antigravity en un **Staff QA / Test Architect ultra-exigeant**. Sa mission : auditer la suite de tests Vitest du monorepo TournamentHub, évaluer la qualité réelle des assertions, traquer les tests creux ou tautologiques, vérifier la couverture des cas limites e-sport (BYE, forfaits, égalités), et fournir les prompts exacts pour implémenter les tests manquants.
+Ce skill transforme Claude Code ou Antigravity en un **Staff QA / Test Architect ultra-exigeant**. Sa mission : auditer la suite de tests Vitest du monorepo TournamentHub, évaluer la qualité réelle des assertions, traquer les tests creux ou tautologiques, vérifier la couverture des cas limites e-sport (BYE, forfaits, égalités), et un plan de remédiation priorisé pour écrire les tests manquants.
 
 ---
 
@@ -101,9 +105,9 @@ Invocable via `/test-audit` avec les options suivantes :
 
 | ID | Sévérité | Fichier & Lignes | Problème Détecté | Risque en Production |
 |:---:|:---:|:---:|---|---|
-| `TST-01` | 🔴 CRITIQUE | `BracketGeneratorService.ts` | Aucune suite de test pour la double élimination | Régressions silencieuses dans l'arbre des perdants |
-| `TST-02` | 🟠 IMPORTANT | `BracketGeneratorService.test.ts:42` | Test creux : vérifie seulement que la fonction retourne un tableau sans vérifier les appariements | Faux sentiment de sécurité |
-| `TST-03` | 🟡 MOYEN | `SchedulerService.test.ts:18` | Utilisation de setTimeout réel (1000ms) au lieu de vi.useFakeTimers | Tests lents et risque d'instabilité en CI |
+| `AUD-TST-01` | 🔴 CRITIQUE | `BracketGeneratorService.ts` | Aucune suite de test pour la double élimination | Régressions silencieuses dans l'arbre des perdants |
+| `AUD-TST-02` | 🟠 IMPORTANT | `BracketGeneratorService.test.ts:42` | Test creux : vérifie seulement que la fonction retourne un tableau sans vérifier les appariements | Faux sentiment de sécurité |
+| `AUD-TST-03` | 🟡 MOYEN | `SchedulerService.test.ts:18` | Utilisation de setTimeout réel (1000ms) au lieu de vi.useFakeTimers | Tests lents et risque d'instabilité en CI |
 
 ---
 
@@ -114,19 +118,9 @@ Invocable via `/test-audit` avec les options suivantes :
 
 ---
 
-## 4. 🤖 Prompts de Création de Tests Prêts à l'Emploi
+## 4. 📋 Plan de Création des Tests Manquants
 
-*(Fournir des prompts complets pour générer les suites de tests manquantes sans effort)*
+*(Lister directement les suites à écrire — cible, cas limites, commandes de validation. Pas de blocs « prompts à copier ».)*
 
-### 📝 Prompt : Suite de Tests pour les Cas Limites de Brackets
-```markdown
-Écris une suite de tests Vitest complète pour BracketGeneratorService.ts :
-- Cible : apps/bot/src/__tests__/BracketGeneratorService.edge-cases.test.ts
-- Cas limites obligatoires :
-  1. Nombre d'équipes impair (7 équipes) : vérifier la distribution exacte des BYE au Round 1.
-  2. Forfait (FF) : vérifier l'avancement automatique de l'adversaire au tour suivant.
-  3. Égalité parfaite de scores : vérifier le comportement attendu.
-- Utilise le pattern Arrange-Act-Assert strict et des assertions précises.
-- Valide en exécutant 'make test'.
-```
+- `BracketGeneratorService` : créer `apps/bot/src/__tests__/BracketGeneratorService.edge-cases.test.ts` couvrant BYE (7 équipes), forfait (FF) et égalité parfaite — pattern AAA, assertions strictes, validation via `make test`.
 ```
