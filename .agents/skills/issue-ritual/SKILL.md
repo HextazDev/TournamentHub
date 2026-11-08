@@ -1,6 +1,10 @@
 ---
 name: issue-ritual
+version: "2.0.0"
 description: Rituel d'exécution obligatoire pour Claude Code et Antigravity lors de la résolution de toute issue sur TournamentHub. Comprend le cadrage Git initial, la présentation d'un plan d'implémentation à valider avant de coder, le TDD strict avec Verify RED, la couverture des cas limites via docs/EDGE_CASES.md, la checklist de sécurité multi-tenant, la loi d'airain anti-bandaids, les règles React 19, la vérification des traductions FR/EN (i18n-auditor), le protocole Evidence Before Claims du Makefile, et un bilan final sans commit automatique.
+allowed-tools: "Read Write Edit Grep Glob Bash(git status:*) Bash(git diff:*) Bash(git log:*) Bash(git branch:*) Bash(git checkout:*) Bash(gh issue view:*) Bash(gh issue list:*) Bash(gh pr view:*) Bash(make:*) Bash(npm run build:*) Bash(npx vitest:*) Bash(npx tsc:*) Bash(node .agents/skills/i18n-auditor/scripts/check-i18n.mjs:*) Bash(rg:*)"
+metadata:
+  no-auto-commit: true
 ---
 
 # 🥋 Rituel de Résolution d'Issue - TournamentHub

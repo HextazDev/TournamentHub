@@ -1,6 +1,10 @@
 ---
 name: i18n-auditor
-description: Skill d'audit intransigeant de l'internationalisation (Staff Frontend / Localization Engineer). Vérifie la parité des dictionnaires FR/EN (web & bot), les clés utilisées mais non définies, les placeholders divergents, les textes visibles codés en dur (JSX, toasts, modales, embeds et modals Discord), le formatage locale-aware des dates/nombres, la résolution de la langue (serveur, tournoi, navigateur) et la robustesse des fallbacks. Génère une scorecard tabulaire /100 et des prompts prêts à copier.
+version: "2.0.0"
+description: Skill d'audit intransigeant de l'internationalisation (Staff Frontend / Localization Engineer). Vérifie la parité des dictionnaires FR/EN (web & bot), les clés utilisées mais non définies, les placeholders divergents, les textes visibles codés en dur (JSX, toasts, modales, embeds et modals Discord), le formatage locale-aware des dates/nombres, la résolution de la langue (serveur, tournoi, navigateur) et la robustesse des fallbacks. Génère une scorecard tabulaire /100 et un plan de correction par scope.
+allowed-tools: "Read Grep Glob Bash(node .agents/skills/i18n-auditor/scripts/check-i18n.mjs:*) Bash(git diff:*) Bash(rg:*)"
+metadata:
+  report-id-prefix: AUD-
 ---
 
 # 🌍 i18n Auditor - TournamentHub
@@ -117,14 +121,14 @@ Il détecte, pour `apps/web` (`t("k")`, `t(locale, "k")`) et `apps/bot` (`tBot(l
 
 | ID | Sévérité | Fichier:Ligne | Problème | Ce que voit l'utilisateur |
 |:---:|:---:|---|---|---|
-| `I18N-01` | 🔴 CRITIQUE | `SettingsClient.tsx:46` | Clé `adminSettingsPage.loadChannelsError` non définie | Le toast affiche « adminSettingsPage.loadChannelsError » |
+| `AUD-I18N-01` | 🔴 CRITIQUE | `SettingsClient.tsx:46` | Clé `adminSettingsPage.loadChannelsError` non définie | Le toast affiche « adminSettingsPage.loadChannelsError » |
 
 ## 3. 🎯 Matrice Effort vs Impact
 * **Quick Wins** : ...
 * **Chantiers Prioritaires** : ...
 
-## 4. 🤖 Prompts de Correction Prêts à l'Emploi
-(un prompt par scope : web, bot, garde-fous/tests — chaque prompt se termine par la relance de `check-i18n.mjs` + `make test && make lint`)
+## 4. ✅ Plan de Correction par Scope
+(liste des corrections directement applicables par scope : web, bot, garde-fous/tests — terminer par la relance de `check-i18n.mjs` + `make test && make lint`. Pas de blocs « prompts à copier ».)
 ```
 
 ---

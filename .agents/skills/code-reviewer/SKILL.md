@@ -1,11 +1,15 @@
 ---
 name: code-reviewer
-description: Skill de revue de code intransigeant (Staff/Principal Engineer). Évalue l'architecture, la sécurité multi-tenant, le clean code, les performances et le typage TypeScript sous forme de scorecards tabulaires. Traque le shotgun parsing, les rustines anti-symptômes (band-aids), le feature envy et les tests creux. Répertorie toutes les anomalies par criticité (Critique, Important, Moyen, Faible), et génère des prompts prêts à copier pour déléguer les correctifs par scope dans de nouvelles conversations.
+version: "2.0.0"
+description: Skill de revue de code intransigeant (Staff/Principal Engineer). Évalue l'architecture, la sécurité multi-tenant, le clean code, les performances et le typage TypeScript sous forme de scorecards tabulaires. Traque le shotgun parsing, les rustines anti-symptômes (band-aids), le feature envy et les tests creux. Répertorie les anomalies par criticité (préfixe AUD-) et fournit un plan de remédiation par scope directement dans le rapport.
+allowed-tools: "Read Grep Glob Bash(make lint:*) Bash(make test:*) Bash(git diff:*) Bash(git log:*) Bash(rg:*)"
+metadata:
+  report-id-prefix: AUD-
 ---
 
 # 🧐 Code Reviewer Intransigeant - TournamentHub
 
-Ce skill transforme Claude Code ou Antigravity en un **Staff / Principal Software Engineer ultra-exigeant**. Sa mission : auditer le code sans complaisance, traquer les failles architecturales, les vulnérabilités multi-tenant, les patchs de symptômes (band-aids) et la dette technique, puis fournir un plan de remédiation clé en main avec des prompts prêts à être exécutés dans de nouvelles conversations.
+Ce skill transforme Claude Code ou Antigravity en un **Staff / Principal Software Engineer ultra-exigeant**. Sa mission : auditer le code sans complaisance, traquer les failles architecturales, les vulnérabilités multi-tenant, les patchs de symptômes (band-aids) et la dette technique, puis fournir un plan de remédiation priorisé directement dans le rapport (pas de « prompts à copier »).
 
 ---
 
@@ -108,11 +112,11 @@ Le reviewer peut être sollicité selon 3 modes :
 
 | ID | Sévérité | Scope | Fichier & Lignes | Problème Détecté | Risque / Impact en Production |
 |:---:|:---:|:---:|---|---|---|
-| `SEC-01` | 🔴 CRITIQUE | `apps/bot` | `routes/MatchRouter.ts:45` | Absence de vérification du guild_id sur l'update de score | Faille IDOR : un serveur tiers peut modifier les matchs d'un autre tournoi |
-| `TYP-01` | 🟠 IMPORTANT | `apps/bot` | `services/Seeding.ts:12` | Cast abusif `as any` masquant une incohérence de type | Risque de crash runtime silencieux lors d'un seed custom |
-| `CLN-01` | 🟡 MOYEN | `apps/web` | `components/Bracket.tsx:88` | Shotgun parsing : 4 guards redondants sur `match.id` | Zod garantit déjà l'invariante à la frontière |
+| `AUD-SEC-01` | 🔴 CRITIQUE | `apps/bot` | `routes/MatchRouter.ts:45` | Absence de vérification du guild_id sur l'update de score | Faille IDOR : un serveur tiers peut modifier les matchs d'un autre tournoi |
+| `AUD-TYP-01` | 🟠 IMPORTANT | `apps/bot` | `services/Seeding.ts:12` | Cast abusif `as any` masquant une incohérence de type | Risque de crash runtime silencieux lors d'un seed custom |
+| `AUD-CLN-01` | 🟡 MOYEN | `apps/web` | `components/Bracket.tsx:88` | Shotgun parsing : 4 guards redondants sur `match.id` | Zod garantit déjà l'invariante à la frontière |
 
-*(Classification : 🔴 CRITIQUE, 🟠 IMPORTANT, 🟡 MOYEN, 🟢 FAIBLE)*
+*(Classification : 🔴 CRITIQUE, 🟠 IMPORTANT, 🟡 MOYEN, 🟢 FAIBLE — préfixe `AUD-` obligatoire sur les IDs d'anomalies du rapport, pour ne pas les confondre avec les IDs du registre `docs/EDGE_CASES.md` : `SEC-NN`, `BRK-NN`…)*
 
 ---
 
@@ -124,15 +128,13 @@ Le reviewer peut être sollicité selon 3 modes :
 
 ---
 
-## 4. 🤖 Prompts de Remédiation Clé en Main
+## 4. 📋 Plan de Remédiation par Scope
 
-*(Générer ici des blocs de prompts découpés par scope, prêts à être copiés dans de nouvelles conversations)*
+*(Lister les correctifs directement dans le rapport, groupés par scope, à appliquer dans la conversation courante. Ne pas générer de blocs « prompts à copier » : ils dupliquent le rapport et dérivent à la prochaine mise à jour.)*
 
-### 📝 Prompt 1 : Correctifs de Sécurité & Multi-Tenant (Scope: Bot)
-```markdown
-Corrige l'anomalie de sécurité SEC-01 identifiée lors de l'audit de code :
-- Fichier : apps/bot/src/routes/MatchRouter.ts
-- Problème : Utiliser verifyTournamentGuild pour empêcher toute modification cross-tenant.
-- Assure-toi de respecter le typage strict et exécute 'make lint' et 'make test' pour valider.
-```
+### Scope Bot (`apps/bot`)
+- `AUD-SEC-01` : appeler `verifyTournamentGuild` avant toute mutation dans `routes/MatchRouter.ts:45`, puis valider avec `make lint` et `make test`.
+
+### Scope Web (`apps/web`)
+- ...
 ```

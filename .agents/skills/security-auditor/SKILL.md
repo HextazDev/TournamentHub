@@ -1,6 +1,10 @@
 ---
 name: security-auditor
-description: Skill d'audit de sécurité applicative et multi-tenant intransigeant (Staff AppSec Engineer). Traque les failles IDOR multi-serveurs, les fuites de politiques Supabase RLS, les vulnérabilités RPC (search_path), les failles de contrôle d'accès RBAC (NextAuth / Discord), les secrets exposés (NEXT_PUBLIC_) et le shotgun parsing. Génère une scorecard tabulaire /100 et des prompts prêts à copier.
+version: "2.0.0"
+description: Skill d'audit de sécurité applicative et multi-tenant intransigeant (Staff AppSec Engineer). Traque les failles IDOR multi-serveurs, les fuites de politiques Supabase RLS, les vulnérabilités RPC (search_path), les failles de contrôle d'accès RBAC (NextAuth / Discord), les secrets exposés (NEXT_PUBLIC_) et le shotgun parsing. Génère une scorecard tabulaire /100 et un plan de remédiation prioritaire direct.
+allowed-tools: "Read Grep Glob Bash(git diff:*) Bash(git log:*) Bash(rg:*)"
+metadata:
+  report-id-prefix: AUD-
 ---
 
 # 🔒 Security Auditor - TournamentHub
@@ -33,7 +37,7 @@ Invocable via `/security-audit` :
 
 ## 🔍 Les 5 Piliers d'Évaluation de Sécurité AppSec
 
-> **Référentiel d'invariants** : la section **🔒 Sécurité Multi-Tenant & Authentification** (`SEC-*`) de `docs/EDGE_CASES.md` liste les garanties que le code doit tenir. Vérifier que chaque `SEC-*` du périmètre est toujours respecté, et consigner dans le registre toute nouvelle faille corrigée (nouvel ID `SEC-NN` + test de refus associé).
+> **Référentiel d'invariants** : la section **🔒 Sécurité Multi-Tenant & Authentification** (`SEC-*`) de `docs/EDGE_CASES.md` liste les garanties que le code doit tenir. Vérifier que chaque `SEC-*` du périmètre est toujours respecté, et consigner dans le registre toute nouvelle faille corrigée (nouvel ID `SEC-NN` dans `docs/EDGE_CASES.md` + test de refus associé). Les anomalies de ce rapport utilisent le préfixe `AUD-` pour éviter toute collision avec le registre.
 
 ### 1. 🛡️ Cloisonnement Multi-Tenant & Prévention IDOR (Note /20)
 * **Échafaudage de Guilde** : Chaque ressource (`tournaments`, `phases`, `matches`, `teams`, `tournament_registrations`) est-elle strictement liée à un `guild_id` ?
@@ -106,9 +110,9 @@ Invocable via `/security-audit` :
 
 | ID | Sévérité | Cible & Lignes | Type de Faille | Vecteur d'Attaque & Risque Exploitable |
 |:---:|:---:|:---:|---|---|
-| `SEC-01` | 🔴 CRITIQUE | `apps/bot/src/routes/TournamentRouter.ts:78` | IDOR Multi-Tenant | Un attaquant peut supprimer un tournoi d'un autre serveur Discord en forgeant le tournamentId |
-| `SEC-02` | 🔴 CRITIQUE | `supabase/migrations/20240101_rpc.sql:12` | Schema Hijacking RPC | Fonction SECURITY DEFINER sans 'SET search_path = public, pg_temp' |
-| `SEC-03` | 🟠 IMPORTANT | `apps/web/src/app/admin/[guildId]/page.tsx:15` | RBAC Bypass | Absence de vérification des permissions Discord de l'utilisateur connecté sur la guilde |
+| `AUD-SEC-01` | 🔴 CRITIQUE | `apps/bot/src/routes/TournamentRouter.ts:78` | IDOR Multi-Tenant | Un attaquant peut supprimer un tournoi d'un autre serveur Discord en forgeant le tournamentId |
+| `AUD-SEC-02` | 🔴 CRITIQUE | `supabase/migrations/20240101_rpc.sql:12` | Schema Hijacking RPC | Fonction SECURITY DEFINER sans 'SET search_path = public, pg_temp' |
+| `AUD-SEC-03` | 🟠 IMPORTANT | `apps/web/src/app/admin/[guildId]/page.tsx:15` | RBAC Bypass | Absence de vérification des permissions Discord de l'utilisateur connecté sur la guilde |
 
 ---
 
@@ -119,14 +123,10 @@ Invocable via `/security-audit` :
 
 ---
 
-## 4. 🤖 Prompts de Remédiation Clé en Main
+## 4. 📋 Plan de Remédiation Direct
 
-### 📝 Prompt : Résolution de Faille IDOR Multi-Tenant
-```markdown
-Corrige immédiatement la vulnérabilité critique SEC-01 dans TournamentHub :
-- Fichier : apps/bot/src/routes/TournamentRouter.ts
-- Vulnérabilité : Faille IDOR permettant la suppression de tournoi cross-serveur.
-- Remédiation : Utiliser l'utilitaire 'verifyTournamentGuild(tournamentId, guildId)' avant toute opération de suppression.
-- Vérifie que 'make lint' et 'make test' passent avec 0 erreur.
-```
+*(Lister les correctifs directement, par priorité — à appliquer dans la conversation courante. Pas de blocs « prompts à copier ».)*
+
+- **P0 (bloquant, < 24h)** : `AUD-SEC-01` — appeler `verifyTournamentGuild(tournamentId, guildId)` avant toute suppression dans `routes/TournamentRouter.ts`, ajouter un test de refus 403 cross-guild, puis `make lint` && `make test`.
+- **P1** : ...
 ```

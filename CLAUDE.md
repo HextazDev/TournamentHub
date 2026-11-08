@@ -28,49 +28,24 @@ Les consignes publiques décrivent l'architecture et les commandes du projet. Le
 
 ---
 
-## 🥋 Rituel Obligatoire pour Résoudre une Issue
+## 🛠️ Maintenance de cette Doc & des Skills (Source Unique)
+
+* **`.agents/skills/*/SKILL.md` est la source unique** de chaque processus. Cette doc (et ses alias `AGENTS.md` / `GEMINI.md`) ainsi que les commandes `.claude/commands/*.md` ne font que **pointer** vers les skills : ne jamais y recopier le contenu d'un skill (risque de divergence).
+* Toute évolution d'un processus se fait dans le `SKILL.md` concerné, avec un **bump de `version`** dans son frontmatter.
+* Les rapports d'audit préfixent leurs IDs d'anomalies par **`AUD-`** (`AUD-SEC-01`…) pour éviter toute collision avec les IDs du registre `docs/EDGE_CASES.md` (`SEC-NN`, `BRK-NN`…).
+* Pas de sections « prompts prêts à copier » dans les skills : les correctifs se décrivent directement dans le rapport.
+* `allowed-tools` dans le frontmatter d'un skill restreint les outils utilisables (ex : `issue-ritual` n'autorise aucun `git add` / `git commit` / `git push`).
+
+---
+
+## 🧭 Rituel Obligatoire pour Résoudre une Issue
 
 > [!IMPORTANT]
 > **Avant de toucher au code pour résoudre une issue, appliquer OBLIGATOIREMENT le Skill de rituel :**
-> * **Skill complet** : `.agents/skills/issue-ritual/SKILL.md` (accessible aussi via `.claude/skills/issue-ritual`)
+> * **Skill complet (source unique)** : `.agents/skills/issue-ritual/SKILL.md` (accessible aussi via `.claude/skills/issue-ritual`)
 > * **Commande rapide Claude Code** : `/resolve-issue <NUMERO>`
 
-### Le Cycle en 5 Phases Systématiques :
-1. **Phase 1 : Cadrage & Contexte Git (`gh issue view <NUMERO>`)** :
-   * Vérifier la branche active (`git branch --show-current`), les commits de la branche (`git log main..HEAD --oneline`) et les modifs locales en cours (`git status --short`). Alerter si sur `main`.
-   * Lire le ticket complet, cartographier les fichiers cibles et inspecter le schéma DB réel (`supabase/migrations/`).
-   * Consulter systématiquement **`docs/EDGE_CASES.md`** pour relever les cas limites et invariants existants du domaine touché (IDs concernés).
-2. **Phase 2 : 🛑 RÉCAPITULATIF & PLAN D'IMPLÉMENTATION (Point d'arrêt obligatoire)** :
-   * Présenter un récapitulatif clair : État Git, Objectif, Fichiers impactés, Migration DB éventuelle, Cas limites (IDs `docs/EDGE_CASES.md` impactés, nouveaux cas à consigner ou obsolètes à purger), **Impact Sécurité** (routes, RLS, secrets) et Stratégie de tests TDD.
-   * **STOP** : Attendre la validation explicite de l'utilisateur avant d'écrire la moindre ligne de code.
-3. **Phase 3 : Implémentation Rigoureuse & Discipline d'Ingénierie** :
-   * Ordre : `1. SQL/Migrations` ➔ `2. @hub/shared` ➔ `3. Services Bot` ➔ `4. Routes API` ➔ `5. Web UI` ➔ `6. Tests`.
-   * ⚡ **Après modification de `packages/shared`** : `make test`, `make lint` et `make build` recompilent `@hub/shared` automatiquement (cible `build-shared`) ; hors Makefile (`npx vitest`, `npx tsc`, IDE), exécuter `npm run build --workspace=@hub/shared`.
-   * 🔴 **TDD strict avec Verify RED** : pour tout service métier ou utilitaire (`BracketGeneratorService`, `SchedulerService`), écrire le test Vitest d'abord, **constater l'échec terminal pour la raison attendue**, puis implémenter le code minimal pour passer au vert.
-   * 🛡️ **Loi d'airain Anti-Symptôme (Anti-Band-Aids)** : interdiction formelle de poser une rustine pour faire taire le compilateur ou masquer une erreur (`?.` sauvage, `as any`, `as unknown as`, `try/catch` vide qui étouffe l'erreur). Identifier et corriger la cause racine.
-   * 🔒 **Sécurité par défaut** : toute route de mutation appelle `verify*Guild` (`apps/bot/src/utils/tenant.ts`) avant d'écrire ; toute nouvelle table active la RLS avec politiques d'écriture restreintes ; toute fonction `SECURITY DEFINER` fixe son `search_path` ; aucun secret en `NEXT_PUBLIC_*` ; toute entrée externe (body, customId, modal) est validée (Zod / guards) avant usage.
-   * 📝 **Registre des Cas Limites (`docs/EDGE_CASES.md`)** :
-     - **Ajouter** : tout cas limite introduit ou corrigé ➜ nouvelle ligne avec ID et test Vitest référencé.
-     - **Promouvoir** : une ligne 🛡️/⚠️ couverte par un nouveau test passe en ✅.
-     - **Purger** : toute règle supprimée ou refondue est retirée ou réécrite dans le même diff (zéro dette documentaire).
-   * 🐞 **Problèmes connus (`docs/KNOWN_ISSUES.md`)** : tout bug découvert hors périmètre ➜ issue GitHub + ligne `KI-xx` dans le même diff ; une issue corrigée retire sa ligne `KI-xx`.
-   * 🎨 **Règles Front React 19 / Next.js 16** :
-     - 3 états obligatoires : Loading Skeleton, Error toast/alerte avec retry, Empty state accueillant.
-     - Nettoyage strict des ressources dans `useEffect` (timers, event listeners, channels Supabase Realtime).
-     - `await params`, `"use client";`, `<Link>`, pas de `setState` synchrone dans `useEffect`.
-4. **Phase 4 : Porte de Vérification (« Evidence Before Claims »)** :
-   * Interdiction d'affirmer qu'une tâche est résolue sans **preuve terminale fraîche** :
-     - `make test` : tests unitaires Vitest (100% de succès).
-     - `make lint` : 0 erreur de typage / linting sur l'ensemble du monorepo.
-     - `make build` : compilation globale réussie.
-   * 🧪 **Preuve des cas limites** : chaque cas limite annoncé en Phase 2 a un test Vitest qui passe (ou un garde-fou explicite justifié).
-   * 🔒 **Auto-contrôle sécurité** : si le diff touche `routes/`, `middleware/`, `supabase/migrations/`, l'auth NextAuth ou des variables d'environnement, dérouler la checklist du skill `security-auditor` sur le diff (ou lancer `/security-audit <chemin>`).
-   * 🌍 **Vérification des traductions** : si le diff ajoute/modifie du texte visible (web ou bot) ou touche `**/i18n/**`, `node .agents/skills/i18n-auditor/scripts/check-i18n.mjs` doit sortir en exit 0 et aucun texte en dur ne doit être introduit (ou `/i18n-audit --diff`).
-5. **Phase 5 : Clôture & Mini-Rapport (PAS D'AUTO-COMMIT)** :
-   * `git diff` audité sans console.log ou fichiers parasites. Zéro `any`. **`docs/EDGE_CASES.md` synchronisé**.
-   * Interdiction formelle d'exécuter `git commit` automatiquement.
-   * Mini-rapport en 5 lignes max (fichiers modifiés, preuves terminales, cas limites testés, instructions de test local `make dev`, commande de commit suggérée).
-   * Rappel : une fusion sur `main` peut déclencher un déploiement configuré par l'exploitant. Ouvrir une PR ; ne pas pousser directement sur `main` ni déclencher un déploiement sans demande explicite.
+Le rituel en 5 phases — cadrage Git → récapitulatif & plan avec **validation utilisateur obligatoire** → implémentation TDD strict (Verify RED, anti-bandaids, sécurité multi-tenant) → porte de vérification « Evidence Before Claims » (`make test` / `make lint` / `make build` + i18n) → bilan final **sans auto-commit** — est défini **uniquement** dans le SKILL.md. Ne pas recopier son contenu ici.
 
 ---
 
