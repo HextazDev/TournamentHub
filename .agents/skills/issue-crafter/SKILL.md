@@ -1,11 +1,13 @@
 ---
 name: issue-crafter
-description: Skill d'interview interactive et de cadrage de tickets (Lead Product Manager & Staff Engineer). Dialogue avec l'utilisateur pour challenger le besoin réel d'une issue, vérifier l'architecture et les doublons, rédiger une spécification Agent-Ready complète, et publier/trier automatiquement l'issue dans le GitHub Project #2 avec le CLI gh.
+version: "2.0.0"
+description: Skill d'interview interactive et de cadrage de tickets (Lead Product Manager & Staff Engineer). Dialogue avec l'utilisateur pour challenger le besoin réel d'une issue, vérifier l'architecture et les doublons, rédiger une spécification Agent-Ready complète, et la publier sur GitHub avec le CLI gh (triage dans le GitHub Project #2 réservé à l'instance du mainteneur).
+allowed-tools: "Read Grep Glob Bash(gh issue:*) Bash(gh pr:*) Bash(node scripts/triage-issue.js:*) Bash(git status:*) Bash(rg:*)"
 ---
 
 # 💡 Skill Issue Crafter - TournamentHub
 
-Ce skill transforme n'importe quelle idée brute en une **spécification technique de niveau Staff Engineer ("Agent-Ready")**, puis la publie et la classe automatiquement dans le GitHub Project `#2` (`HubTournament`).
+Ce skill transforme n'importe quelle idée brute en une **spécification technique de niveau Staff Engineer ("Agent-Ready")**, puis la publie sur GitHub — et la classe dans le GitHub Project `#2` (`HubTournament`) uniquement si l'instance y a accès (réservé au mainteneur).
 
 ---
 
@@ -162,6 +164,8 @@ Utiliser le script utilitaire dédié :
 ```bash
 node scripts/triage-issue.js <NUMERO_OU_URL> --priority <P0|P1|P2> --size <XS|S|M|L|XL> --status <Ready|Backlog>
 ```
+
+> **Note instance** : le Project #2 et `scripts/triage-issue.js` sont spécifiques à l'instance du mainteneur. Hors de celle-ci (fork, contributeur externe sans accès au project), sauter cette étape : l'issue créée suffit, et le signaler dans la restitution.
 
 ### 3. Restitution Finale pour l'Utilisateur
 Fournir un récapitulatif clair :
