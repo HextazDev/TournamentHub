@@ -346,6 +346,63 @@ BEGIN
   END IF;
 END $$;
 
+-- Invitation au staff d'un tournoi : acceptée sur la base réelle, et rôle effectif renvoyé (revue PR #100).
+DO $$
+DECLARE
+  v_org UUID;
+  v_tournament UUID;
+  v_role TEXT;
+BEGIN
+  v_org := (create_organization_with_owner('rls-staff-invite', 'S', 'fr', NULL, NULL, 'u-s-owner')).id;
+  INSERT INTO tournaments (organization_id, name) VALUES (v_org, 'Staff Cup') RETURNING id INTO v_tournament;
+  INSERT INTO organization_invites (organization_id, token_hash, role, created_by, expires_at, tournament_id)
+  VALUES (v_org, 'hash-staff', 'TOURNAMENT_TO', 'u-s-owner', NOW() + INTERVAL '1 hour', v_tournament);
+  SELECT i.role INTO v_role FROM accept_organization_invite('hash-staff', 'u-s-guest') AS i;
+  IF v_role IS DISTINCT FROM 'TOURNAMENT_TO'
+     OR NOT EXISTS (
+       SELECT 1 FROM tournament_staff
+       WHERE tournament_id = v_tournament AND user_id = 'u-s-guest' AND role = 'TOURNAMENT_TO'
+     ) THEN
+    RAISE EXCEPTION 'SEC-37: invitation au staff de tournoi non appliquée';
+  END IF;
+
+  -- Un membre existant garde son rôle : la réponse annonce le rôle réellement détenu, pas celui de l'invitation.
+  INSERT INTO organization_members (organization_id, user_id, role) VALUES (v_org, 'u-s-member', 'MEMBER');
+  INSERT INTO organization_invites (organization_id, token_hash, role, created_by, expires_at)
+  VALUES (v_org, 'hash-admin', 'ORG_ADMIN', 'u-s-owner', NOW() + INTERVAL '1 hour');
+  SELECT i.role INTO v_role FROM accept_organization_invite('hash-admin', 'u-s-member') AS i;
+  IF v_role IS DISTINCT FROM 'MEMBER' THEN
+    RAISE EXCEPTION 'SEC-37: rôle annoncé (%) différent du rôle détenu', v_role;
+  END IF;
+END $$;
+
+-- SEC-36 : seul un ORG_OWNER effectif transfère la propriété, avec ou sans rétrogradation.
+DO $$
+DECLARE
+  v_org UUID;
+  v_failed BOOLEAN := FALSE;
+BEGIN
+  v_org := (create_organization_with_owner('rls-transfer-caller', 'T', 'fr', NULL, NULL, 'u-c-owner')).id;
+  INSERT INTO organization_members (organization_id, user_id, role) VALUES (v_org, 'u-c-admin', 'ORG_ADMIN');
+  BEGIN
+    PERFORM transfer_organization_ownership(v_org, 'u-c-stranger', 'u-c-admin', FALSE);
+  EXCEPTION WHEN SQLSTATE 'HT004' THEN v_failed := TRUE;
+  END;
+  IF NOT v_failed THEN RAISE EXCEPTION 'SEC-36: transfert accepté pour un appelant non propriétaire'; END IF;
+  IF (SELECT role FROM organization_members WHERE organization_id = v_org AND user_id = 'u-c-admin') <> 'ORG_ADMIN' THEN
+    RAISE EXCEPTION 'SEC-36: promotion appliquée malgré le refus';
+  END IF;
+END $$;
+
+-- SEC-38 : une intégration n'accorde jamais ORG_OWNER (rôle exclusivement natif, RFC Q2).
+DO $$
+BEGIN
+  INSERT INTO integration_access_grants (organization_id, user_id, granted_role, reason)
+  VALUES ('00000000-0000-0000-0000-000000000011', 'u-discord-owner', 'ORG_OWNER', 'SERVER_OWNER');
+  RAISE EXCEPTION 'SEC-38: grant ORG_OWNER accepté pour une intégration';
+EXCEPTION WHEN check_violation THEN NULL;
+END $$;
+
 -- Nouvelles tables et RPC fermées à anon / authenticated.
 DO $$
 BEGIN

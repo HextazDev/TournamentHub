@@ -112,6 +112,18 @@ describe("RFC 0001 (#97): OrganizationAccess, rôles natifs et schémas Web auto
     expect(canPerform(owner, "MANAGE_TOURNAMENT", "t1")).toBe(true);
   });
 
+  it("SEC-38: le propriétaire du serveur Discord n'est jamais ORG_OWNER sans rôle natif", () => {
+    const discordOwner: OrganizationAccess = { level: "SERVER", reason: "SERVER_OWNER" };
+    expect(canPerform(discordOwner, "TRANSFER_OWNERSHIP")).toBe(false);
+    expect(canPerform(discordOwner, "DELETE_ORGANIZATION")).toBe(false);
+    expect(canPerform(discordOwner, "MANAGE_ORG_MEMBERS")).toBe(true);
+    expect(canPerform(discordOwner, "MANAGE_INTEGRATIONS")).toBe(true);
+
+    const nativeOwner: OrganizationAccess = { level: "SERVER", reason: "SERVER_OWNER", nativeRole: "ORG_OWNER", source: "NATIVE" };
+    expect(canPerform(nativeOwner, "TRANSFER_OWNERSHIP")).toBe(true);
+    expect(canPerform(nativeOwner, "DELETE_ORGANIZATION")).toBe(true);
+  });
+
   it("ORG_ADMIN gère l'organisation et les intégrations mais ne transfère pas la propriété", () => {
     const admin: OrganizationAccess = { level: "ORGANIZATION", role: "ORG_ADMIN", source: "NATIVE" };
     expect(canPerform(admin, "MANAGE_SERVER_SETTINGS")).toBe(true);

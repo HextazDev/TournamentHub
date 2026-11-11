@@ -307,7 +307,7 @@ export class GuildRegistryService {
       user_id: string;
       scope_type: "ORGANIZATION" | "TOURNAMENT";
       tournament_id?: string | null;
-      granted_role: "ORG_OWNER" | "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
+      granted_role: "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
       reason: GuildDirectoryReason;
       synced_at: string;
     } | null = null;
@@ -412,7 +412,7 @@ export class GuildRegistryService {
       user_id: string;
       scope_type: "ORGANIZATION" | "TOURNAMENT";
       tournament_id?: string | null;
-      granted_role: "ORG_OWNER" | "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
+      granted_role: "ORG_ADMIN" | "ORG_TO" | "TOURNAMENT_TO";
       reason: GuildDirectoryReason;
       synced_at: string;
     }[] = [];

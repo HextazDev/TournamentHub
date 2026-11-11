@@ -50,6 +50,12 @@ describe("SEC-01: Protection contre le squat de slug et collision snowflake Disc
     expect(OrganizationSlugSchema.safeParse("team-123").success).toBe(true);
   });
 
+  it("SEC-39: le slug discord-<serveur> est réservé aux organisations créées à l'installation du bot", () => {
+    expect(OrganizationSlugSchema.safeParse(`discord-${VICTIM_GUILD}`).success).toBe(false);
+    expect(OrganizationSlugSchema.safeParse("discord-42").success).toBe(false);
+    expect(OrganizationSlugSchema.safeParse("discord-fans").success).toBe(true);
+  });
+
   it("resolveOrganization résout l'external_id Discord avant le slug en cas de conflit", async () => {
     // Si un identifiant correspond à la fois à un external_id Discord et à un slug (cas hérité/anomalie),
     // l'intégration Discord doit prévaloir sur le slug.

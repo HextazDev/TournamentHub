@@ -37,7 +37,9 @@ export const OrganizationSlugSchema = z
   .regex(/^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$/, "Slug d'organisation invalide (3 à 48 caractères alphanumériques ou tirets)")
   .refine((slug) => !/^\d+$/.test(slug), "Le slug d'organisation ne peut pas être composé uniquement de chiffres")
   .refine((slug) => !UUID_SLUG_REGEX.test(slug), "Le slug d'organisation ne peut pas être un UUID")
-  .refine((slug) => !RESERVED_ORGANIZATION_SLUGS.has(slug), "Cet identifiant est réservé par le site");
+  .refine((slug) => !RESERVED_ORGANIZATION_SLUGS.has(slug), "Cet identifiant est réservé par le site")
+  // SEC-39 : forme des organisations créées à l'installation du bot ; la prendre à la main capterait le serveur visé.
+  .refine((slug) => !/^discord-\d+$/.test(slug), "Cet identifiant est réservé par le site");
 
 export const OrganizationRoleSchema = z.enum(["ORG_OWNER", "ORG_ADMIN", "ORG_TO"]);
 export type OrganizationRole = z.infer<typeof OrganizationRoleSchema>;
@@ -363,7 +365,7 @@ const SERVER_SETTINGS_REASONS: ReadonlySet<GuildAdminReason> = new Set(["SERVER_
 function resolveEffectiveOrgRole(access: Exclude<OrganizationAccess, { level: "TOURNAMENT" }>): OrganizationRole {
   if (access.level === "ORGANIZATION") return access.role;
   if (access.nativeRole) return access.nativeRole;
-  if (access.reason === "SERVER_OWNER") return "ORG_OWNER";
+  // SEC-38 : ORG_OWNER est exclusivement natif (RFC Q2). Le propriétaire du serveur Discord vaut ORG_ADMIN.
   if (SERVER_SETTINGS_REASONS.has(access.reason)) return "ORG_ADMIN";
   return "ORG_TO";
 }
