@@ -5,14 +5,14 @@ import sys
 import urllib.request
 from pathlib import Path
 
-LABEL = os.environ.get("TOURNAMENTHUB_ENV_LABEL", "Production")
+PROJECT = os.environ.get("NOTIFY_PROJECT", "TournamentHub Production")
 
 MESSAGES = {
-    "backup-failure": f"🚨 TournamentHub {LABEL} — échec de la sauvegarde Supabase ! Vérifier : journalctl -u tournamenthub-supabase-backup.service",
-    "deploy-success": f"✅ TournamentHub {LABEL} — nouvelle version déployée avec succès.",
-    "deploy-failure": f"🚨 TournamentHub {LABEL} — échec du déploiement. Vérifier le rollback : journalctl -u tournamenthub-prod-rollout.service",
-    "rollback-success": f"⚠️ TournamentHub {LABEL} — déploiement échoué, ancienne version restaurée avec succès.",
-    "rollback-failure": f"🚨 TournamentHub {LABEL} — échec critique : le rollback n'a pas fonctionné !",
+    "backup-failure": f"🚨 {PROJECT} — échec de la sauvegarde Supabase ! Vérifier : journalctl -u tournamenthub-supabase-backup.service",
+    "deploy-success": f"✅ {PROJECT} — nouvelle version déployée avec succès.",
+    "deploy-failure": f"🚨 {PROJECT} — échec du déploiement. Vérifier le rollback : journalctl -u tournamenthub-prod-rollout.service",
+    "rollback-success": f"⚠️ {PROJECT} — déploiement échoué, ancienne version restaurée avec succès.",
+    "rollback-failure": f"🚨 {PROJECT} — échec critique : le rollback n'a pas fonctionné !",
 }
 
 if len(sys.argv) != 2 or sys.argv[1] not in MESSAGES:

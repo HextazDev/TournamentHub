@@ -19,7 +19,9 @@ if [[ "$RESULT" -eq 0 ]]; then
     notify deploy-success
   fi
 else
-  if grep -qF '[ROLLOUT] Rolled back and verified ready' "$LOG"; then
+  if grep -qE 'not found|failed to resolve reference' "$LOG"; then
+    echo "[NOTIFY] target image not published yet; skipping notification" >&2
+  elif grep -qF '[ROLLOUT] Rolled back and verified ready' "$LOG"; then
     notify rollback-success
   elif grep -qF '[ROLLOUT] CRITICAL: Rollback' "$LOG"; then
     notify rollback-failure
