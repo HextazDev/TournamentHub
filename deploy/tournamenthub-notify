@@ -18,7 +18,7 @@ MESSAGES = {
 if len(sys.argv) != 2 or sys.argv[1] not in MESSAGES:
     sys.exit("Usage: tournamenthub-notify " + "|".join(MESSAGES))
 
-url = Path(os.path.expanduser("~/.config/tournamenthub/discord-webhook-url")).read_text().strip()
+url = Path(os.environ.get("DISCORD_WEBHOOK_URL_FILE", "/home/nolhan/.config/tournamenthub/discord-webhook-url")).read_text().strip()
 payload = json.dumps({"content": MESSAGES[sys.argv[1]], "allowed_mentions": {"parse": []}}).encode()
 request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json", "User-Agent": "TournamentHub-Monitor/1.0"}, method="POST")
 
