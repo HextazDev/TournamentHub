@@ -21,6 +21,12 @@ function mockTables(rows: Record<string, unknown>) {
             ? { data: rows[table], error: null }
             : { data: null, error: { code: "PGRST116", message: "no rows" } },
         ),
+      maybeSingle: () =>
+        Promise.resolve(
+          table in rows
+            ? { data: rows[table], error: null }
+            : { data: null, error: null },
+        ),
     };
     return builder;
   }) as unknown as typeof supabase.from);
@@ -43,7 +49,10 @@ describe("ScoreService - I18N-03 localized replies", () => {
   });
 
   it("answers in English when the server language is en", async () => {
-    mockTables({ server_settings: { language: "en" } });
+    mockTables({
+      organizations: { id: "org-1", slug: "org-1", language: "en" },
+      organization_integrations: { organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true },
+    });
     const interaction = selectMenuInteraction();
 
     await ScoreService.handleSelectMenu(interaction as never);
@@ -52,7 +61,10 @@ describe("ScoreService - I18N-03 localized replies", () => {
   });
 
   it("answers in French when the server language is fr", async () => {
-    mockTables({ server_settings: { language: "fr" } });
+    mockTables({
+      organizations: { id: "org-1", slug: "org-1", language: "fr" },
+      organization_integrations: { organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true },
+    });
     const interaction = selectMenuInteraction();
 
     await ScoreService.handleSelectMenu(interaction as never);

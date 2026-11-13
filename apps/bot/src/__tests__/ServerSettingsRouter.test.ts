@@ -21,19 +21,63 @@ import { serverSettingsRouter } from "../routes/ServerSettingsRouter";
 import { callRoute } from "./helpers/route";
 
 const GUILD = "111";
-let upserted: unknown;
+let updatedIntegrationConfig: Record<string, unknown> | undefined;
+let updatedOrg: Record<string, unknown> | undefined;
 
-function db(opts: { currentToRole?: string | null; upsertError?: { message: string } } = {}) {
-  upserted = undefined;
-  vi.mocked(supabase.from).mockImplementation((() => {
-    let op = "select";
+function db(opts: { currentToRole?: string | null; updateError?: { message: string } } = {}) {
+  updatedIntegrationConfig = undefined;
+  updatedOrg = undefined;
+  vi.mocked(supabase.from).mockImplementation(((table: string) => {
+    const currentTable = table;
     const b = {
       select: () => b,
       eq: () => b,
-      upsert: (payload: unknown) => ((op = "upsert"), (upserted = payload), b),
-      maybeSingle: () => Promise.resolve({ data: opts.currentToRole === undefined ? null : { to_role_id: opts.currentToRole }, error: null }),
-      single: () =>
-        Promise.resolve(op === "upsert" && opts.upsertError ? { data: null, error: opts.upsertError } : { data: upserted, error: null }),
+      update: (payload: Record<string, unknown>) => {
+        if (currentTable === "organization_integrations") {
+          updatedIntegrationConfig = payload.config as Record<string, unknown>;
+        } else if (currentTable === "organizations") {
+          updatedOrg = payload;
+        }
+        return b;
+      },
+      maybeSingle: () => {
+        if (currentTable === "organization_integrations") {
+          const cfg =
+            opts.currentToRole !== undefined && opts.currentToRole !== null
+              ? { to_role_id: opts.currentToRole }
+              : {};
+          return Promise.resolve({
+            data: {
+              organization_id: "org-1",
+              config: cfg,
+              provider: "DISCORD",
+              external_id: GUILD,
+              enabled: true,
+            },
+            error: null,
+          });
+        }
+        if (currentTable === "organizations") {
+          return Promise.resolve({
+            data: {
+              id: "org-1",
+              slug: "guild-111",
+              name: "Guild 111",
+              language: "fr",
+              invite_url: null,
+            },
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+      single: () => Promise.resolve({ data: null, error: null }),
+      then: (resolve: (val: unknown) => unknown) => {
+        if (opts.updateError) {
+          return Promise.resolve(resolve({ data: null, error: opts.updateError }));
+        }
+        return Promise.resolve(resolve({ data: null, error: null }));
+      },
     };
     return b;
   }) as unknown as typeof supabase.from);
@@ -58,7 +102,7 @@ describe("PUT /api/server-settings", () => {
     const out = await put({ guild_id: GUILD, to_role_id: "2" }, "TO_ROLE");
     expect(out.status).toBe(403);
     expect(out.body).toMatchObject({ code: "SERVER_SETTINGS_RESERVED" });
-    expect(upserted).toBeUndefined();
+    expect(updatedIntegrationConfig).toBeUndefined();
     expect(GuildRegistryService.syncGuildAdmins).not.toHaveBeenCalled();
   });
 
@@ -68,7 +112,8 @@ describe("PUT /api/server-settings", () => {
       db({ currentToRole: "1" });
       const out = await put({ guild_id: GUILD, to_role_id: "2" }, reason);
       expect(out.status).toBe(200);
-      expect(upserted).toMatchObject({ guild_id: GUILD, to_role_id: "2" });
+      expect(out.body).toMatchObject({ guild_id: GUILD, to_role_id: "2" });
+      expect(updatedIntegrationConfig).toMatchObject({ to_role_id: "2" });
     },
   );
 
@@ -83,7 +128,7 @@ describe("PUT /api/server-settings", () => {
     const out = await put({ guild_id: GUILD, invite_url: "https://evil.example/abc" });
     expect(out.status).toBe(400);
     expect(out.body).toEqual({ error: "Invitation Discord invalide" });
-    expect(upserted).toBeUndefined();
+    expect(updatedIntegrationConfig).toBeUndefined();
   });
 
   it("SEC-08: refuse un identifiant de rôle ou de salon qui n'est pas un ID Discord, avec un message explicite", async () => {
@@ -91,15 +136,16 @@ describe("PUT /api/server-settings", () => {
     const out = await put({ guild_id: GUILD, to_role_id: "abc" });
     expect(out.status).toBe(400);
     expect(out.body).toEqual({ error: "Identifiant Discord invalide" });
-    expect(upserted).toBeUndefined();
+    expect(updatedIntegrationConfig).toBeUndefined();
   });
 
   it("enregistre une invitation Discord valide et ne réécrit pas la langue absente du corps", async () => {
     db({ currentToRole: null });
     const out = await put({ guild_id: GUILD, invite_url: "https://discord.gg/abc-123" });
     expect(out.status).toBe(200);
-    expect(upserted).toMatchObject({ guild_id: GUILD, invite_url: "https://discord.gg/abc-123" });
-    expect(upserted).not.toHaveProperty("language");
+    expect(out.body).toMatchObject({ guild_id: GUILD, invite_url: "https://discord.gg/abc-123" });
+    expect(updatedOrg).toMatchObject({ invite_url: "https://discord.gg/abc-123" });
+    expect(updatedOrg).not.toHaveProperty("language");
   });
 
   it("DISC-08: un changement de rôle TO resynchronise guild_admins", async () => {
@@ -127,7 +173,7 @@ describe("PUT /api/server-settings", () => {
   });
 
   it("une erreur Supabase est journalisée et renvoyée en 500, sans resynchronisation", async () => {
-    db({ currentToRole: "1", upsertError: { message: "boom" } });
+    db({ currentToRole: "1", updateError: { message: "boom" } });
     const out = await put({ guild_id: GUILD, to_role_id: "2" });
     expect(out.status).toBe(500);
     expect(out.body).toEqual({ error: "Internal Server Error", code: "INTERNAL_ERROR" });

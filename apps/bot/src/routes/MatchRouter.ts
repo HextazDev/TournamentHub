@@ -3,14 +3,14 @@ import { supabase } from "../lib/supabase";
 import { ScoreService } from "../services/ScoreService";
 import { LeaderboardService } from "../services/LeaderboardService";
 import { TextChannel } from "discord.js";
-import { getAuthenticatedGuildId, verifyMatchGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, resolveOrganization, verifyMatchGuild } from "../utils/tenant";
 import { ForceScoreSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 
 export const matchRouter = Router();
 
-matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match("id")), async (req, res) => {
+matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match("id"), { action: "SCORE_MATCH" }), async (req, res) => {
   try {
     const matchId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -24,6 +24,18 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
       return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
     const { team1_score, team2_score, status } = parsed.data;
+
+    // SEC-31 : un match dont l'affiche est incomplète (TBD, BYE) ne se score pas.
+    const { data: currentMatch, error: currentErr } = await supabase
+      .from("matches")
+      .select("team1_id, team2_id")
+      .eq("id", matchId)
+      .maybeSingle();
+    if (currentErr) throw currentErr;
+    if (!currentMatch) return res.status(404).json({ error: "Match not found" });
+    if (!currentMatch.team1_id || !currentMatch.team2_id) {
+      return res.status(400).json({ error: "Ce match n'a pas encore ses deux équipes.", code: "MATCH_NOT_READY" });
+    }
 
     // Un forfait (FF) suit la même progression et le même recalcul qu'un COMPLETED ;
     // computeStandings lui applique la sémantique « forfait exclusif » (LB-05, LB-07).
@@ -41,7 +53,9 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
     if (updateError) throw updateError;
     if (!updatedMatch) return res.status(404).json({ error: "Match not found" });
 
-    const discordClient = req.app.locals.discordClient;
+    // SEC-26 : aucun effet Discord (salon, annonce) quand l'intégration de l'organisation est coupée.
+    const org = await resolveOrganization(authGuildId);
+    const discordClient = org?.discordEnabled ? req.app.locals.discordClient : undefined;
     let channel: TextChannel | undefined;
 
     if (discordClient && updatedMatch.discord_channel_id) {

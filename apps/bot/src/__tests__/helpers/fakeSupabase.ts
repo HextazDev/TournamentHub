@@ -1,8 +1,15 @@
 type Row = Record<string, unknown>;
-type Filter =
+export type Filter =
   | { column: string; value: unknown }
   | { column: string; values: readonly unknown[] }
-  | { column: string; not: unknown };
+  | { column: string; not: unknown }
+  | { column: string; ilike: string };
+
+export interface ReadLog {
+  table: string;
+  counting: boolean;
+  filters: Filter[];
+}
 
 export interface WriteLog {
   table: string;
@@ -28,7 +35,9 @@ export interface QueryResult {
  */
 export class FakeSupabase {
   public readonly writes: WriteLog[] = [];
+  public readonly reads: ReadLog[] = [];
   public readonly staleReads: Record<string, Row[]> = {};
+  public readonly tableErrors: Record<string, { code: string; message: string }> = {};
   public rpcHandler?: (fnName: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> | { data: unknown; error: unknown };
 
   constructor(public readonly tables: Record<string, Row[]>) {}
@@ -114,6 +123,12 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this;
   }
 
+  /** Égalité insensible à la casse ; les jokers `%`/`_` sont neutralisés par l'appelant. */
+  public ilike(column: string, pattern: string) {
+    this.filters.push({ column, ilike: pattern });
+    return this;
+  }
+
   public order() {
     return this;
   }
@@ -155,6 +170,10 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private matches(row: Row): boolean {
     return this.filters.every(f => {
       if ("values" in f) return f.values.includes(row[f.column]);
+      if ("ilike" in f) {
+        const value = row[f.column];
+        return typeof value === "string" && value.toLowerCase() === f.ilike.replace(/\\([%_\\])/g, "$1").toLowerCase();
+      }
       if ("not" in f) return f.not === null ? row[f.column] != null : row[f.column] !== f.not;
       return row[f.column] === f.value;
     });
@@ -168,6 +187,9 @@ class FakeQuery implements PromiseLike<QueryResult> {
   }
 
   private execute(): QueryResult {
+    if (this.db.tableErrors[this.table]) {
+      return { data: null, error: this.db.tableErrors[this.table]! };
+    }
     const rows = this.db.tables[this.table] ?? (this.db.tables[this.table] = []);
 
     if (this.op === "insert") {
@@ -196,6 +218,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
     const source = this.db.staleReads[this.table] ?? rows;
     const found = source.filter(r => this.matches(r)).map(r => ({ ...r }));
+    this.db.reads.push({ table: this.table, counting: this.counting, filters: [...this.filters] });
     if (this.counting) return { data: null, error: null, count: found.length };
     return { data: this.max === null ? found : found.slice(0, this.max), error: null };
   }

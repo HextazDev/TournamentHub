@@ -3,6 +3,7 @@
 import { useRealtimeMatches } from "@/hooks/useRealtimeMatches";
 import { RealtimeBadge } from "@/components/RealtimeBadge";
 import { useTranslation } from "@/i18n/LanguageContext";
+import { formatRoundName } from "@hub/shared";
 
 interface RealtimeMatchesListProps {
   initialMatches: any[];
@@ -99,7 +100,7 @@ export function RealtimeMatchesList({
                   >
                     <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d] flex justify-between">
                       <span>
-                        {match.phase?.name || t("common.match")} • Round {match.round_number || "?"}
+                        {match.phase?.name || t("common.match")} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format) : "Round ?"}
                       </span>
                       {match.match_number && (
                         <span className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400">
@@ -178,7 +179,7 @@ export function RealtimeMatchesList({
                   >
                     <div className="text-xs text-slate-500 px-3 py-1.5 border-b border-slate-800/50 bg-[#12141d] flex justify-between">
                       <span>
-                        {match.phase?.name || t("common.match")} • Round {match.round_number || "?"}
+                        {match.phase?.name || t("common.match")} • {match.round_number ? formatRoundName(match.round_number, match.phase?.format) : "Round ?"}
                       </span>
                       {match.match_number && (
                         <span className="opacity-0 group-hover:opacity-100 transition-opacity text-slate-400">

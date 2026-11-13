@@ -25,7 +25,7 @@ export default async function PublicMatchesPage({
     const phaseIds = phases.map(p => p.id);
     const { data } = await supabaseAdmin
       .from("matches")
-      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order)")
+      .select("*, team1:team1_id(*), team2:team2_id(*), phase:phase_id(name, phase_order, format)")
       .in("phase_id", phaseIds);
     if (data) matches = data;
   }

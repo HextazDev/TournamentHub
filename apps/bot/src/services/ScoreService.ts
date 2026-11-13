@@ -6,6 +6,7 @@ import { LifecycleService } from "./LifecycleService";
 import { tBot, getGuildLanguage, getPhaseLanguage, type BotLocale } from "../i18n";
 import { logger } from "../utils/logger";
 import { isFinishedMatchStatus } from "@hub/shared";
+import { resolveOrganization } from "../utils/tenant";
 
 type MatchValidationUpdate =
   | { status: "COMPLETED"; winner_id?: string; loser_id?: string }
@@ -209,8 +210,12 @@ export class ScoreService {
       if (outcome === "error") return interaction.followUp({ content: tBot(lang, 'score.updateError'), ephemeral: true });
       if (outcome === "already_processed") return this.rejectProcessedClick(interaction, lang, matchId, "WAITING_VALIDATION");
 
-      const { data: settings } = await supabase.from("server_settings").select("to_role_id").eq("guild_id", interaction.guildId).single();
-      const toPing = settings?.to_role_id ? `<@&${settings.to_role_id}>` : tBot(lang, 'score.toFallback');
+      let toRoleId: string | null = null;
+      if (interaction.guildId) {
+        const org = await resolveOrganization(interaction.guildId);
+        toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
+      }
+      const toPing = toRoleId ? `<@&${toRoleId}>` : tBot(lang, 'score.toFallback');
 
       const embedBase = interaction.message.embeds[0];
       if (!embedBase) return interaction.editReply({ content: tBot(lang, 'score.originalEmbedNotFound'), components: [] });
@@ -442,8 +447,9 @@ export class ScoreService {
     if (!winnerId || !loserId) {
       if (channel) {
         const lang = await getPhaseLanguage(channel.guildId, match.phase_id);
-        const { data: settings } = await supabase.from("server_settings").select("to_role_id").eq("guild_id", channel.guildId).single();
-        const toPing = settings?.to_role_id ? `<@&${settings.to_role_id}>` : tBot(lang, 'score.toFallback');
+        const org = await resolveOrganization(channel.guildId);
+        const toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
+        const toPing = toRoleId ? `<@&${toRoleId}>` : tBot(lang, 'score.toFallback');
         await channel.send(tBot(lang, 'score.drawMatchNotice', { matchNumber: match.match_number || '?', toPing }));
       }
       return;

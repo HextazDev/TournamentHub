@@ -7,6 +7,7 @@ import {
 } from "discord.js";
 import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage, discordLocalizations } from "../i18n";
+import { resolveOrganization } from "../utils/tenant";
 
 export const data = new SlashCommandBuilder()
   .setName("admin-transfer")
@@ -67,13 +68,8 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const lang = await getGuildLanguage(interaction.guildId);
 
   // 1. Autorisation (Sécurité)
-  const { data: settings } = await supabase
-    .from("server_settings")
-    .select("to_role_id")
-    .eq("guild_id", interaction.guildId)
-    .single();
-
-  const toRoleId = settings?.to_role_id;
+  const org = await resolveOrganization(interaction.guildId);
+  const toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
   const member = interaction.member as GuildMember;
 
   if (!toRoleId || !member.roles.cache.has(toRoleId)) {

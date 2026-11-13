@@ -1,5 +1,5 @@
 // Règles d'accès et de guidage pures (sans I/O) : partagées par les pages serveur et testées unitairement.
-import { canPerform, type GuildAccess, type GuildDirectoryReason } from "@hub/shared";
+import { canPerform, type GuildAccess, type GuildDirectoryReason, type OrganizationAccess } from "@hub/shared";
 
 const ADMINISTRATOR = BigInt(0x8);
 const MANAGE_GUILD = BigInt(0x20);
@@ -14,22 +14,27 @@ const BOT_INVITE_PERMISSIONS = (
   BigInt(0x10000000) // Gérer les rôles
 ).toString();
 
-export interface TournamentVisibility {
-  guild_id: string;
-  is_public: boolean | null;
+/** Préfixe du cookie httpOnly qui porte le jeton du lien de partage d'un tournoi privé. */
+export const TOURNAMENT_INVITE_COOKIE_PREFIX = "tournament_invite_";
+
+export interface PrivateTournamentAccessFacts {
+  isOrganizationMember: boolean;
+  isTournamentStaff: boolean;
+  isParticipant: boolean;
+  hasValidInvite: boolean;
+  /** Membre du serveur Discord rattaché, et seulement tant que l'intégration est active. */
+  isActiveDiscordMember: boolean;
 }
 
-/**
- * SEC-10 : un tournoi est lisible s'il est public, ou si le visiteur est membre de son serveur.
- * L'URL doit en plus désigner le bon serveur, pour qu'aucun lien ne présente un tournoi sous un autre organisateur.
- */
-export function canViewTournament(
-  tournament: TournamentVisibility,
-  routeGuildId: string,
-  memberGuildIds: ReadonlySet<string>,
-): boolean {
-  if (tournament.guild_id !== routeGuildId) return false;
-  return tournament.is_public === true || memberGuildIds.has(tournament.guild_id);
+/** SEC-10 / RFC, décision 3 : les conditions d'accès à un tournoi privé, indépendantes les unes des autres. */
+export function canViewPrivateTournament(facts: PrivateTournamentAccessFacts): boolean {
+  return (
+    facts.isOrganizationMember ||
+    facts.isTournamentStaff ||
+    facts.isParticipant ||
+    facts.hasValidInvite ||
+    facts.isActiveDiscordMember
+  );
 }
 
 /** Droits de gestion visibles dans l'OAuth Discord (le rôle TO, lui, n'apparaît que dans guild_admins). */
@@ -125,12 +130,14 @@ export type TournamentNextStep =
 /** Prochaine action utile pour l'organisateur, dans l'ordre des dépendances réelles du parcours. */
 export function tournamentNextStep(
   t: NextStepTournament,
-  ctx: { phasesCount: number; teamsCount: number; serverSetupComplete: boolean },
+  ctx: { phasesCount: number; teamsCount: number; serverSetupComplete: boolean; discordEnabled?: boolean },
 ): TournamentNextStep | null {
   if (t.status === "ACTIVE") return "runMatches";
   if (t.status === "COMPLETED" || t.status === "ARCHIVED") return null;
-  if (!ctx.serverSetupComplete) return "serverSetup";
-  if (!t.discord_registration_channel_id) return "registrationChannel";
+  if (ctx.discordEnabled !== false) {
+    if (!ctx.serverSetupComplete) return "serverSetup";
+    if (!t.discord_registration_channel_id) return "registrationChannel";
+  }
   if (ctx.phasesCount === 0) return "structure";
   if (!t.is_registration_open) return "openRegistrations";
   // CHK-05 (#15) : si le check-in est désactivé, on saute l'étape des dates de check-in
@@ -139,30 +146,32 @@ export function tournamentNextStep(
   return "placementAndLaunch";
 }
 
-export function buildBotInviteUrl(clientId: string, guildId: string): string {
+export function buildBotInviteUrl(clientId: string, guildId?: string | null): string {
   const url = new URL("https://discord.com/oauth2/authorize");
   url.searchParams.set("client_id", clientId);
   url.searchParams.set("scope", "bot applications.commands");
   url.searchParams.set("permissions", BOT_INVITE_PERMISSIONS);
-  url.searchParams.set("guild_id", guildId);
-  url.searchParams.set("disable_guild_select", "true");
+  if (guildId && /^\d+$/.test(guildId)) {
+    url.searchParams.set("guild_id", guildId);
+    url.searchParams.set("disable_guild_select", "true");
+  }
   return url.toString();
 }
 
 /**
- * SEC-21 : tournois lisibles dans le panel. `null` = tous les tournois du serveur (niveau SERVER) ;
+ * SEC-21 : tournois lisibles dans le panel. `null` = tous les tournois du serveur / organisation (niveau SERVER / ORGANIZATION) ;
  * sinon, uniquement ceux dont le membre porte le rôle TO (niveau TOURNAMENT).
  */
-export function managedTournamentIds(access: GuildAccess): readonly string[] | null {
-  return access.level === "SERVER" ? null : access.tournamentIds;
+export function managedTournamentIds(access: GuildAccess | OrganizationAccess): readonly string[] | null {
+  return access.level === "SERVER" || access.level === "ORGANIZATION" ? null : access.tournamentIds;
 }
 
-/** Actions de niveau serveur affichées dans le panel (le bot refuse de toute façon les autres, SEC-21). */
-export function panelCapabilities(access: GuildAccess): { canCreate: boolean; canDelete: boolean; canConfigureServer: boolean } {
+/** Actions de niveau serveur / organisation affichées dans le panel (le bot refuse de toute façon les autres, SEC-21). */
+export function panelCapabilities(access: GuildAccess | OrganizationAccess): { canCreate: boolean; canDelete: boolean; canConfigureServer: boolean } {
   return {
     canCreate: canPerform(access, "CREATE_TOURNAMENT"),
-    // DELETE_TOURNAMENT ne dépend pas du tournoi au niveau SERVER et est toujours refusé au niveau TOURNAMENT.
-    canDelete: access.level === "SERVER" && canPerform(access, "DELETE_TOURNAMENT"),
+    // DELETE_TOURNAMENT ne dépend pas du tournoi au niveau SERVER/ORGANIZATION et est toujours refusé au niveau TOURNAMENT.
+    canDelete: (access.level === "SERVER" || access.level === "ORGANIZATION") && canPerform(access, "DELETE_TOURNAMENT"),
     canConfigureServer: canPerform(access, "MANAGE_SERVER_SETTINGS"),
   };
 }

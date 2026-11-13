@@ -8,7 +8,12 @@ import { logger } from "./logger";
  * Toute autre erreur (Supabase, Discord, exception inattendue) reste technique et masquée.
  */
 export class DomainError extends Error {
-  constructor(public readonly status: 400 | 409, message: string) {
+  constructor(
+    public readonly status: 400 | 403 | 404 | 409,
+    message: string,
+    /** Données structurées pour le client (`code` stable, compteurs), jamais de détail technique. */
+    public readonly details: Record<string, string | number> = {},
+  ) {
     super(message);
     this.name = "DomainError";
   }
@@ -23,7 +28,7 @@ export class DomainError extends Error {
 export function sendServerError(res: Response, error: unknown, context: string, status = 500): void {
   if (error instanceof DomainError) {
     logger.warn(`[${context}]`, error);
-    res.status(error.status).json({ error: error.message });
+    res.status(error.status).json({ error: error.message, ...error.details });
     return;
   }
   logger.error(`[${context}]`, error);

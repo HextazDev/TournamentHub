@@ -44,3 +44,40 @@ jobs:
           SUPABASE_URL: http://127.0.0.1:54321
           SUPABASE_SERVICE_ROLE_KEY: dummy_key_for_ci
         run: npm run build
+
+  validate-database:
+    name: Validate Database (Migrations & SQL Tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: postgres
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🗄️ Replay migrations on a throwaway database
+        run: |
+          psql -q -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE anon NOLOGIN" \
+            -c "CREATE ROLE authenticated NOLOGIN" \
+            -c "CREATE ROLE service_role NOLOGIN BYPASSRLS"
+          for f in $(ls supabase/migrations/*.sql | sort); do
+            psql -q -v ON_ERROR_STOP=1 --single-transaction -f "$f" > /dev/null
+          done
+
+      - name: 🔒 Run RLS & RPC tests
+        run: psql -q -v ON_ERROR_STOP=1 -f supabase/tests/rls_access.sql
