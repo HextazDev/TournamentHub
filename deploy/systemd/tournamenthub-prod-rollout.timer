@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic pull check for TournamentHub prod container updates
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=15s
+Persistent=true
+Unit=tournamenthub-prod-rollout.service
+
+[Install]
+WantedBy=timers.target
