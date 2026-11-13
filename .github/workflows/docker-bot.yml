@@ -162,7 +162,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: read
       packages: write
     steps:
       - name: Verify ref still points to current commit (prevent stale tag overwrite)
@@ -197,6 +196,6 @@ jobs:
           else
             PROMO_TAG="${GITHUB_REF#refs/tags/}"
           fi
-          docker buildx imagetools create -t "${BOT_REPO}:${PROMO_TAG}" "${BOT_DIGEST}"
-          docker buildx imagetools create -t "${WEB_REPO}:${PROMO_TAG}" "${WEB_DIGEST}"
+          docker buildx imagetools create -t "${BOT_REPO}:${PROMO_TAG}" "${BOT_REPO}@${BOT_DIGEST#*@}"
+          docker buildx imagetools create -t "${WEB_REPO}:${PROMO_TAG}" "${WEB_REPO}@${WEB_DIGEST#*@}"
           echo "Promoted \`${PROMO_TAG}\` for both bot (\`${BOT_DIGEST}\`) and web (\`${WEB_DIGEST}\`)." >> "$GITHUB_STEP_SUMMARY"
