@@ -1,0 +1,21 @@
+[Unit]
+Description=TournamentHub prod pull rollout with automatic rollback
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/tournamenthub
+Environment=COMPOSE_PROJECT_NAME=tournamenthub
+Environment=BOT_ENV_FILE=/etc/tournamenthub/prod-bot.env
+Environment=BOT_HOST_PORT=8080
+Environment=BOT_IMAGE=ghcr.io/hextazdev/tournamenthub-bot:prod
+Environment=SKIP_IF_UNCHANGED=1
+Environment=REJECTED_STATE_FILE=/var/tmp/tournamenthub-prod-rejected-target.state
+# For full-stack prod (bot + web), uncomment:
+# Environment=DEPLOY_PROFILE=full
+# Environment=WEB_ENV_FILE=/etc/tournamenthub/prod-web.env
+# Environment=WEB_HOST_PORT=3000
+# Environment=WEB_IMAGE=ghcr.io/hextazdev/tournamenthub-web:prod
+ExecStart=/opt/tournamenthub/deploy/rollout.sh

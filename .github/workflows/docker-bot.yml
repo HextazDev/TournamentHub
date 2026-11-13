@@ -162,6 +162,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      packages: read
       packages: write
     steps:
       - name: Verify ref still points to current commit (prevent stale tag overwrite)
