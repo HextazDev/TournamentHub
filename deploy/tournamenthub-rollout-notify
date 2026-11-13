@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+ROLLOUT_SCRIPT="${ROLLOUT_SCRIPT:-deploy/rollout.sh}"
+NOTIFY_BIN="${NOTIFY_BIN:-/usr/local/bin/tournamenthub-notify}"
+LOG="$(mktemp)"
+trap 'rm -f "$LOG"' EXIT
+
+"$ROLLOUT_SCRIPT" 2>&1 | tee "$LOG"
+RESULT=${PIPESTATUS[0]}
+
+notify() {
+  "$NOTIFY_BIN" "$1" \
+    || echo "[NOTIFY] Discord notification failed" >&2
+}
+
+if [[ "$RESULT" -eq 0 ]]; then
+  if grep -qF '[ROLLOUT] Success:' "$LOG"; then
+    notify deploy-success
+  fi
+else
+  if grep -qF '[ROLLOUT] Rolled back and verified ready' "$LOG"; then
+    notify rollback-success
+  elif grep -qF '[ROLLOUT] CRITICAL: Rollback' "$LOG"; then
+    notify rollback-failure
+  else
+    notify deploy-failure
+  fi
+fi
+
+exit "$RESULT"
