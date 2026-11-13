@@ -1,0 +1,50 @@
+name: DB migrations (Supabase)
+
+# Migrations are applied from supabase/migrations/ via the Supabase CLI.
+# - staging: applied automatically on every push to `staging`.
+# - prod (main): the job runs in the protected `production` environment and
+#   WAITS FOR MANUAL APPROVAL (Settings -> Environments -> production ->
+#   required reviewers). Migrations are never auto-applied to prod.
+#
+# Required repository secrets:
+#   SUPABASE_PROJECT_REF_STAGING / SUPABASE_DB_PASSWORD_STAGING
+#   SUPABASE_PROJECT_REF_PROD    / SUPABASE_DB_PASSWORD_PROD
+
+on:
+  push:
+    branches: [main, staging]
+
+permissions: {}
+
+concurrency:
+  group: db-migrate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  migrate-staging:
+    name: Apply migrations to STAGING (automatic)
+    if: github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push local migrations to staging DB
+        env:
+          DB_URL: postgresql://postgres:${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}@db.${{ secrets.SUPABASE_PROJECT_REF_STAGING }}.supabase.co:5432/postgres
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL"
+
+  migrate-prod:
+    name: Apply migrations to PROD (requires approval)
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://supabase.com/dashboard/project/${{ secrets.SUPABASE_PROJECT_REF_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Push local migrations to prod DB
+        env:
+          DB_URL: postgresql://postgres:${{ secrets.SUPABASE_DB_PASSWORD_PROD }}@db.${{ secrets.SUPABASE_PROJECT_REF_PROD }}.supabase.co:5432/postgres
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL"

@@ -158,7 +158,7 @@ jobs:
   promote-tags:
     name: Atomically promote matching bot and web tags
     needs: [docker-bot, docker-web]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/tags/v'))
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -191,6 +191,8 @@ jobs:
           WEB_REPO="ghcr.io/${OWNER_LC}/tournamenthub-web"
           if [[ "${GITHUB_REF}" == "refs/heads/staging" ]]; then
             PROMO_TAG="staging"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            PROMO_TAG="prod"
           else
             PROMO_TAG="${GITHUB_REF#refs/tags/}"
           fi
