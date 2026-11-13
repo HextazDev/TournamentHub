@@ -14,7 +14,7 @@
     "@hello-pangea/dnd": "^18.0.1",
     "@hookform/resolvers": "^5.2.2",
     "@hub/shared": "*",
-    "@supabase/supabase-js": "^2.103.2",
+    "@supabase/supabase-js": "^2.119.0",
     "dayjs": "^1.11.20",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^1.7.0",
