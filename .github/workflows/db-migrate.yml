@@ -30,21 +30,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Push local migrations to staging DB
         env:
-          DB_URL: postgresql://postgres:${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}@db.${{ secrets.SUPABASE_PROJECT_REF_STAGING }}.supabase.co:5432/postgres
+          DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_STAGING }}.supabase.co:5432/postgres
+          DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
         run: |
-          docker run --rm -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL"
+          docker run --rm -e DB_PASSWORD -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL" --password "$DB_PASSWORD"
 
   migrate-prod:
     name: Apply migrations to PROD (requires approval)
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: https://supabase.com/dashboard/project/${{ secrets.SUPABASE_PROJECT_REF_PROD }}
+    environment: production
     steps:
       - uses: actions/checkout@v4
       - name: Push local migrations to prod DB
         env:
-          DB_URL: postgresql://postgres:${{ secrets.SUPABASE_DB_PASSWORD_PROD }}@db.${{ secrets.SUPABASE_PROJECT_REF_PROD }}.supabase.co:5432/postgres
+          DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_PROD }}.supabase.co:5432/postgres
+          DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
         run: |
-          docker run --rm -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL"
+          docker run --rm -e DB_PASSWORD -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL" --password "$DB_PASSWORD"
