@@ -13,6 +13,13 @@ name: DB migrations (Supabase)
 # REQUIRED SUPABASE DASHBOARD SETTING (per project, prod + staging):
 #   Settings -> Database -> Network restrictions -> DISABLE (or allow 0.0.0.0/0).
 #   Otherwise GitHub-hosted runner IPs are refused: dial error ECONNREFUSED.
+#
+# CONNECTION: shared POOLER in SESSION MODE (port 5432 on aws-0-<region>.pooler.supabase.com).
+# The direct host db.<ref>.supabase.co is IPv6-only on current Supabase infra (no A record),
+# so IPv4-only networks (GitHub runners, homelab without IPv6) get ECONNREFUSED on 5432.
+# Session mode on the pooler is IPv4-compatible and required for `db push`
+# (transaction mode port 6543 does not support SET session_replication_role).
+# Pooler username format: postgres.<project-ref>. Region for both projects here: eu-west-1.
 
 on:
   push:
@@ -40,10 +47,7 @@ jobs:
           DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
-          DB_HOST="db.${DB_REF}.supabase.co"
-          IPV4=$(DB_HOST="$DB_HOST" python3 -c 'import os,socket; print(socket.getaddrinfo(os.environ["DB_HOST"], 5432, socket.AF_INET)[0][4][0])')
-          echo "$IPV4 $DB_HOST" | sudo tee -a /etc/hosts
-          DB_URL="postgresql://postgres:${ENC_PW}@${DB_HOST}:5432/postgres?sslmode=require"
+          DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
           supabase db push --db-url "$DB_URL"
 
   migrate-prod:
@@ -61,8 +65,5 @@ jobs:
           DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
-          DB_HOST="db.${DB_REF}.supabase.co"
-          IPV4=$(DB_HOST="$DB_HOST" python3 -c 'import os,socket; print(socket.getaddrinfo(os.environ["DB_HOST"], 5432, socket.AF_INET)[0][4][0])')
-          echo "$IPV4 $DB_HOST" | sudo tee -a /etc/hosts
-          DB_URL="postgresql://postgres:${ENC_PW}@${DB_HOST}:5432/postgres?sslmode=require"
+          DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
           supabase db push --db-url "$DB_URL"
