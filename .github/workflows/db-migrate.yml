@@ -48,7 +48,7 @@ jobs:
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
           DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
-          supabase db push --db-url "$DB_URL"
+          supabase db push --db-url "$DB_URL" --yes
 
   migrate-prod:
     name: Apply migrations to PROD (requires approval)
@@ -66,4 +66,4 @@ jobs:
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
           DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
-          supabase db push --db-url "$DB_URL"
+          supabase db push --db-url "$DB_URL" --yes
