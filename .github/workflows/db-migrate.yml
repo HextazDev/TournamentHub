@@ -32,9 +32,12 @@ jobs:
         run: npm install -g supabase
       - name: Push local migrations to staging DB
         env:
-          DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_STAGING }}.supabase.co:5432/postgres
           DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
-        run: supabase db push --db-url "$DB_URL" --password "$DB_PASSWORD"
+          DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+        run: |
+          ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
+          DB_URL="postgresql://postgres:${ENC_PW}@db.${DB_REF}.supabase.co:5432/postgres"
+          supabase db push --db-url "$DB_URL"
 
   migrate-prod:
     name: Apply migrations to PROD (requires approval)
@@ -47,6 +50,9 @@ jobs:
         run: npm install -g supabase
       - name: Push local migrations to prod DB
         env:
-          DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_PROD }}.supabase.co:5432/postgres
           DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
-        run: supabase db push --db-url "$DB_URL" --password "$DB_PASSWORD"
+          DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
+        run: |
+          ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
+          DB_URL="postgresql://postgres:${ENC_PW}@db.${DB_REF}.supabase.co:5432/postgres"
+          supabase db push --db-url "$DB_URL"
