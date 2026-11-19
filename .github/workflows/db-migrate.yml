@@ -28,12 +28,13 @@ jobs:
     environment: staging
     steps:
       - uses: actions/checkout@v4
+      - name: Install Supabase CLI
+        run: npm install -g supabase
       - name: Push local migrations to staging DB
         env:
           DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_STAGING }}.supabase.co:5432/postgres
           DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
-        run: |
-          docker run --rm -e DB_PASSWORD -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL" --password "$DB_PASSWORD"
+        run: supabase db push --db-url "$DB_URL" --password "$DB_PASSWORD"
 
   migrate-prod:
     name: Apply migrations to PROD (requires approval)
@@ -42,9 +43,10 @@ jobs:
     environment: production
     steps:
       - uses: actions/checkout@v4
+      - name: Install Supabase CLI
+        run: npm install -g supabase
       - name: Push local migrations to prod DB
         env:
           DB_URL: postgresql://postgres@db.${{ secrets.SUPABASE_PROJECT_REF_PROD }}.supabase.co:5432/postgres
           DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
-        run: |
-          docker run --rm -e DB_PASSWORD -v "$PWD:/work" -w /work supabase/cli:latest db push --db-url "$DB_URL" --password "$DB_PASSWORD"
+        run: supabase db push --db-url "$DB_URL" --password "$DB_PASSWORD"
