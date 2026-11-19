@@ -9,6 +9,10 @@ name: DB migrations (Supabase)
 # Required repository secrets:
 #   SUPABASE_PROJECT_REF_STAGING / SUPABASE_DB_PASSWORD_STAGING
 #   SUPABASE_PROJECT_REF_PROD    / SUPABASE_DB_PASSWORD_PROD
+#
+# REQUIRED SUPABASE DASHBOARD SETTING (per project, prod + staging):
+#   Settings -> Database -> Network restrictions -> DISABLE (or allow 0.0.0.0/0).
+#   Otherwise GitHub-hosted runner IPs are refused: dial error ECONNREFUSED.
 
 on:
   push:
@@ -36,7 +40,10 @@ jobs:
           DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
-          DB_URL="postgresql://postgres:${ENC_PW}@db.${DB_REF}.supabase.co:5432/postgres"
+          DB_HOST="db.${DB_REF}.supabase.co"
+          IPV4=$(DB_HOST="$DB_HOST" python3 -c 'import os,socket; print(socket.getaddrinfo(os.environ["DB_HOST"], 5432, socket.AF_INET)[0][4][0])')
+          echo "$IPV4 $DB_HOST" | sudo tee -a /etc/hosts
+          DB_URL="postgresql://postgres:${ENC_PW}@${DB_HOST}:5432/postgres?sslmode=require"
           supabase db push --db-url "$DB_URL"
 
   migrate-prod:
@@ -54,5 +61,8 @@ jobs:
           DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
         run: |
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
-          DB_URL="postgresql://postgres:${ENC_PW}@db.${DB_REF}.supabase.co:5432/postgres"
+          DB_HOST="db.${DB_REF}.supabase.co"
+          IPV4=$(DB_HOST="$DB_HOST" python3 -c 'import os,socket; print(socket.getaddrinfo(os.environ["DB_HOST"], 5432, socket.AF_INET)[0][4][0])')
+          echo "$IPV4 $DB_HOST" | sudo tee -a /etc/hosts
+          DB_URL="postgresql://postgres:${ENC_PW}@${DB_HOST}:5432/postgres?sslmode=require"
           supabase db push --db-url "$DB_URL"
