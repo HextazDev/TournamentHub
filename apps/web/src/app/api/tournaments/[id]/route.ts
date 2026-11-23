@@ -25,10 +25,10 @@ export async function DELETE(
 
   const profile = await getServerProfile(guildId);
 
-  // SEC-01 : le filtre guild_id / organization_id empêche de supprimer le tournoi d'un autre serveur / organisation.
+  // SEC-01 / SEC-40 : filtre strict par organization_id résolu (aucune interpolation dans .or()).
   let delQuery = supabaseAdmin.from("tournaments").delete().eq("id", id);
   if (profile?.organization_id) {
-    delQuery = delQuery.or(`organization_id.eq.${profile.organization_id},guild_id.eq.${guildId}`);
+    delQuery = delQuery.eq("organization_id", profile.organization_id);
   } else {
     delQuery = delQuery.eq("guild_id", guildId);
   }

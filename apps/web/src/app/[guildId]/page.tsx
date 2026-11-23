@@ -3,6 +3,7 @@ import { Settings, Trophy } from "lucide-react";
 import type { Tournament } from "@hub/shared";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getGuildAdminAccess, getServerProfile, getViewer, memberGuildIds } from "@/lib/viewer";
+import { canAccessAdminPanel } from "@/lib/accessRules";
 import { OrganizerCard } from "@/components/OrganizerCard";
 import { TournamentCard } from "@/components/TournamentCard";
 import { t } from "@/i18n";
@@ -15,14 +16,14 @@ export default async function GuildHubPage({ params }: { params: Promise<{ guild
   const [viewer, profile, access] = await Promise.all([getViewer(), getServerProfile(guildId), getGuildAdminAccess(guildId)]);
   const isMember = memberGuildIds(viewer).has(guildId) || access.allowed;
 
-  // SEC-10 : les tournois privés ne sont lus que pour les membres du serveur / organisation.
+  // SEC-10 / SEC-40 : les tournois privés ne sont lus que pour les membres ; aucune interpolation dans .or().
   let query = supabaseAdmin
     .from("tournaments")
     .select("*")
     .neq("status", "ARCHIVED")
     .order("created_at", { ascending: false });
   if (profile?.organization_id) {
-    query = query.or(`organization_id.eq.${profile.organization_id},guild_id.eq.${guildId}`);
+    query = query.eq("organization_id", profile.organization_id);
   } else {
     query = query.eq("guild_id", guildId);
   }
@@ -43,7 +44,7 @@ export default async function GuildHubPage({ params }: { params: Promise<{ guild
             <OrganizerCard guildId={guildId} profile={profile} locale={locale} />
           </div>
 
-          {access.allowed && (
+          {access.allowed && canAccessAdminPanel(access.access) && (
             <Link
               href={`/admin/${guildId}`}
               className="bg-[#151722] hover:bg-[#1a1d2d] transition-colors border border-slate-800/50 text-white px-6 py-3 rounded-lg font-bold flex items-center gap-3 shadow-lg"

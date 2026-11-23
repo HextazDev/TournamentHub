@@ -97,7 +97,10 @@ export function ServerSettingsClient({
               const channels = await channelsRes.json();
               setDiscordChannels(channels);
             }
-          } catch {}
+          } catch (channelsErr: unknown) {
+            console.error("[ServerSettingsClient] Lecture des salons Discord impossible:", channelsErr);
+            setApiError(t("adminSettings.botError"));
+          }
         }
       } catch (err) {
         console.error(err);

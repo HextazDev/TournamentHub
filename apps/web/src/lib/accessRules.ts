@@ -159,11 +159,18 @@ export function buildBotInviteUrl(clientId: string, guildId?: string | null): st
 }
 
 /**
- * SEC-21 : tournois lisibles dans le panel. `null` = tous les tournois du serveur / organisation (niveau SERVER / ORGANIZATION) ;
- * sinon, uniquement ceux dont le membre porte le rôle TO (niveau TOURNAMENT).
+ * SEC-21 / UX-04 : tournois gérables dans le panel. `null` = tous les tournois du serveur / organisation ;
+ * sinon, uniquement ceux sur lesquels l'utilisateur dispose de `MANAGE_TOURNAMENT` (exclut casteurs/statisticiens).
  */
 export function managedTournamentIds(access: GuildAccess | OrganizationAccess): readonly string[] | null {
-  return access.level === "SERVER" || access.level === "ORGANIZATION" ? null : access.tournamentIds;
+  if (access.level === "SERVER" || access.level === "ORGANIZATION") return null;
+  return access.tournamentIds.filter((id) => canPerform(access, "MANAGE_TOURNAMENT", id));
+}
+
+/** Indique si l'utilisateur peut gérer au moins un tournoi dans le panel admin (évite les liens 404 pour un casteur). */
+export function canAccessAdminPanel(access: GuildAccess | OrganizationAccess): boolean {
+  const managed = managedTournamentIds(access);
+  return managed === null || managed.length > 0;
 }
 
 /** Actions de niveau serveur / organisation affichées dans le panel (le bot refuse de toute façon les autres, SEC-21). */

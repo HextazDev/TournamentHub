@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildBotInviteUrl,
+  canAccessAdminPanel,
   canManageFromOAuth,
   canViewPrivateTournament,
   discordListQuery,
@@ -198,5 +199,23 @@ describe("SEC-21: panel d'un TO de tournoi", () => {
   it("les listes Discord désignent le tournoi (exigé par le bot pour ce niveau)", () => {
     expect(discordListQuery("g1", "t1")).toBe("guildId=g1&tournamentId=t1");
     expect(discordListQuery("g1")).toBe("guildId=g1");
+  });
+
+  it("UX-04: un casteur ou statisticien n'est pas listé comme gestionnaire du tournoi et n'a pas accès au panel de gestion", () => {
+    const casterOnly = {
+      level: "TOURNAMENT" as const,
+      tournamentIds: ["t1"],
+      tournamentRoles: { t1: "CASTER" as const },
+    };
+    const mixed = {
+      level: "TOURNAMENT" as const,
+      tournamentIds: ["t1", "t2", "t3"],
+      tournamentRoles: { t1: "CASTER" as const, t2: "TOURNAMENT_TO" as const, t3: "STATISTICIAN" as const },
+    };
+    expect(managedTournamentIds(casterOnly)).toEqual([]);
+    expect(canAccessAdminPanel(casterOnly)).toBe(false);
+    expect(managedTournamentIds(mixed)).toEqual(["t2"]);
+    expect(canAccessAdminPanel(mixed)).toBe(true);
+    expect(canAccessAdminPanel(serverTo)).toBe(true);
   });
 });

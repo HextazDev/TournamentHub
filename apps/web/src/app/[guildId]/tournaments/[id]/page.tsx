@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getReadableTournament, getTournamentInviteToken, getViewer } from "@/lib/viewer";
+import { getReadableTournament, getViewer } from "@/lib/viewer";
 import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Monitor, Users } from "lucide-react";
@@ -101,8 +101,6 @@ export default async function PublicTournamentOverview({
             m.team2_id,
         )
     : null;
-  const inviteToken = await getTournamentInviteToken(id);
-
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
       <WebPlayerActions
@@ -111,7 +109,6 @@ export default async function PublicTournamentOverview({
         isRegistrationOpen={Boolean(tournament.is_registration_open)}
         canCheckinNow={canCheckinNow}
         viewerDiscordId={viewer.discordId}
-        inviteToken={inviteToken}
         captainTeam={
           captainTeamRow
             ? {

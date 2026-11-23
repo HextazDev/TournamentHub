@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { isBotProxyPathAllowed } from "@/lib/botProxyAllowlist";
+import {
+  extractPlayerRegisterTournamentId,
+  injectTournamentInviteToken,
+  isBotProxyPathAllowed,
+} from "@/lib/botProxyAllowlist";
+import { TOURNAMENT_INVITE_COOKIE_PREFIX } from "@/lib/accessRules";
 import { BOT_UNREACHABLE, botAccessError, botDomainError, botInternalError } from "@/lib/accessErrors";
 import { getServerLocale } from "@/i18n/server";
 import { resolveServerBotApiUrl } from "@/lib/config";
@@ -40,7 +46,7 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
   });
 
   const hasBody = ["POST", "PUT", "PATCH", "DELETE"].includes(request.method);
-  const textBody = hasBody ? await request.text() : "";
+  let textBody = hasBody ? await request.text() : "";
   if (textBody) headers.set("Content-Type", "application/json");
 
   // requireGuildAdmin lit aussi guildId / organizationId dans la query ou le corps ; l'en-tête sert de repli (DELETE, GET).
@@ -64,6 +70,18 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
     }
   }
   if (guildId) headers.set("X-Guild-Id", guildId);
+
+  // WEB-01 / SEC-41 : le jeton du cookie httpOnly est injecté côté serveur pour l'inscription à un tournoi privé,
+  // sans jamais transiter dans les props client.
+  const registerTournamentId = extractPlayerRegisterTournamentId(request.method, path);
+  if (registerTournamentId && textBody) {
+    const inviteToken = (await cookies()).get(`${TOURNAMENT_INVITE_COOKIE_PREFIX}${registerTournamentId}`)?.value ?? null;
+    try {
+      textBody = injectTournamentInviteToken(textBody, inviteToken);
+    } catch {
+      return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+  }
 
   try {
     const res = await fetch(targetUrl, {

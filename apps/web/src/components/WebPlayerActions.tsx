@@ -30,7 +30,6 @@ export function WebPlayerActions({
   isRegistrationOpen,
   canCheckinNow,
   viewerDiscordId,
-  inviteToken,
   captainTeam,
   captainMatch,
 }: {
@@ -39,8 +38,6 @@ export function WebPlayerActions({
   isRegistrationOpen: boolean;
   canCheckinNow: boolean;
   viewerDiscordId: string | null;
-  /** Lien de partage d'un tournoi privé : revalidé par le bot à l'inscription. */
-  inviteToken: string | null;
   captainTeam: CaptainTeamInfo | null;
   captainMatch: CaptainMatch | null;
 }) {

@@ -10,18 +10,22 @@ export default async function TournamentsPage({ params }: { params: Promise<{ gu
   const [access, profile] = await Promise.all([getGuildAdminAccess(guildId), getServerProfile(guildId)]);
   if (!access.allowed) notFound();
 
-  // SEC-21 : un TO de tournoi ne lit que ses tournois.
+  // SEC-21 / SEC-40 / UX-04 : un TO de tournoi ne lit que ses tournois gérables (casteurs exclus).
   const scope = managedTournamentIds(access.access);
-  let query = supabaseAdmin.from("tournaments").select("*");
-  if (profile?.organization_id) {
-    query = query.or(`organization_id.eq.${profile.organization_id},guild_id.eq.${guildId}`);
-  } else {
-    query = query.eq("guild_id", guildId);
+  let tournaments: Tournament[] = [];
+  if (!scope || scope.length > 0) {
+    let query = supabaseAdmin.from("tournaments").select("*");
+    if (profile?.organization_id) {
+      query = query.eq("organization_id", profile.organization_id);
+    } else {
+      query = query.eq("guild_id", guildId);
+    }
+    if (scope) query = query.in("id", [...scope]);
+    const { data, error } = await query.order("created_at", { ascending: false });
+    if (error) throw new Error(`tournaments read failed: ${error.message}`);
+    tournaments = (data ?? []) as Tournament[];
   }
-  if (scope) query = query.in("id", [...scope]);
-  const { data, error } = await query.order("created_at", { ascending: false });
-  if (error) throw new Error(`tournaments read failed: ${error.message}`);
 
   const { canCreate, canDelete } = panelCapabilities(access.access);
-  return <TournamentsClient guildId={guildId} tournaments={(data ?? []) as Tournament[]} canCreate={canCreate} canDelete={canDelete} />;
+  return <TournamentsClient guildId={guildId} tournaments={tournaments} canCreate={canCreate} canDelete={canDelete} />;
 }

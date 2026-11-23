@@ -1,8 +1,8 @@
 import { cache } from "react";
 import { GuildDirectoryReasonSchema, type GuildDirectoryReason } from "@hub/shared";
-import { supabaseAdmin } from "@/lib/supabase-admin";
-import { splitServers, type GuildSummary, type ManageScope, type ManageState, type SetupFields } from "@/lib/accessRules";
-import type { Viewer } from "@/lib/viewer";
+import { supabaseAdmin } from "./supabase-admin";
+import { splitServers, type GuildSummary, type ManageScope, type ManageState, type SetupFields } from "./accessRules";
+import type { Viewer } from "./viewer";
 
 /** Vues « Mes serveurs » et « Panel organisateur » du visiteur connecté (lectures service_role bornées à ses serveurs / organisations). */
 export const loadServerOverview = cache(async (viewer: Viewer & { discordId: string }) => {
@@ -19,6 +19,11 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
       : Promise.resolve({ data: [], error: null }),
     supabaseAdmin.from("integration_access_grants").select("organization_id, reason").eq("user_id", viewer.discordId),
   ]);
+  // CLN-07 : ne jamais masquer une panne Supabase par une liste vide ou « Bot non installé ».
+  if (orgMembersRes.error) throw new Error(`organization_members read failed: ${orgMembersRes.error.message}`);
+  if (staffRes.error) throw new Error(`tournament_staff read failed: ${staffRes.error.message}`);
+  if (discordIntsRes.error) throw new Error(`organization_integrations read failed: ${discordIntsRes.error.message}`);
+  if (grantsRes.error) throw new Error(`integration_access_grants read failed: ${grantsRes.error.message}`);
 
   const settings = new Map<string, SetupFields & { bot_present: boolean }>();
   const orgIdToGuildId = new Map<string, string>();
@@ -43,31 +48,27 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
   }
 
   const directory = new Map<string, GuildDirectoryReason>();
-  if (!grantsRes.error && grantsRes.data) {
-    for (const row of grantsRes.data as { organization_id?: string; reason?: string }[]) {
-      const orgId = typeof row.organization_id === "string" ? row.organization_id : null;
-      if (!orgId) continue;
-      const guildId = orgIdToGuildId.get(orgId);
-      if (!guildId) continue;
-      const reason = GuildDirectoryReasonSchema.safeParse(row.reason);
-      if (reason.success) {
-        const existing = directory.get(guildId);
-        if (!existing || (existing === "TOURNAMENT_TO_ROLE" && reason.data !== "TOURNAMENT_TO_ROLE")) {
-          directory.set(guildId, reason.data);
-        }
+  for (const row of (grantsRes.data ?? []) as { organization_id?: string; reason?: string }[]) {
+    const orgId = typeof row.organization_id === "string" ? row.organization_id : null;
+    if (!orgId) continue;
+    const guildId = orgIdToGuildId.get(orgId);
+    if (!guildId) continue;
+    const reason = GuildDirectoryReasonSchema.safeParse(row.reason);
+    if (reason.success) {
+      const existing = directory.get(guildId);
+      if (!existing || (existing === "TOURNAMENT_TO_ROLE" && reason.data !== "TOURNAMENT_TO_ROLE")) {
+        directory.set(guildId, reason.data);
       }
     }
   }
 
-  if (!orgMembersRes.error && orgMembersRes.data) {
-    for (const m of orgMembersRes.data as { organization_id?: string; role?: string }[]) {
-      if (typeof m.organization_id === "string") {
-        const guildId = orgIdToGuildId.get(m.organization_id);
-        if (guildId && !directory.has(guildId)) {
-          if (m.role === "ORG_OWNER") directory.set(guildId, "SERVER_OWNER");
-          else if (m.role === "ORG_ADMIN") directory.set(guildId, "ADMINISTRATOR");
-          else if (m.role === "ORG_TO") directory.set(guildId, "TO_ROLE");
-        }
+  for (const m of (orgMembersRes.data ?? []) as { organization_id?: string; role?: string }[]) {
+    if (typeof m.organization_id === "string") {
+      const guildId = orgIdToGuildId.get(m.organization_id);
+      if (guildId && !directory.has(guildId)) {
+        if (m.role === "ORG_OWNER") directory.set(guildId, "SERVER_OWNER");
+        else if (m.role === "ORG_ADMIN") directory.set(guildId, "ADMINISTRATOR");
+        else if (m.role === "ORG_TO") directory.set(guildId, "TO_ROLE");
       }
     }
   }
@@ -104,6 +105,8 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
       supabaseAdmin.from("organizations").select("*").in("id", [...nativeOrgIds]),
       supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("organization_id", [...nativeOrgIds]),
     ]);
+    if (orgsRes.error) throw new Error(`organizations read failed: ${orgsRes.error.message}`);
+    if (allOrgIntsRes.error) throw new Error(`organization_integrations read failed: ${allOrgIntsRes.error.message}`);
 
     const discordByOrg = new Map<string, { external_id: string | null; enabled: boolean }>();
     for (const intRow of (allOrgIntsRes.data ?? []) as Record<string, unknown>[]) {
@@ -130,12 +133,13 @@ export const loadServerOverview = cache(async (viewer: Viewer & { discordId: str
         continue;
       }
 
+      // CLN-06 : une organisation Web native n'a pas de droits OAuth Discord ; ne pas fabriquer owner/permissions.
       const summary: GuildSummary = {
         id: routeKey,
         name,
         icon: typeof org.icon_url === "string" ? org.icon_url : null,
-        owner: true,
-        permissions: "8",
+        owner: false,
+        permissions: "0",
       };
       const scope = nativeOrgRoles.get(orgId);
       const state: ManageState = "ready";

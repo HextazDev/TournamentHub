@@ -24,31 +24,34 @@ export default async function AdminDashboard({ params }: { params: Promise<{ gui
 
   const settings = await getServerProfile(guildId);
 
-  // 1. Requête des tournois du serveur / organisation (filtrés par scope si portée restreinte)
-  let tournamentsQuery = supabaseAdmin
-    .from("tournaments")
-    .select(
-      "id, name, status, created_at, start_at, is_registration_open, discord_category_id, phases(id, name, phase_order, format, bracket_size)",
-    )
-    .order("created_at", { ascending: false });
+  // 1. Requête des tournois du serveur / organisation (filtrés par scope si portée restreinte, SEC-40)
+  let allTournaments: DashboardTournament[] = [];
+  if (!scope || scope.length > 0) {
+    let tournamentsQuery = supabaseAdmin
+      .from("tournaments")
+      .select(
+        "id, name, status, created_at, start_at, is_registration_open, discord_category_id, phases(id, name, phase_order, format, bracket_size)",
+      )
+      .order("created_at", { ascending: false });
 
-  if (settings?.organization_id) {
-    tournamentsQuery = tournamentsQuery.or(`organization_id.eq.${settings.organization_id},guild_id.eq.${guildId}`);
-  } else {
-    tournamentsQuery = tournamentsQuery.eq("guild_id", guildId);
+    if (settings?.organization_id) {
+      tournamentsQuery = tournamentsQuery.eq("organization_id", settings.organization_id);
+    } else {
+      tournamentsQuery = tournamentsQuery.eq("guild_id", guildId);
+    }
+
+    if (scope) {
+      tournamentsQuery = tournamentsQuery.in("id", [...scope]);
+    }
+
+    const tournamentsRes = await tournamentsQuery;
+
+    if (tournamentsRes.error) {
+      throw new Error(`tournaments query failed: ${tournamentsRes.error.message}`);
+    }
+
+    allTournaments = (tournamentsRes.data ?? []) as DashboardTournament[];
   }
-
-  if (scope) {
-    tournamentsQuery = tournamentsQuery.in("id", [...scope]);
-  }
-
-  const tournamentsRes = await tournamentsQuery;
-
-  if (tournamentsRes.error) {
-    throw new Error(`tournaments query failed: ${tournamentsRes.error.message}`);
-  }
-
-  const allTournaments = (tournamentsRes.data ?? []) as DashboardTournament[];
   const allTournamentIds = allTournaments.map((t) => t.id);
 
   // Tournois actifs : ACTIVE et REGISTRATION conformément à l'issue #38
