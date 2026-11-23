@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Router } from "express";
 import { FakeSupabase } from "./helpers/fakeSupabase";
 
@@ -44,6 +44,7 @@ vi.mock("../services/CaptainPresenceService", () => ({
 }));
 
 import { ArchiveService } from "../services/ArchiveService";
+import { resetAccessRefreshState } from "../services/AccessRefreshService";
 import type { AdminCheck } from "../middleware/auth";
 import { routeGuardKind } from "../middleware/auth";
 import { tournamentRouter } from "../routes/TournamentRouter";
@@ -102,7 +103,12 @@ const writes = () => db.current?.writes ?? [];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetAccessRefreshState();
   seed();
+});
+
+afterEach(() => {
+  resetAccessRefreshState();
 });
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -288,6 +294,8 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     expect(hanging.status).toBe(200);
     expect(fetchGuild).toHaveBeenCalledWith(GUILD);
 
+    // DISC-17 sérialise les synchros d'un même serveur : on réinitialise avant le second sous-scénario indépendant.
+    resetAccessRefreshState();
     const boom = new Error("Unknown Guild");
     const failing = await callRoute(tournamentRouter, {
       method: "PUT", path: `/${T_A}/settings`, adminCheck: serverTo, body: { ...body, discord_to_role_id: "666666666666666666" },

@@ -12,6 +12,8 @@ vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: (req: Request) => req.adminCheck?.guildId ?? null,
   getTournamentScope: (req: Request) => req.tournamentScope?.tournamentId ?? null,
   resolveOrganization: org,
+  runWithoutRequestTenantCache: <T,>(fn: () => T) => fn(),
+  runWithRequestTenantCache: <T,>(fn: () => T) => fn(),
 }));
 vi.mock("../services/ArchiveService", () => ({ ArchiveService: { backgroundDiscordCleanup: cleanup } }));
 vi.mock("../services/SchedulerService", () => ({ SchedulerService: { scheduleTournament: schedule } }));

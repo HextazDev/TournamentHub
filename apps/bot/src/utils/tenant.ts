@@ -25,6 +25,15 @@ export function runWithRequestTenantCache<T>(fn: () => T): T {
   return requestTenantCache.run(new Map(), fn);
 }
 
+/**
+ * PERF-01 / DISC-17 : sort du cache de requête HTTP courant pour les tâches différées en arrière-plan
+ * (un `setTimeout` lancé depuis une route `/api` hériterait sinon de la `Map` de cette requête et relirait
+ * un état d'organisation périmé).
+ */
+export function runWithoutRequestTenantCache<T>(fn: () => T): T {
+  return requestTenantCache.exit(fn);
+}
+
 /** PERF-01 : purge du cache de la requête courante après une mutation d'organisation ou d'intégration. */
 export function clearOrganizationCache(): void {
   requestTenantCache.getStore()?.clear();

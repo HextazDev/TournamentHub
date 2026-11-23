@@ -30,7 +30,8 @@ export type Filter =
   | { column: string; value: unknown }
   | { column: string; values: readonly unknown[] }
   | { column: string; not: unknown }
-  | { column: string; ilike: string };
+  | { column: string; ilike: string }
+  | { column: string; lt: string | number };
 
 export interface ReadLog {
   table: string;
@@ -40,7 +41,7 @@ export interface ReadLog {
 
 export interface WriteLog {
   table: string;
-  op: "update" | "insert" | "delete";
+  op: "update" | "insert" | "upsert" | "delete";
   payload: Row | Row[];
   filters: Filter[];
   affected: number;
@@ -101,9 +102,10 @@ export class FakeSupabase {
 
 class FakeQuery implements PromiseLike<QueryResult> {
   private readonly filters: Filter[] = [];
-  private op: "select" | "update" | "insert" | "delete" = "select";
+  private op: "select" | "update" | "insert" | "upsert" | "delete" = "select";
   private counting = false;
   private payload: Row | Row[] = {};
+  private conflictColumns: string[] = [];
   private returning = false;
   private max: number | null = null;
 
@@ -135,6 +137,11 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
   public neq(column: string, value: unknown) {
     this.filters.push({ column, not: value });
+    return this;
+  }
+
+  public lt(column: string, value: string | number) {
+    this.filters.push({ column, lt: value });
     return this;
   }
 
@@ -177,6 +184,15 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this;
   }
 
+  public upsert(payload: Row | Row[], options?: { onConflict?: string }) {
+    this.op = "upsert";
+    this.payload = payload;
+    this.conflictColumns = options?.onConflict
+      ? options.onConflict.split(",").map(col => col.trim()).filter(Boolean)
+      : [];
+    return this;
+  }
+
   public single(): Promise<QueryResult> {
     return Promise.resolve(this.toSingle(this.execute()));
   }
@@ -210,6 +226,12 @@ class FakeQuery implements PromiseLike<QueryResult> {
           .replace(/\u0000(.)/g, (_, ch: string) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
         return new RegExp(`^${regexPattern}$`, "i").test(value);
       }
+      if ("lt" in f) {
+        const value = row[f.column];
+        if (typeof value === "string" && typeof f.lt === "string") return value < f.lt;
+        if (typeof value === "number" && typeof f.lt === "number") return value < f.lt;
+        return false;
+      }
       if ("not" in f) return f.not === null ? row[f.column] != null : row[f.column] !== f.not;
       return row[f.column] === f.value;
     });
@@ -240,7 +262,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
     }
     const rows = this.db.tables[this.table] ?? (this.db.tables[this.table] = []);
 
-    if (this.op === "insert") {
+    if (this.op === "insert" || this.op === "upsert") {
       const unknownCol = this.findUnknownColumn(this.payload);
       if (unknownCol) {
         return {
@@ -252,16 +274,46 @@ class FakeQuery implements PromiseLike<QueryResult> {
         };
       }
       const list = Array.isArray(this.payload) ? this.payload : [this.payload];
-      const inserted = list.map((r, idx) => ({ id: (r.id as string) || `fake-${this.table}-${rows.length + idx + 1}`, ...r }));
-      rows.push(...inserted);
-      this.db.writes.push({ table: this.table, op: "insert", payload: this.payload, filters: [], affected: list.length });
-      return { data: this.returning ? inserted.map(r => ({ ...r })) : null, error: null };
+      const written: Row[] = [];
+      for (const [idx, item] of list.entries()) {
+        const existingIndex =
+          this.op === "upsert" && this.conflictColumns.length > 0
+            ? rows.findIndex(r => this.conflictColumns.every(col => (r[col] ?? null) === (item[col] ?? null)))
+            : -1;
+        if (existingIndex >= 0) {
+          rows[existingIndex] = { ...rows[existingIndex], ...item };
+          written.push({ ...rows[existingIndex] });
+        } else {
+          const inserted = { id: (item.id as string) || `fake-${this.table}-${rows.length + idx + 1}`, ...item };
+          rows.push(inserted);
+          written.push({ ...inserted });
+        }
+      }
+      this.db.writes.push({ table: this.table, op: this.op, payload: this.payload, filters: [], affected: list.length });
+      return { data: this.returning ? written : null, error: null };
     }
 
     if (this.op === "delete") {
+      const removed = rows.filter(r => this.matches(r));
       const kept = rows.filter(r => !this.matches(r));
-      const affected = rows.length - kept.length;
+      const affected = removed.length;
       rows.splice(0, rows.length, ...kept);
+      if (this.table === "organizations" && removed.length > 0) {
+        const removedIds = new Set(removed.map(r => r.id));
+        for (const childTable of [
+          "organization_integrations",
+          "organization_members",
+          "integration_access_grants",
+          "organization_invites",
+          "tournaments",
+        ]) {
+          const childRows = this.db.tables[childTable];
+          if (childRows) {
+            const keptChildren = childRows.filter(c => !removedIds.has(c.organization_id));
+            childRows.splice(0, childRows.length, ...keptChildren);
+          }
+        }
+      }
       this.db.writes.push({ table: this.table, op: "delete", payload: {}, filters: [...this.filters], affected });
       return { data: null, error: null };
     }
