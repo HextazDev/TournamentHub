@@ -8,9 +8,7 @@ import { logger } from "../utils/logger";
 import { isFinishedMatchStatus } from "@hub/shared";
 import { resolveOrganization } from "../utils/tenant";
 
-type MatchValidationUpdate =
-  | { status: "COMPLETED"; winner_id?: string; loser_id?: string }
-  | { status: "CONTESTED" };
+type MatchValidationUpdate = { status: "COMPLETED" } | { status: "CONTESTED" };
 
 function isValidScore(val: number): boolean {
   return Number.isInteger(val) && val >= 0 && val <= 99;
@@ -239,11 +237,7 @@ export class ScoreService {
         loserId = match.team1_id;
       }
 
-      const update: MatchValidationUpdate = winnerId && loserId
-        ? { status: "COMPLETED", winner_id: winnerId, loser_id: loserId }
-        : { status: "COMPLETED" };
-
-      const outcome = await this.transitionFromWaitingValidation(matchId, update);
+      const outcome = await this.transitionFromWaitingValidation(matchId, { status: "COMPLETED" });
       if (outcome === "error") return interaction.followUp({ content: tBot(lang, 'score.updateError'), ephemeral: true });
       // Un clic concurrent a gagné la transition : aucune progression ni recalcul de classement.
       if (outcome === "already_processed") return this.rejectProcessedClick(interaction, lang, matchId, "WAITING_VALIDATION");

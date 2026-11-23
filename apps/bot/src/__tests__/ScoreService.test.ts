@@ -85,12 +85,20 @@ describe("ScoreService.handleButton - SCR-05 idempotence valider / contester", (
     await ScoreService.handleButton(interaction as never);
 
     expect(matchStatus(fake)).toBe("COMPLETED");
-    expect(fake.tables.matches?.[0]).toMatchObject({ winner_id: "team-a", loser_id: "team-b" });
+    expect(fake.writesTo("matches", "update")[0]?.payload).toEqual({ status: "COMPLETED" });
     expect(interaction.deferUpdate).toHaveBeenCalledTimes(1);
     expect(interaction.deferReply).not.toHaveBeenCalled();
     expect(interaction.editReply).toHaveBeenCalledWith(expect.objectContaining({ components: [] }));
     expect(progressSpy).toHaveBeenCalledTimes(1);
+    expect(progressSpy).toHaveBeenCalledWith(expect.objectContaining({ id: "match-1" }), interaction.channel, "team-a", "team-b", interaction.client);
     expect(LeaderboardService.calculateGroupStandings).toHaveBeenCalledTimes(1);
+  });
+
+  it("TST-01 (#104): FakeSupabase rejette toute colonne inexistante sur matches (PGRST204)", async () => {
+    const fake = seed("WAITING_VALIDATION");
+    const { error } = await fake.from("matches").update({ status: "COMPLETED", winner_id: "team-a" }).eq("id", "match-1");
+    expect(error?.code).toBe("PGRST204");
+    expect(matchStatus(fake)).toBe("WAITING_VALIDATION");
   });
 
   it("SCR-05: double clic « Valider » ➜ une seule progression, second clic refusé en éphémère", async () => {
@@ -136,12 +144,12 @@ describe("ScoreService.handleButton - SCR-05 idempotence valider / contester", (
   });
 
   it("SCR-05: valider un match COMPLETED (forcé par un TO) ➜ refus, aucune progression", async () => {
-    const fake = seed("COMPLETED", { team1_score: 0, team2_score: 3, winner_id: "team-b", loser_id: "team-a" });
+    const fake = seed("COMPLETED", { team1_score: 0, team2_score: 3 });
     const interaction = buttonInteraction("val");
 
     await ScoreService.handleButton(interaction as never);
 
-    expect(fake.tables.matches?.[0]).toMatchObject({ status: "COMPLETED", winner_id: "team-b", loser_id: "team-a" });
+    expect(fake.tables.matches?.[0]).toMatchObject({ status: "COMPLETED", team1_score: 0, team2_score: 3 });
     expect(fake.writesTo("matches", "update").filter(w => w.affected > 0)).toHaveLength(0);
     expect(progressSpy).not.toHaveBeenCalled();
     expect(LeaderboardService.calculateGroupStandings).not.toHaveBeenCalled();
@@ -160,7 +168,7 @@ describe("ScoreService.handleButton - SCR-05 idempotence valider / contester", (
   });
 
   it("SCR-05: contester un match COMPLETED ➜ refus, le match reste COMPLETED", async () => {
-    const fake = seed("COMPLETED", { winner_id: "team-a", loser_id: "team-b" });
+    const fake = seed("COMPLETED");
     const interaction = buttonInteraction("deny");
 
     await ScoreService.handleButton(interaction as never);
