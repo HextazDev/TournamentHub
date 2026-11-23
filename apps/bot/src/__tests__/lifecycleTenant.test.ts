@@ -58,8 +58,8 @@ describe("SEC-14 lifecycle tenant isolation", () => {
   it("allows archive for an owned tournament and scopes the read and write", async () => {
     verify.mockResolvedValue(true);
     const filters: string[][] = [];
-    const tournament = { id: "t1", guild_id: "a" };
-    const archivedRow = { id: "t-old", discord_captain_role_id: "r", discord_checkin_channel_id: "c" };
+    const tournament = { id: "t1", organization_id: "org-a" };
+    const archivedRow = { id: "t-old", discord_config: { captain_role_id: "r", checkin_channel_id: "c" } };
     const chain = {
       select: () => chain, update: () => chain,
       eq: (key: string, value: string) => { filters.push([key, value]); return chain; },
@@ -81,7 +81,7 @@ describe("SEC-14 lifecycle tenant isolation", () => {
   it("LIFE-01: archive pour une organisation Web sans appel Discord", async () => {
     verify.mockResolvedValue(true);
     org.mockResolvedValue({ id: "org-a", slug: "a", discordEnabled: false, discordGuildId: null });
-    const tournament = { id: "t1", guild_id: null };
+    const tournament = { id: "t1", organization_id: "org-a" };
     const chain = {
       select: () => chain, update: () => chain,
       eq: () => chain,
@@ -99,7 +99,7 @@ describe("SEC-14 lifecycle tenant isolation", () => {
 
   it("ne déclenche pas backgroundDiscordCleanup si aucun autre tournoi n'a été archivé", async () => {
     verify.mockResolvedValue(true);
-    const tournament = { id: "t1", guild_id: "a" };
+    const tournament = { id: "t1", organization_id: "org-a" };
     const chain = {
       select: () => chain, update: () => chain,
       eq: () => chain,

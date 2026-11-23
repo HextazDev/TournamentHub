@@ -82,14 +82,14 @@ describe("SEC-19 — refus métier typés DomainError", () => {
   });
 
   it("SEC-19: synchronisation sans catégorie Discord ➜ DomainError 409", async () => {
-    tables({ phases: { tournaments: { id: "t-1", discord_category_id: null }, groups: [] } });
+    tables({ phases: { tournaments: { id: "t-1", discord_config: {} }, groups: [] } });
     const run = LifecycleService.syncPhaseChannels("p-1", "111", discordClient);
     await expect(run).rejects.toBeInstanceOf(DomainError);
     await expect(run).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Please launch the tournament first") });
   });
 
   it("SEC-19: POST /api/phases/:id/sync relaie le refus métier au TO (409 + message)", async () => {
-    tables({ phases: { tournaments: { id: "t-1", discord_category_id: null }, groups: [] } });
+    tables({ phases: { tournaments: { id: "t-1", discord_config: {} }, groups: [] } });
     const out = await callRoute(phaseRouter, {
       method: "POST", path: "/p-1/sync", body: { guildId: "111" }, locals: { discordClient },
       adminCheck: { discordId: "to", guildId: "111", access: { level: "SERVER", reason: "TO_ROLE" } },

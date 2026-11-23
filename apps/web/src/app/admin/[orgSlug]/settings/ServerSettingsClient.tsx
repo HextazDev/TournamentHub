@@ -37,6 +37,7 @@ export function ServerSettingsClient({
   const [discordEnabled, setDiscordEnabled] = useState(true);
   const [togglingDiscord, setTogglingDiscord] = useState(false);
   const [apiError, setApiError] = useState("");
+  const [loadFailed, setLoadFailed] = useState(false);
   const [linkedGuildId, setLinkedGuildId] = useState("");
   const [showDisableModal, setShowDisableModal] = useState(false);
   const [cleanupDiscord, setCleanupDiscord] = useState(false);
@@ -44,38 +45,49 @@ export function ServerSettingsClient({
   useEffect(() => {
     async function loadData() {
       setLoading(true);
+      setApiError("");
+      setLoadFailed(false);
       try {
         let activeDiscord = isDiscordSnowflake(guildId);
         let targetDiscordGuildId: string | null = isDiscordSnowflake(guildId) ? guildId : null;
 
         try {
           const orgRes = await fetch(`/api/bot/organizations/${guildId}`);
-          if (orgRes.ok) {
-            const orgData = (await orgRes.json()) as {
-              language?: string;
-              invite_url?: string;
-              public_contact_url?: string;
-              discordEnabled?: boolean;
-              discordGuildId?: string | null;
-              discordConfig?: Record<string, string | null>;
-            };
-            activeDiscord = Boolean(orgData.discordEnabled);
-            setDiscordEnabled(activeDiscord);
-            targetDiscordGuildId = orgData.discordGuildId || (isDiscordSnowflake(guildId) ? guildId : null);
-            setLinkedGuildId(orgData.discordGuildId ?? "");
-            const cfg = orgData.discordConfig ?? {};
-            setSettings({
-              captain_role_id: cfg.captain_role_id || "",
-              to_role_id: cfg.to_role_id || "",
-              checkin_channel_id: cfg.checkin_channel_id || "",
-              announcement_channel_id: cfg.announcement_channel_id || "",
-              registration_channel_id: cfg.registration_channel_id || "",
-              language: orgData.language || "fr",
-              invite_url: orgData.invite_url || orgData.public_contact_url || "",
-            });
+          if (!orgRes.ok) {
+            const errMsg = (await readApiError(orgRes)) ?? t("adminSettings.botError");
+            setApiError(errMsg);
+            setLoadFailed(true);
+            setLoading(false);
+            return;
           }
+          const orgData = (await orgRes.json()) as {
+            language?: string;
+            invite_url?: string;
+            public_contact_url?: string;
+            discordEnabled?: boolean;
+            discordGuildId?: string | null;
+            discordConfig?: Record<string, string | null>;
+          };
+          activeDiscord = Boolean(orgData.discordEnabled);
+          setDiscordEnabled(activeDiscord);
+          targetDiscordGuildId = orgData.discordGuildId || (isDiscordSnowflake(guildId) ? guildId : null);
+          setLinkedGuildId(orgData.discordGuildId ?? "");
+          const cfg = orgData.discordConfig ?? {};
+          setSettings({
+            captain_role_id: cfg.captain_role_id || "",
+            to_role_id: cfg.to_role_id || "",
+            checkin_channel_id: cfg.checkin_channel_id || "",
+            announcement_channel_id: cfg.announcement_channel_id || "",
+            registration_channel_id: cfg.registration_channel_id || "",
+            language: orgData.language || "fr",
+            invite_url: orgData.invite_url || orgData.public_contact_url || "",
+          });
         } catch (orgErr) {
           console.error(orgErr);
+          setApiError(t("adminSettings.botError"));
+          setLoadFailed(true);
+          setLoading(false);
+          return;
         }
 
         if (activeDiscord && targetDiscordGuildId && isDiscordSnowflake(targetDiscordGuildId)) {
@@ -102,6 +114,8 @@ export function ServerSettingsClient({
         }
       } catch (err) {
         console.error(err);
+        setApiError(t("adminSettings.botError"));
+        setLoadFailed(true);
       }
       setLoading(false);
     }
@@ -148,6 +162,7 @@ export function ServerSettingsClient({
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (loadFailed) return;
     setMessage({ type: "", text: "" });
     if (settings.invite_url.trim() && !DiscordInviteUrlSchema.safeParse(settings.invite_url).success) {
       setMessage({ type: "error", text: t("adminSettings.inviteInvalid") });
@@ -535,7 +550,7 @@ export function ServerSettingsClient({
         <div className="pt-6 flex justify-end">
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || loadFailed}
             className="bg-blue-600 hover:bg-blue-500 text-white px-8 py-3 rounded-lg font-bold flex items-center gap-2 transition-colors disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-5 h-5 animate-spin" /> : <Save className="w-5 h-5" />}

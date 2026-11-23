@@ -2,70 +2,11 @@ import { Trophy } from "lucide-react";
 import type { ServerSettings, Tournament } from "@hub/shared";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getViewer, memberGuildIds } from "@/lib/viewer";
+import { loadDiscoverableTournaments } from "@/lib/tournamentDiscovery";
 import { TournamentCard } from "@/components/TournamentCard";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
 import type { Locale } from "@/i18n/types";
-
-async function loadTournaments(discordId: string | null, guildIds: string[]) {
-  const visible = supabaseAdmin
-    .from("tournaments")
-    .select("*")
-    .neq("status", "ARCHIVED")
-    .order("created_at", { ascending: false })
-    .limit(60);
-
-  const [publicRes, discordIntsRes, membersRes, staffRes] = await Promise.all([
-    visible.eq("is_public", true),
-    guildIds.length > 0
-      ? supabaseAdmin
-          .from("organization_integrations")
-          .select("organization_id")
-          .eq("provider", "DISCORD")
-          .eq("enabled", true)
-          .in("external_id", guildIds)
-      : Promise.resolve({ data: [], error: null }),
-    discordId
-      ? supabaseAdmin.from("organization_members").select("organization_id").eq("user_id", discordId)
-      : Promise.resolve({ data: [], error: null }),
-    discordId
-      ? supabaseAdmin
-          .from("tournament_staff")
-          .select("tournaments!inner(organization_id)")
-          .eq("user_id", discordId)
-      : Promise.resolve({ data: [], error: null }),
-  ]);
-  if (publicRes.error) throw new Error(`public tournaments read failed: ${publicRes.error.message}`);
-  if (discordIntsRes.error) throw new Error(`discord integrations read failed: ${discordIntsRes.error.message}`);
-  if (membersRes.error) throw new Error(`organization_members read failed: ${membersRes.error.message}`);
-  if (staffRes.error) throw new Error(`tournament_staff read failed: ${staffRes.error.message}`);
-
-  const accessibleOrgIds = new Set<string>();
-  for (const row of (discordIntsRes.data ?? []) as { organization_id?: string }[]) {
-    if (row.organization_id) accessibleOrgIds.add(row.organization_id);
-  }
-  for (const row of (membersRes.data ?? []) as { organization_id?: string }[]) {
-    if (row.organization_id) accessibleOrgIds.add(row.organization_id);
-  }
-  for (const row of (staffRes.data ?? []) as { tournaments?: { organization_id?: string } | { organization_id?: string }[] }[]) {
-    const t = Array.isArray(row.tournaments) ? row.tournaments[0] : row.tournaments;
-    if (t?.organization_id) accessibleOrgIds.add(t.organization_id);
-  }
-
-  const privateRes =
-    accessibleOrgIds.size > 0
-      ? await supabaseAdmin
-          .from("tournaments")
-          .select("*")
-          .in("organization_id", [...accessibleOrgIds])
-          .eq("is_public", false)
-          .neq("status", "ARCHIVED")
-          .order("created_at", { ascending: false })
-      : { data: [], error: null };
-  if (privateRes.error) throw new Error(`private tournaments read failed: ${privateRes.error.message}`);
-
-  return { publicList: (publicRes.data ?? []) as Tournament[], privateList: (privateRes.data ?? []) as Tournament[] };
-}
 
 async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, ServerSettings>> {
   const orgIds = [...new Set(tournaments.map((t) => t.organization_id).filter((id): id is string => Boolean(id)))];
@@ -137,7 +78,7 @@ function Grid({ list, profiles, locale }: { list: Tournament[]; profiles: Map<st
 export default async function DiscoverTournamentsPage() {
   const locale = await getServerLocale();
   const viewer = await getViewer();
-  const { publicList, privateList } = await loadTournaments(viewer.discordId, [...memberGuildIds(viewer)]);
+  const { publicList, privateList } = await loadDiscoverableTournaments(viewer.discordId, [...memberGuildIds(viewer)]);
   const profiles = await loadProfiles([...publicList, ...privateList]);
 
   return (

@@ -7,12 +7,12 @@
 UPDATE public.tournaments
 SET discord_config = COALESCE(discord_config, '{}'::jsonb) || jsonb_strip_nulls(
   jsonb_build_object(
-    'category_id', COALESCE(discord_config ->> 'category_id', discord_category_id),
-    'announcement_channel_id', COALESCE(discord_config ->> 'announcement_channel_id', discord_announcement_channel_id),
-    'registration_channel_id', COALESCE(discord_config ->> 'registration_channel_id', discord_registration_channel_id),
-    'checkin_channel_id', COALESCE(discord_config ->> 'checkin_channel_id', discord_checkin_channel_id),
-    'captain_role_id', COALESCE(discord_config ->> 'captain_role_id', discord_captain_role_id),
-    'to_role_id', COALESCE(discord_config ->> 'to_role_id', discord_to_role_id)
+    'category_id', COALESCE(NULLIF(btrim(discord_config ->> 'category_id'), ''), NULLIF(btrim(discord_category_id), '')),
+    'announcement_channel_id', COALESCE(NULLIF(btrim(discord_config ->> 'announcement_channel_id'), ''), NULLIF(btrim(discord_announcement_channel_id), '')),
+    'registration_channel_id', COALESCE(NULLIF(btrim(discord_config ->> 'registration_channel_id'), ''), NULLIF(btrim(discord_registration_channel_id), '')),
+    'checkin_channel_id', COALESCE(NULLIF(btrim(discord_config ->> 'checkin_channel_id'), ''), NULLIF(btrim(discord_checkin_channel_id), '')),
+    'captain_role_id', COALESCE(NULLIF(btrim(discord_config ->> 'captain_role_id'), ''), NULLIF(btrim(discord_captain_role_id), '')),
+    'to_role_id', COALESCE(NULLIF(btrim(discord_config ->> 'to_role_id'), ''), NULLIF(btrim(discord_to_role_id), ''))
   )
 );
 

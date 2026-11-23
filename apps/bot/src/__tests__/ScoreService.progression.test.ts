@@ -79,7 +79,7 @@ function seedDatabase(matchStatus = "PENDING", matchOverrides: Record<string, un
       { id: "phase-1", tournament_id: "tourney-1", format: "SINGLE_ELIM" },
     ],
     tournaments: [
-      { id: "tourney-1", guild_id: "guild-1", language: "fr" },
+      { id: "tourney-1", organization_id: "org-1", language: "fr" },
     ],
     server_settings: [
       { guild_id: "guild-1", language: "fr", to_role_id: "role-to" },

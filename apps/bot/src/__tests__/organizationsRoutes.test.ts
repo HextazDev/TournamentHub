@@ -406,7 +406,18 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     }
   });
 
-  it("DAT-04 / SEC-45: changer de serveur Discord lié réinitialise discord_config des tournois", async () => {
+  it("DAT-04 / SEC-45: changer de serveur Discord lié réinitialise discord_config des tournois et purge config de l'intégration", async () => {
+    const existingInt = db.current!.tables.organization_integrations!.find((i) => i.organization_id === ORG_1);
+    if (existingInt) {
+      existingInt.config = {
+        to_role_id: "666666666666666666",
+        captain_role_id: "555555555555555555",
+        registration_channel_id: "222222222222222222",
+        announcement_channel_id: "333333333333333333",
+        checkin_channel_id: "444444444444444444",
+        guild_name: "Ancien Serveur",
+      };
+    }
     db.current!.tables.tournaments!.push({
       id: "t-switch",
       organization_id: ORG_1,
@@ -425,6 +436,7 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     expect(db.current?.tables.tournaments?.find((t) => t.id === "t-switch")).toMatchObject({
       discord_config: {},
     });
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_1)?.config).toEqual({});
   });
 
   it("#101: couper puis réactiver Discord sur le même serveur préserve discord_config (salons et rôles des tournois)", async () => {
@@ -539,7 +551,7 @@ describe("SEC-08 / SEC-07 / ACC-01: intégrations", () => {
 
 describe("SEC-04: lecture de l'organisation", () => {
   it("un staff de tournoi ne lit ni les membres ni les intégrations", async () => {
-    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_to_role_id: null });
+    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_config: {} });
     db.current!.tables.tournament_staff!.push({ tournament_id: "t-1", user_id: "u-caster", role: "CASTER" });
     const out = await callRoute(organizationRouter, {
       method: "GET",

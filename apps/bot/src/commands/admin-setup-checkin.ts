@@ -69,21 +69,19 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
 
     // 4.5 Mettre à jour la base de données avec le message_id
-    if (org?.discordEnabled) {
-      const { data: latestTournament } = await supabase
-        .from("tournaments")
-        .select("id")
-        .eq("organization_id", org.id)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .single();
+    const { data: latestTournament } = await supabase
+      .from("tournaments")
+      .select("id")
+      .eq("organization_id", org.id)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
 
-      if (latestTournament) {
-        await supabase
-          .from("tournaments")
-          .update({ checkin_message_id: msg.id })
-          .eq("id", latestTournament.id);
-      }
+    if (latestTournament) {
+      await supabase
+        .from("tournaments")
+        .update({ checkin_message_id: msg.id })
+        .eq("id", latestTournament.id);
     }
 
     // 5. Reply to the TO

@@ -85,7 +85,7 @@ function wireDb() {
           eq: () => ({
             single: async () =>
               columns.includes("tournaments")
-                ? { data: { tournaments: { guild_id: "111", status: "DRAFT" } }, error: null }
+                ? { data: { tournaments: { organization_id: "org-1", status: "DRAFT" } }, error: null }
                 : columns === "tournament_id"
                   ? { data: { tournament_id: TOURNAMENT_ID }, error: null }
                   : { data: { bracket_size: 4, format: "SINGLE_ELIM", max_groups: 1 }, error: null },

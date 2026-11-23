@@ -582,6 +582,25 @@ export const CreateTournamentSchema = z.object({
   checkin_end_at: z.string().optional().nullable(),
 });
 
+const NullableDateInput = z
+  .union([z.string(), z.null()])
+  .transform((value) => (typeof value === "string" && value.trim().length > 0 ? value : null));
+
+/** Corps validé à la frontière de PUT /api/tournaments/:id/settings (AUD-DAT-01) : seuls les champs fournis sont modifiés. */
+export const UpdateTournamentSettingsSchema = z.object({
+  checkin_mode: CheckinModeSchema.optional(),
+  start_at: NullableDateInput.optional(),
+  checkin_start_at: NullableDateInput.optional(),
+  checkin_end_at: NullableDateInput.optional(),
+  discord_registration_channel_id: NullableSnowflake.optional(),
+  discord_announcement_channel_id: NullableSnowflake.optional(),
+  discord_checkin_channel_id: NullableSnowflake.optional(),
+  discord_captain_role_id: NullableSnowflake.optional(),
+  discord_to_role_id: NullableSnowflake.optional(),
+  language: LocaleSchema.optional(),
+});
+export type UpdateTournamentSettingsInput = z.infer<typeof UpdateTournamentSettingsSchema>;
+
 /** Code ami Nintendo Switch : même format que l'inscription Discord (RegistrationService), normalisé en majuscules. */
 export const FriendCodeSchema = z
   .string()

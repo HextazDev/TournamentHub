@@ -55,7 +55,7 @@ describe("PERF-01: cache de résolution d'organisation borné à la requête", (
 
   it("réutilise la résolution entre les verifyTournamentOrganization d'une même requête", async () => {
     const row = orgRow("22222222-2222-2222-2222-222222222222");
-    const tournament = { data: { guild_id: `guild-${row.id}`, organization_id: row.id }, error: null };
+    const tournament = { data: { organization_id: row.id }, error: null };
     const org = chainable({ data: row, error: null });
     from.mockImplementation((table: string) => (table === "tournaments" ? chainable(tournament) : org));
 

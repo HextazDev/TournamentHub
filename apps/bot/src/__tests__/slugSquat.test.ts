@@ -31,7 +31,7 @@ beforeEach(() => {
     organization_integrations: [
       { id: "i1", organization_id: VICTIM_ORG, provider: "DISCORD", external_id: VICTIM_GUILD, enabled: true, config: {} },
     ],
-    tournaments: [{ id: "t-victim", guild_id: VICTIM_GUILD, organization_id: VICTIM_ORG, status: "DRAFT" }],
+    tournaments: [{ id: "t-victim", organization_id: VICTIM_ORG, status: "DRAFT" }],
     tournament_staff: [],
   });
 });

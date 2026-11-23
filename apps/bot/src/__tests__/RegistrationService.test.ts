@@ -231,10 +231,10 @@ describe("RegistrationService - Batch Insert & i18n (PERF-02 & BOT-01)", () => {
           single: vi.fn().mockResolvedValue({
             data: {
               id: tournamentId,
-              guild_id: "guild-1",
+              organization_id: "org-1",
               status: "REGISTRATION",
               language: "en",
-              discord_registration_channel_id: null,
+              discord_config: {},
             },
             error: null,
           }),
@@ -329,7 +329,7 @@ describe("RegistrationService - Batch Insert & i18n (PERF-02 & BOT-01)", () => {
           single: vi.fn().mockResolvedValue({
             data: {
               id: tournamentId,
-              guild_id: "guild-fr",
+              organization_id: "org-fr",
               status: "REGISTRATION",
               language: "fr",
             },

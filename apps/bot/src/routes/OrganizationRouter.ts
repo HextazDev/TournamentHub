@@ -339,7 +339,7 @@ organizationRouter.put("/:orgId/members", async (req, res) => {
 
     const list = (currentMembers ?? []) as { organization_id: string; user_id: string; role: string }[];
     const targetCurrent = list.find((m) => m.user_id === user_id);
-    const isTargetOwner = targetCurrent?.role === "ORG_OWNER" || targetCurrent?.role === "OWNER";
+    const isTargetOwner = targetCurrent?.role === "ORG_OWNER";
 
     // Seul ORG_OWNER peut nommer ou modifier un ORG_OWNER
     if ((role === "ORG_OWNER" || isTargetOwner) && !canPerform(auth.access, "TRANSFER_OWNERSHIP")) {
@@ -348,9 +348,7 @@ organizationRouter.put("/:orgId/members", async (req, res) => {
 
     // SEC-27 : interdiction de rétrograder le dernier ORG_OWNER
     if (isTargetOwner && role !== "ORG_OWNER") {
-      const otherOwners = list.filter(
-        (m) => m.user_id !== user_id && (m.role === "ORG_OWNER" || m.role === "OWNER"),
-      );
+      const otherOwners = list.filter((m) => m.user_id !== user_id && m.role === "ORG_OWNER");
       if (otherOwners.length === 0) {
         return res.status(400).json({ error: "Impossible de rétrograder le dernier propriétaire (ORG_OWNER) de l'organisation.", code: "LAST_OWNER" });
       }
@@ -402,15 +400,13 @@ organizationRouter.delete("/:orgId/members/:userId", async (req, res) => {
       return res.status(404).json({ error: "Member not found" });
     }
 
-    const isTargetOwner = targetCurrent.role === "ORG_OWNER" || targetCurrent.role === "OWNER";
+    const isTargetOwner = targetCurrent.role === "ORG_OWNER";
     if (isTargetOwner && !canPerform(auth.access, "TRANSFER_OWNERSHIP")) {
       return res.status(403).json({ error: "Seul un propriétaire peut retirer un propriétaire.", code: "NO_RIGHTS" });
     }
 
     if (isTargetOwner) {
-      const otherOwners = list.filter(
-        (m) => m.user_id !== targetUserId && (m.role === "ORG_OWNER" || m.role === "OWNER"),
-      );
+      const otherOwners = list.filter((m) => m.user_id !== targetUserId && m.role === "ORG_OWNER");
       if (otherOwners.length === 0) {
         return res.status(400).json({ error: "Impossible de supprimer le dernier propriétaire (ORG_OWNER) de l'organisation.", code: "LAST_OWNER" });
       }
@@ -712,6 +708,7 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     // Sans serveur, une intégration Discord ne peut pas rester active : délier revient à la couper.
     const enabled = parsed.data.enabled ?? (parsed.data.external_id === null ? false : (existingRow?.enabled ?? true));
     const wasActive = Boolean(existingRow?.enabled);
+    const serverChanged = provider === "DISCORD" && previousExternalId !== null && externalId !== previousExternalId;
 
     let shellOrgIdToReclaim: string | null = null;
     if (provider === "DISCORD") {
@@ -723,24 +720,17 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
         shellOrgIdToReclaim = await resolveLinkableDiscordGuild(req, auth.org, externalId, auth.callerId);
       }
 
-      // SEC-21 (#88) : portage depuis ServerSettingsRouter — tout salon configuré/modifié doit être accessible au TO et au bot.
+      // SEC-21 (#88) : tout salon configuré/modifié (ou porté sur un nouveau serveur) doit être accessible au TO et au bot.
       if (parsed.data.provider === "DISCORD" && parsed.data.config) {
-        const currentCfg = existingRow?.config ?? {};
-        const channelChanged = (requested: unknown, current: unknown) =>
-          requested !== undefined &&
-          (requested || null) !== (typeof current === "string" ? current : null) &&
-          typeof requested === "string" &&
-          requested.trim().length > 0;
-
+        const currentCfg = serverChanged ? {} : (existingRow?.config ?? {});
+        const channelKeys = ["registration_channel_id", "announcement_channel_id", "checkin_channel_id"] as const;
         const modifiedChannels: string[] = [];
-        if (channelChanged(parsed.data.config.registration_channel_id, currentCfg.registration_channel_id)) {
-          modifiedChannels.push(parsed.data.config.registration_channel_id!);
-        }
-        if (channelChanged(parsed.data.config.announcement_channel_id, currentCfg.announcement_channel_id)) {
-          modifiedChannels.push(parsed.data.config.announcement_channel_id!);
-        }
-        if (channelChanged(parsed.data.config.checkin_channel_id, currentCfg.checkin_channel_id)) {
-          modifiedChannels.push(parsed.data.config.checkin_channel_id!);
+        for (const key of channelKeys) {
+          const requested = parsed.data.config[key];
+          const current = typeof currentCfg[key] === "string" ? currentCfg[key] : null;
+          if (typeof requested === "string" && requested !== current) {
+            modifiedChannels.push(requested);
+          }
         }
 
         if (modifiedChannels.length > 0) {
@@ -790,7 +780,21 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       if (deleteError) throw deleteError;
     }
 
-    const config = { ...(existingRow?.config ?? {}), ...(parsed.data.config ?? {}) };
+    // SEC-45 / DAT-04 : en cas de changement ou déliaison de serveur Discord, purger les rôles/salons de l'ancien serveur.
+    const DISCORD_GUILD_CONFIG_KEYS = new Set([
+      "to_role_id",
+      "captain_role_id",
+      "registration_channel_id",
+      "announcement_channel_id",
+      "checkin_channel_id",
+      "guild_name",
+      "guild_icon",
+      "bot_present",
+    ]);
+    const baseConfig = serverChanged
+      ? Object.fromEntries(Object.entries(existingRow?.config ?? {}).filter(([key]) => !DISCORD_GUILD_CONFIG_KEYS.has(key)))
+      : (existingRow?.config ?? {});
+    const config = { ...baseConfig, ...(parsed.data.config ?? {}) };
     const integrationId = existingRow?.id ?? randomUUID();
     const status = enabled ? "CONNECTED" : "DISCONNECTED";
 
@@ -818,7 +822,7 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
 
     // SEC-45 : en cas de changement ou déliaison d'un serveur déjà lié, purger les identifiants Discord des tournois.
     // Une simple désactivation (même external_id) préserve `discord_config` pour retrouver salons et rôles à la réactivation (#101).
-    if (provider === "DISCORD" && previousExternalId !== null && externalId !== previousExternalId) {
+    if (serverChanged) {
       const { error: tournamentsError } = await supabase
         .from("tournaments")
         .update({ discord_config: {} })

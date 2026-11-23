@@ -6,12 +6,13 @@ import { SchedulerService } from "../services/SchedulerService";
 import { getAuthenticatedGuildId, resolveOrganization, verifyTournamentOrganization } from "../utils/tenant";
 import {
   canPerform,
-  CheckinModeSchema,
   LaunchTournamentSchema,
   LocaleSchema,
   mergeTournamentDiscordConfig,
   readTournamentDiscordConfig,
+  UpdateTournamentSettingsSchema,
   type IntegrationWarning,
+  type TournamentDiscordConfig,
 } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
@@ -76,7 +77,8 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
     if (!org) {
       return res.status(404).json({ error: "Organization not found" });
     }
-    const discordCfg = org.discordConfig;
+    // AUD-DAT-03 : n'hériter des salons/rôles Discord par défaut que si l'intégration DISCORD est active.
+    const discordCfg = org.discordEnabled ? org.discordConfig : {};
     const initialDiscordConfig = mergeTournamentDiscordConfig(
       {},
       {
@@ -138,12 +140,20 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre organisation." });
     }
 
+    const parsed = UpdateTournamentSettingsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.join(".");
+      const message = issue?.message ?? "Invalid settings payload";
+      return res.status(400).json({ error: field ? `${field}: ${message}` : message });
+    }
+
     const {
       start_at, checkin_start_at, checkin_end_at, checkin_mode,
       discord_registration_channel_id, discord_announcement_channel_id,
       discord_checkin_channel_id, discord_captain_role_id, discord_to_role_id,
       language,
-    } = req.body;
+    } = parsed.data;
 
     // Fetch the current tournament state to check if we transition from DRAFT to REGISTRATION
     const { data: currentTournament, error: fetchErr } = await supabase
@@ -157,20 +167,7 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
     }
 
     const currentDiscordCfg = readTournamentDiscordConfig(currentTournament.discord_config);
-
-    let resolvedCheckinMode = currentTournament.checkin_mode ?? "ENABLED";
-    if (checkin_mode !== undefined) {
-      const parsedMode = CheckinModeSchema.safeParse(checkin_mode);
-      if (!parsedMode.success) {
-        return res.status(400).json({ error: "checkin_mode must be 'ENABLED' or 'DISABLED'" });
-      }
-      resolvedCheckinMode = parsedMode.data;
-    }
-
-    const requestedLanguage = OptionalLocaleSchema.safeParse(language);
-    if (!requestedLanguage.success) {
-      return res.status(400).json({ error: "language must be 'fr' or 'en'" });
-    }
+    const resolvedCheckinMode = checkin_mode ?? currentTournament.checkin_mode ?? "ENABLED";
 
     // SEC-22 : les rôles du tournoi décident qui le gère ; un TO de tournoi ne peut pas les changer.
     const access = req.adminCheck?.access;
@@ -185,17 +182,18 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
 
     // SEC-21 (#88) : un salon spécifié ou modifié doit être accessible au membre demandeur et au bot.
     const discordId = req.adminCheck?.discordId ?? (req.headers["x-discord-user-id"] as string | undefined);
-    const channelChanged = (requested: unknown, current: string | null) =>
-      requested !== undefined && (requested || null) !== current && typeof requested === "string" && requested.trim().length > 0;
-
     const modifiedChannels: string[] = [];
-    if (channelChanged(discord_registration_channel_id, currentDiscordCfg.registration_channel_id)) {
+    if (typeof discord_registration_channel_id === "string" && discord_registration_channel_id !== currentDiscordCfg.registration_channel_id) {
       modifiedChannels.push(discord_registration_channel_id);
     }
-    if (channelChanged(discord_announcement_channel_id, currentDiscordCfg.announcement_channel_id)) {
+    if (typeof discord_announcement_channel_id === "string" && discord_announcement_channel_id !== currentDiscordCfg.announcement_channel_id) {
       modifiedChannels.push(discord_announcement_channel_id);
     }
-    if (channelChanged(discord_checkin_channel_id, currentDiscordCfg.checkin_channel_id)) {
+    if (
+      resolvedCheckinMode !== "DISABLED" &&
+      typeof discord_checkin_channel_id === "string" &&
+      discord_checkin_channel_id !== currentDiscordCfg.checkin_channel_id
+    ) {
       modifiedChannels.push(discord_checkin_channel_id);
     }
 
@@ -216,32 +214,56 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       }
     }
 
+    const nextStartAt = start_at !== undefined ? start_at : (currentTournament.start_at ?? null);
+    const nextCheckinStartAt =
+      resolvedCheckinMode === "DISABLED"
+        ? null
+        : (checkin_start_at !== undefined ? checkin_start_at : (currentTournament.checkin_start_at ?? null));
+    const nextCheckinEndAt =
+      resolvedCheckinMode === "DISABLED"
+        ? null
+        : (checkin_end_at !== undefined ? checkin_end_at : (currentTournament.checkin_end_at ?? null));
+
     let newStatus = currentTournament.status;
 
     // Transition automatically from DRAFT to REGISTRATION if valid checkin dates are provided or checkin is disabled (#15 / #87 / LIFE-01)
     if (currentTournament.status === "DRAFT") {
-      if (resolvedCheckinMode === "DISABLED" || (checkin_start_at && checkin_end_at)) {
+      if (resolvedCheckinMode === "DISABLED" || (nextCheckinStartAt && nextCheckinEndAt)) {
         newStatus = "REGISTRATION";
       }
     }
 
-    const nextDiscordConfig = mergeTournamentDiscordConfig(currentTournament.discord_config, {
-      registration_channel_id: discord_registration_channel_id || null,
-      announcement_channel_id: discord_announcement_channel_id || null,
-      checkin_channel_id: resolvedCheckinMode === "DISABLED" ? null : (discord_checkin_channel_id || null),
-      // Sans droit sur les rôles, les valeurs enregistrées sont conservées (champ absent ou inchangé).
-      captain_role_id: canManageRoles ? discord_captain_role_id || null : currentDiscordCfg.captain_role_id,
-      to_role_id: canManageRoles ? discord_to_role_id || null : currentDiscordCfg.to_role_id,
-    });
+    // AUD-DAT-01 : seuls les champs explicitement fournis modifient `discord_config` (un PUT partiel préserve les autres clés).
+    const discordPatch: Partial<TournamentDiscordConfig> = {};
+    if (discord_registration_channel_id !== undefined) {
+      discordPatch.registration_channel_id = discord_registration_channel_id;
+    }
+    if (discord_announcement_channel_id !== undefined) {
+      discordPatch.announcement_channel_id = discord_announcement_channel_id;
+    }
+    if (resolvedCheckinMode === "DISABLED") {
+      discordPatch.checkin_channel_id = null;
+    } else if (discord_checkin_channel_id !== undefined) {
+      discordPatch.checkin_channel_id = discord_checkin_channel_id;
+    }
+    if (canManageRoles) {
+      if (discord_captain_role_id !== undefined) {
+        discordPatch.captain_role_id = discord_captain_role_id;
+      }
+      if (discord_to_role_id !== undefined) {
+        discordPatch.to_role_id = discord_to_role_id;
+      }
+    }
+    const nextDiscordConfig = mergeTournamentDiscordConfig(currentTournament.discord_config, discordPatch);
 
     const payload: Record<string, unknown> = {
       status: newStatus,
       checkin_mode: resolvedCheckinMode,
-      start_at: start_at || null,
-      checkin_start_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_start_at || null),
-      checkin_end_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_end_at || null),
+      start_at: nextStartAt,
+      checkin_start_at: nextCheckinStartAt,
+      checkin_end_at: nextCheckinEndAt,
       discord_config: nextDiscordConfig,
-      language: requestedLanguage.data ?? currentTournament.language,
+      language: language ?? currentTournament.language,
       updated_at: new Date().toISOString(),
     };
 

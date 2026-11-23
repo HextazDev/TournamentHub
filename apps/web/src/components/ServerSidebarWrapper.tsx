@@ -6,7 +6,7 @@ import { ReactNode } from "react";
 export function ServerSidebarWrapper({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   
-  // Format: /admin/[guildId]/tournaments/[id]/...
+  // Format: /admin/[orgSlug]/tournaments/[id]/...
   const parts = pathname.split('/').filter(Boolean);
   
   // Check if we are inside a specific tournament (length > 3 means there's an ID after 'tournaments')

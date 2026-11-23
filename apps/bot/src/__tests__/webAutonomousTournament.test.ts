@@ -49,13 +49,12 @@ beforeEach(() => {
       {
         id: T_WEB,
         organization_id: ORG_ID,
-        guild_id: null,
         name: "Web Cup #1",
         status: "REGISTRATION",
         is_public: true,
         is_registration_open: false,
         checkin_mode: "ENABLED",
-        discord_registration_channel_id: null,
+        discord_config: {},
       },
     ],
     phases: [{ id: PHASE_1, tournament_id: T_WEB, name: "Bracket", format: "SINGLE_ELIM", phase_order: 1 }],
@@ -104,6 +103,39 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
       language: "fr",
     });
     expect(createRes.body).not.toHaveProperty("guild_id");
+  });
+
+  it("AUD-DAT-03: ne recopie pas les salons/rôles d'une intégration Discord désactivée dans un nouveau tournoi Web", async () => {
+    db.current!.tables.organization_integrations!.push({
+      id: "int-disabled",
+      organization_id: ORG_ID,
+      provider: "DISCORD",
+      external_id: "111111111111111111",
+      enabled: false,
+      status: "DISCONNECTED",
+      config: {
+        to_role_id: "222222222222222222",
+        captain_role_id: "333333333333333333",
+        registration_channel_id: "444444444444444444",
+      },
+    });
+
+    const createRes = await callRoute(tournamentRouter, {
+      method: "POST",
+      path: "/",
+      adminCheck: orgOwnerCheck,
+      body: {
+        organization_id: ORG_ID,
+        name: "Web Cup Disabled Discord",
+        language: "fr",
+      },
+    });
+
+    expect(createRes.status).toBe(201);
+    expect(createRes.body).toMatchObject({
+      organization_id: ORG_ID,
+      discord_config: {},
+    });
   });
 
   it("INT-02: ouvre les inscriptions, lance et clôture un tournoi d'une organisation Web sans salon ni bot Discord", async () => {

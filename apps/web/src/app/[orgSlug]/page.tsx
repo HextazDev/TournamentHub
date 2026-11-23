@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { Settings, Trophy } from "lucide-react";
 import type { Tournament } from "@hub/shared";
-import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getGuildAdminAccess, getServerProfile, getViewer, memberGuildIds } from "@/lib/viewer";
 import { canAccessAdminPanel } from "@/lib/accessRules";
+import { loadOrganizationHubTournaments } from "@/lib/tournamentDiscovery";
 import { OrganizerCard } from "@/components/OrganizerCard";
 import { TournamentCard } from "@/components/TournamentCard";
 import { t } from "@/i18n";
@@ -14,22 +14,20 @@ export default async function GuildHubPage({ params }: { params: Promise<{ orgSl
   const locale = await getServerLocale();
 
   const [viewer, profile, access] = await Promise.all([getViewer(), getServerProfile(guildId), getGuildAdminAccess(guildId)]);
-  const isMember =
-    Boolean(profile?.discord_enabled && memberGuildIds(viewer).has(profile.guild_id)) || access.allowed;
+  const isActiveDiscordMember = Boolean(profile?.discord_enabled && memberGuildIds(viewer).has(profile.guild_id));
 
-  // SEC-10 / SEC-40 : les tournois privés ne sont lus que pour les membres ; aucune interpolation dans .or().
+  // SEC-10 / SEC-21 / SEC-40 : les tournois privés sont restreints aux membres de l'org ou à la portée exacte du staff de tournoi.
   let tournaments: Tournament[] = [];
+  let isMember = isActiveDiscordMember;
   if (profile?.organization_id) {
-    let query = supabaseAdmin
-      .from("tournaments")
-      .select("*")
-      .eq("organization_id", profile.organization_id)
-      .neq("status", "ARCHIVED")
-      .order("created_at", { ascending: false });
-    if (!isMember) query = query.eq("is_public", true);
-    const { data, error } = await query;
-    if (error) throw new Error(`tournaments read failed: ${error.message}`);
-    tournaments = (data ?? []) as Tournament[];
+    const loaded = await loadOrganizationHubTournaments({
+      organizationId: profile.organization_id,
+      viewerDiscordId: viewer.discordId,
+      isActiveDiscordMember,
+      access,
+    });
+    tournaments = loaded.tournaments;
+    isMember = loaded.isMember;
   }
 
   return (

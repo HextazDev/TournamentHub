@@ -255,6 +255,30 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     expect(access.invalidateGuildAccess).toHaveBeenCalledWith(GUILD);
   });
 
+  it("AUD-DAT-01: un PUT partiel d'un manager SERVER préserve discord_config et rejette un identifiant Discord invalide (400)", async () => {
+    const existingRow = db.current?.tables.tournaments?.find((t) => t.id === T_A);
+    if (existingRow) {
+      existingRow.discord_config = {
+        to_role_id: ROLE_A,
+        captain_role_id: CAPTAIN_A,
+        registration_channel_id: "444444444444444444",
+        registration_message_id: "777777777777777777",
+      };
+    }
+
+    const partial = await settings(serverTo, { language: "en" });
+    expect(partial.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === T_A)?.discord_config).toEqual({
+      to_role_id: ROLE_A,
+      captain_role_id: CAPTAIN_A,
+      registration_channel_id: "444444444444444444",
+      registration_message_id: "777777777777777777",
+    });
+
+    const invalid = await settings(serverTo, { discord_registration_channel_id: "not-a-snowflake" });
+    expect(invalid.status).toBe(400);
+  });
+
   it("DISC-08: la resynchronisation de guild_admins ne retarde jamais la réponse (synchro bloquée ou en échec)", async () => {
     const body = { guildId: GUILD, discord_to_role_id: "555555555555555555", discord_captain_role_id: CAPTAIN_A };
     const fetchGuild = vi.fn(() => new Promise(() => undefined));

@@ -32,7 +32,7 @@ export function clearOrganizationCache(): void {
 
 /**
  * Résout une organisation par son `id` UUID, son `slug` ou le `guild_id` Discord de son intégration.
- * Renvoie `null` si aucune ligne `organizations` ne correspond (ex: fixture de test purement `server_settings`).
+ * Renvoie `null` si aucune ligne `organizations` ne correspond.
  * PERF-01 : à l'intérieur d'une requête HTTP, les résolutions réussies sont mémoïsées pour amortir
  * les chaînes `verify*Organization` (une même requête API peut sinon déclencher 8-10 lectures Supabase de
  * résolution de tenant). Les échecs (`null`) ne sont jamais mémoïsés : la base est relue à chaque tentative.
@@ -188,14 +188,56 @@ export async function resolveResourceTournament(kind: TournamentResourceKind, id
   return readTournamentId("phases", match.phase_id);
 }
 
+interface TournamentTenantRow {
+  organization_id?: string | null;
+}
+
+interface JoinedTournamentChildRow {
+  tournament_id?: string | null;
+  tournaments?: TournamentTenantRow | TournamentTenantRow[] | null;
+}
+
+interface JoinedMatchRow {
+  phase_id?: string | null;
+  phases?: { tournaments?: TournamentTenantRow | TournamentTenantRow[] | null } | { tournaments?: TournamentTenantRow | TournamentTenantRow[] | null }[] | null;
+}
+
+function unwrapSingle<T>(value: T | T[] | null | undefined): T | undefined {
+  return Array.isArray(value) ? value[0] : (value ?? undefined);
+}
+
 async function matchesTenant(
-  row: { organization_id?: string | null } | null | undefined,
+  row: TournamentTenantRow | null | undefined,
   expectedTenantId: string,
 ): Promise<boolean> {
-  if (!row) return false;
+  if (!row?.organization_id) return false;
   const org = await resolveOrganization(expectedTenantId);
   if (!org) return false;
   return row.organization_id === org.id;
+}
+
+async function verifyTournamentChildOrganization(
+  table: "phases" | "teams",
+  id: string,
+  expectedTenantId: string,
+): Promise<boolean> {
+  if (!id || !expectedTenantId) return false;
+  const { data, error } = await supabase
+    .from(table)
+    .select("tournament_id, tournaments!inner(organization_id)")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error || !data) return false;
+  const row = data as JoinedTournamentChildRow;
+  const tourney = unwrapSingle(row.tournaments);
+  if (tourney?.organization_id) {
+    return matchesTenant(tourney, expectedTenantId);
+  }
+  if (typeof row.tournament_id === "string") {
+    return verifyTournamentOrganization(row.tournament_id, expectedTenantId);
+  }
+  return false;
 }
 
 /**
@@ -211,61 +253,21 @@ export async function verifyTournamentOrganization(tournamentId: string, expecte
     .maybeSingle();
 
   if (error || !data) return false;
-  return matchesTenant(data as { organization_id?: string | null }, expectedTenantId);
+  return matchesTenant(data as TournamentTenantRow, expectedTenantId);
 }
 
 /**
  * Verify that a phase belongs to the authenticated organization.
  */
 export async function verifyPhaseOrganization(phaseId: string, expectedTenantId: string): Promise<boolean> {
-  if (!phaseId || !expectedTenantId) return false;
-  const { data, error } = await supabase
-    .from("phases")
-    .select("tournament_id, tournaments!inner(organization_id)")
-    .eq("id", phaseId)
-    .maybeSingle();
-
-  if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const tourney = anyData.tournaments as
-    | { organization_id?: string | null }
-    | { organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted?.organization_id) {
-    return matchesTenant(extracted, expectedTenantId);
-  }
-  if (typeof anyData.tournament_id === "string") {
-    return verifyTournamentOrganization(anyData.tournament_id, expectedTenantId);
-  }
-  return false;
+  return verifyTournamentChildOrganization("phases", phaseId, expectedTenantId);
 }
 
 /**
  * Verify that a team belongs to the authenticated organization.
  */
 export async function verifyTeamOrganization(teamId: string, expectedTenantId: string): Promise<boolean> {
-  if (!teamId || !expectedTenantId) return false;
-  const { data, error } = await supabase
-    .from("teams")
-    .select("tournament_id, tournaments!inner(organization_id)")
-    .eq("id", teamId)
-    .maybeSingle();
-
-  if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const tourney = anyData.tournaments as
-    | { organization_id?: string | null }
-    | { organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted?.organization_id) {
-    return matchesTenant(extracted, expectedTenantId);
-  }
-  if (typeof anyData.tournament_id === "string") {
-    return verifyTournamentOrganization(anyData.tournament_id, expectedTenantId);
-  }
-  return false;
+  return verifyTournamentChildOrganization("teams", teamId, expectedTenantId);
 }
 
 /**
@@ -280,19 +282,14 @@ export async function verifyMatchOrganization(matchId: string, expectedTenantId:
     .maybeSingle();
 
   if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const phase = anyData.phases as Record<string, unknown> | Record<string, unknown>[] | undefined;
-  const phaseObj = Array.isArray(phase) ? phase[0] : phase;
-  const tourney = phaseObj?.tournaments as
-    | { organization_id?: string | null }
-    | { organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted?.organization_id) {
-    return matchesTenant(extracted, expectedTenantId);
+  const row = data as JoinedMatchRow;
+  const phase = unwrapSingle(row.phases);
+  const tourney = unwrapSingle(phase?.tournaments);
+  if (tourney?.organization_id) {
+    return matchesTenant(tourney, expectedTenantId);
   }
-  if (typeof anyData.phase_id === "string") {
-    return verifyPhaseOrganization(anyData.phase_id, expectedTenantId);
+  if (typeof row.phase_id === "string") {
+    return verifyPhaseOrganization(row.phase_id, expectedTenantId);
   }
   return false;
 }
