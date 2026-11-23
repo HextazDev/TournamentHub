@@ -448,4 +448,68 @@ describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", (
       ["lt", "synced_at", expect.any(String)],
     ]);
   });
+
+  it("DISC-16: registerGuild en 23505 sur discord-<id> refuse de corrompre une organisation qui a déjà une intégration Discord", async () => {
+    let intSelectCount = 0;
+    const calls: Call[] = [];
+    vi.mocked(supabase.from).mockImplementation(((table: string) => {
+      const call: Call = { table, op: "select", filters: [] };
+      const result = () => {
+        if (!calls.includes(call)) calls.push(call);
+        if (table === "organization_integrations" && call.op === "select") {
+          intSelectCount += 1;
+          // 1er select : recherche par external_id = g1 -> introuvable
+          if (intSelectCount === 1) return Promise.resolve({ data: null, error: null });
+          // 2e select : vérification d'une intégration DISCORD existante sur org-existing -> déjà reliée à g2
+          return Promise.resolve({ data: { id: "int-other", external_id: "g2" }, error: null });
+        }
+        if (table === "organizations" && call.op === "insert") {
+          return Promise.resolve({ data: null, error: { code: "23505", message: "duplicate slug" } });
+        }
+        if (table === "organizations" && call.op === "select") {
+          return Promise.resolve({ data: { id: "org-existing" }, error: null });
+        }
+        return Promise.resolve({ data: null, error: null });
+      };
+      const builder = {
+        select: () => builder,
+        insert: (payload: unknown) => ((call.op = "insert"), (call.payload = payload), builder),
+        update: (payload: unknown) => ((call.op = "update"), (call.payload = payload), builder),
+        upsert: (payload: unknown) => ((call.op = "upsert"), (call.payload = payload), builder),
+        delete: () => ((call.op = "delete"), builder),
+        eq: (col: string, val: unknown) => (call.filters.push(["eq", col, val]), builder),
+        neq: (col: string, val: unknown) => (call.filters.push(["neq", col, val]), builder),
+        lt: (col: string, val: unknown) => (call.filters.push(["lt", col, val]), builder),
+        not: (col: string, _op: string, val: unknown) => (call.filters.push(["not", col, val]), builder),
+        single: result,
+        maybeSingle: result,
+        then: (resolve?: (r: Result | undefined) => unknown, reject?: (e: unknown) => unknown) => result().then(resolve, reject),
+      };
+      return builder;
+    }) as unknown as typeof supabase.from);
+
+    await expect(GuildRegistryService.registerGuild(guildLike)).resolves.toBe(false);
+    expect(calls.some((c) => c.table === "organization_integrations" && c.op === "insert")).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("discord-g1"));
+  });
+
+  it("DISC-16: reRegisterGuildById réenregistre un serveur où le bot est toujours présent, et renvoie false sans lever sinon", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: null, error: null },
+      "organizations.insert": { data: { id: "org-recreated" }, error: null },
+      "organization_members.select": { data: [], error: null },
+    });
+
+    const ok = await GuildRegistryService.reRegisterGuildById({ guilds: { fetch: async () => guildLike } }, "g1");
+    expect(ok).toBe(true);
+    expect(calls.some((c) => c.table === "organization_integrations" && c.op === "insert")).toBe(true);
+
+    const missing = await GuildRegistryService.reRegisterGuildById(
+      { guilds: { fetch: async () => Promise.reject(new Error("Unknown Guild")) } },
+      "g1",
+    );
+    expect(missing).toBe(false);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("g1"), expect.any(Error));
+  });
 });
+

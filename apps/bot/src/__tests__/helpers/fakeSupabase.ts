@@ -259,9 +259,26 @@ class FakeQuery implements PromiseLike<QueryResult> {
     }
 
     if (this.op === "delete") {
+      const removed = rows.filter(r => this.matches(r));
       const kept = rows.filter(r => !this.matches(r));
-      const affected = rows.length - kept.length;
+      const affected = removed.length;
       rows.splice(0, rows.length, ...kept);
+      if (this.table === "organizations" && removed.length > 0) {
+        const removedIds = new Set(removed.map(r => r.id));
+        for (const childTable of [
+          "organization_integrations",
+          "organization_members",
+          "integration_access_grants",
+          "organization_invites",
+          "tournaments",
+        ]) {
+          const childRows = this.db.tables[childTable];
+          if (childRows) {
+            const keptChildren = childRows.filter(c => !removedIds.has(c.organization_id));
+            childRows.splice(0, childRows.length, ...keptChildren);
+          }
+        }
+      }
       this.db.writes.push({ table: this.table, op: "delete", payload: {}, filters: [...this.filters], affected });
       return { data: null, error: null };
     }

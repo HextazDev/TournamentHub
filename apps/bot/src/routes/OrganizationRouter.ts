@@ -26,6 +26,7 @@ import {
   type DiscordClientLike,
 } from "../services/MemberAccessService";
 import { refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
+import { GuildRegistryService } from "../services/GuildRegistryService";
 import { ChannelAccessService } from "../services/ChannelAccessService";
 import { discordIntegrationPlugin } from "../services/integrations/DiscordIntegrationPlugin";
 import { logger } from "../utils/logger";
@@ -111,6 +112,19 @@ function invalidateOrganizationCaches(org: ResolvedOrganization, extraGuildId?: 
   if (org.discordGuildId) invalidateGuildAccess(org.discordGuildId);
   if (extraGuildId) invalidateGuildAccess(extraGuildId);
   clearOrganizationCache();
+}
+
+/**
+ * DISC-16 (#105) : quand un serveur Discord perd son intégration (suppression d'organisation, changement ou
+ * retrait du serveur lié) alors que le bot y est toujours présent, le réenregistrer immédiatement pour éviter
+ * qu'il n'apparaisse « Bot non installé » sur `/admin`, puis resynchroniser son annuaire en arrière-plan.
+ */
+async function reRegisterOrphanedGuild(client: GuildFetcher, guildId: string): Promise<void> {
+  const registered = await GuildRegistryService.reRegisterGuildById(client, guildId);
+  if (registered) {
+    clearOrganizationCache();
+    refreshGuildAccess(client, guildId);
+  }
 }
 
 const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
@@ -278,9 +292,13 @@ organizationRouter.delete("/:orgId", async (req, res) => {
       return res.status(400).json({ error: "Confirmation incorrecte.", code: "CONFIRMATION_MISMATCH" });
     }
 
+    const formerGuildId = auth.org.discordGuildId;
     const { error } = await supabase.from("organizations").delete().eq("id", auth.org.id);
     if (error) throw error;
     invalidateOrganizationCaches(auth.org);
+    if (formerGuildId && req.app?.locals?.discordClient) {
+      await reRegisterOrphanedGuild(req.app.locals.discordClient as GuildFetcher, formerGuildId);
+    }
     return res.status(200).json({ success: true });
   } catch (error: unknown) {
     return sendServerError(res, error, "OrganizationRouter.delete");
@@ -895,8 +913,15 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     }
 
     invalidateOrganizationCaches(auth.org, externalId);
-    if (provider === "DISCORD" && enabled && req.app?.locals?.discordClient) {
-      refreshGuildAccess(req.app.locals.discordClient as GuildFetcher, auth.org.id);
+    const discordClient = req.app?.locals?.discordClient as GuildFetcher | undefined;
+    if (provider === "DISCORD" && discordClient) {
+      if (enabled) {
+        refreshGuildAccess(discordClient, auth.org.id);
+      }
+      const isSelfShellUnlink = externalId === null && auth.org.slug === `discord-${previousExternalId}`;
+      if (serverChanged && previousExternalId && !isSelfShellUnlink) {
+        await reRegisterOrphanedGuild(discordClient, previousExternalId);
+      }
     }
 
     return res.status(200).json({

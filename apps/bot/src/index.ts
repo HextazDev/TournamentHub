@@ -24,6 +24,7 @@ import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
 import { applyPresence, hasPresenceFailure } from "./services/CaptainPresenceService";
 import { GuildRegistryService, readAdminRoles } from "./services/GuildRegistryService";
+import { refreshGuildAccess } from "./services/AccessRefreshService";
 import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
@@ -190,16 +191,14 @@ const bootstrap = async () => {
     });
 
     // Un rôle peut gagner ou perdre Administrateur / Gérer le serveur sans qu'aucun membre ne change de rôle.
-    client.on('roleUpdate', async (oldRole, newRole) => {
+    client.on('roleUpdate', (oldRole, newRole) => {
       if (oldRole.permissions.bitfield === newRole.permissions.bitfield) return;
-      invalidateGuildAccess(newRole.guild.id);
-      await GuildRegistryService.syncGuildAdmins(newRole.guild);
+      refreshGuildAccess(client, newRole.guild.id);
     });
 
     // SEC-23 : un rôle supprimé (rôle TO du serveur ou d'un tournoi) ne donne plus accès, sans attendre le TTL.
-    client.on('roleDelete', async (role) => {
-      invalidateGuildAccess(role.guild.id);
-      await GuildRegistryService.syncGuildAdmins(role.guild);
+    client.on('roleDelete', (role) => {
+      refreshGuildAccess(client, role.guild.id);
     });
 
     // Cycle de vie des serveurs : enregistrement dans organizations et organization_integrations (DISC-07).
