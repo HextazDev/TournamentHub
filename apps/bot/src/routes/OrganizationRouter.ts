@@ -16,7 +16,7 @@ import {
   type OrganizationAction,
 } from "@hub/shared";
 import { supabase } from "../lib/supabase";
-import { encryptSecretPayload } from "../utils/crypto";
+import { encryptSecretPayload, getActiveEncryptionKeyVersion } from "../utils/crypto";
 import { DomainError, sendServerError } from "../utils/serverError";
 import { clearOrganizationCache, resolveOrganization, verifyTournamentGuild, type ResolvedOrganization } from "../utils/tenant";
 import {
@@ -585,11 +585,31 @@ organizationRouter.delete("/:orgId/tournaments/:tournamentId/staff/:userId", asy
   }
 });
 
+const CUSTOM_DISCORD_CONFIG_KEYS = [
+  "to_role_id",
+  "captain_role_id",
+  "registration_channel_id",
+  "announcement_channel_id",
+  "checkin_channel_id",
+] as const;
+
+function hasCustomDiscordConfig(config: Record<string, unknown> | null | undefined): boolean {
+  if (!config || typeof config !== "object") return false;
+  return CUSTOM_DISCORD_CONFIG_KEYS.some((key) => typeof config[key] === "string" && config[key].length > 0);
+}
+
 /**
- * SEC-18 : un serveur ne se rattache qu'avec des droits de gestion vérifiés en direct.
- * Une organisation créée automatiquement à l'installation du bot et encore vide est reprise ; toute autre est un conflit.
+ * SEC-18 / SEC-42 : vérifie en lecture seule qu'un serveur Discord est rattachable.
+ * Renvoie l'identifiant d'une organisation shell `discord-<guildId>` vierge à reprendre (sans encore la supprimer),
+ * ou `null` si aucun conflit n'existe. Refuse toute reprise si la shell a des tournois, une configuration Discord
+ * personnalisée, des invitations, ou un propriétaire natif différent de l'appelant.
  */
-async function assertDiscordGuildLinkable(req: Request, org: ResolvedOrganization, guildId: string, callerId: string): Promise<void> {
+async function resolveLinkableDiscordGuild(
+  req: Request,
+  org: ResolvedOrganization,
+  guildId: string,
+  callerId: string,
+): Promise<string | null> {
   const rights = await checkGuildManageRights(discordClientOf(req), guildId, callerId);
   if (rights === "BOT_NOT_IN_GUILD") {
     throw new DomainError(409, "Installez d'abord le bot sur ce serveur Discord.", { code: "BOT_NOT_IN_GUILD" });
@@ -600,18 +620,21 @@ async function assertDiscordGuildLinkable(req: Request, org: ResolvedOrganizatio
 
   const { data: conflict, error } = await supabase
     .from("organization_integrations")
-    .select("organization_id")
+    .select("organization_id, config")
     .eq("provider", "DISCORD")
     .eq("external_id", guildId)
     .neq("organization_id", org.id)
     .maybeSingle();
   if (error) throw error;
-  if (!conflict) return;
+  if (!conflict) return null;
 
-  const conflictingId = (conflict as { organization_id: string }).organization_id;
+  const conflictRow = conflict as { organization_id: string; config?: Record<string, unknown> | null };
+  const conflictingId = conflictRow.organization_id;
   const alreadyLinked = new DomainError(409, "Cet identifiant externe est déjà rattaché à une autre organisation.", {
     code: "EXTERNAL_ID_ALREADY_LINKED",
   });
+  if (hasCustomDiscordConfig(conflictRow.config)) throw alreadyLinked;
+
   const { data: shell, error: shellError } = await supabase
     .from("organizations")
     .select("id")
@@ -621,16 +644,23 @@ async function assertDiscordGuildLinkable(req: Request, org: ResolvedOrganizatio
   if (shellError) throw shellError;
   if (!shell) throw alreadyLinked;
 
-  const { data: shellTournaments, error: tournamentsError } = await supabase
-    .from("tournaments")
-    .select("id")
-    .eq("organization_id", conflictingId)
-    .limit(1);
-  if (tournamentsError) throw tournamentsError;
-  if ((shellTournaments ?? []).length > 0) throw alreadyLinked;
+  const [tournamentsRes, membersRes, invitesRes] = await Promise.all([
+    supabase.from("tournaments").select("id").eq("organization_id", conflictingId).limit(1),
+    supabase.from("organization_members").select("user_id").eq("organization_id", conflictingId),
+    supabase.from("organization_invites").select("id").eq("organization_id", conflictingId).limit(1),
+  ]);
+  if (tournamentsRes.error) throw tournamentsRes.error;
+  if (membersRes.error) throw membersRes.error;
+  if (invitesRes.error) throw invitesRes.error;
 
-  const { error: deleteError } = await supabase.from("organizations").delete().eq("id", conflictingId);
-  if (deleteError) throw deleteError;
+  if ((tournamentsRes.data ?? []).length > 0) throw alreadyLinked;
+  if ((invitesRes.data ?? []).length > 0) throw alreadyLinked;
+
+  const shellMembers = (membersRes.data ?? []) as { user_id: string }[];
+  const onlyEmptyOrCaller = shellMembers.length === 0 || (shellMembers.length === 1 && shellMembers[0]?.user_id === callerId);
+  if (!onlyEmptyOrCaller) throw alreadyLinked;
+
+  return conflictingId;
 }
 
 /** ACC-01 : couper Discord ne doit jamais laisser l'organisation sans personne pour l'administrer. */
@@ -682,13 +712,14 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     const enabled = parsed.data.enabled ?? (parsed.data.external_id === null ? false : (existingRow?.enabled ?? true));
     const wasActive = Boolean(existingRow?.enabled);
 
+    let shellOrgIdToReclaim: string | null = null;
     if (provider === "DISCORD") {
       if (enabled && !externalId) {
         return res.status(400).json({ error: "Choisissez un serveur Discord à rattacher.", code: "GUILD_REQUIRED" });
       }
       if (wasActive && !enabled) await assertHasNativeManager(auth.org.id);
       if (enabled && externalId && (!wasActive || externalId !== previousExternalId)) {
-        await assertDiscordGuildLinkable(req, auth.org, externalId, auth.callerId);
+        shellOrgIdToReclaim = await resolveLinkableDiscordGuild(req, auth.org, externalId, auth.callerId);
       }
     } else if (externalId && externalId !== previousExternalId) {
       const { data: conflict, error: conflictError } = await supabase
@@ -704,8 +735,17 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       }
     }
 
-    // SEC-07 : chiffrer d'abord. Une clé absente ou invalide échoue avant toute écriture.
-    const encryptedPayload = parsed.data.secret_payload ? encryptSecretPayload({ secret: parsed.data.secret_payload }) : null;
+    // SEC-07 / CLN-08 : chiffrer AVANT toute mutation (y compris la suppression de l'org shell) avec la version active.
+    const activeKeyVersion = parsed.data.secret_payload ? getActiveEncryptionKeyVersion() : 1;
+    const encryptedPayload = parsed.data.secret_payload
+      ? encryptSecretPayload({ secret: parsed.data.secret_payload }, undefined, activeKeyVersion)
+      : null;
+
+    // SEC-42 : l'org shell n'est supprimée qu'après toutes les validations et le chiffrement réussis.
+    if (shellOrgIdToReclaim) {
+      const { error: deleteError } = await supabase.from("organizations").delete().eq("id", shellOrgIdToReclaim);
+      if (deleteError) throw deleteError;
+    }
 
     const config = { ...(existingRow?.config ?? {}), ...(parsed.data.config ?? {}) };
     const integrationId = existingRow?.id ?? randomUUID();
@@ -733,16 +773,29 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     }
     if (writeError) throw writeError;
 
-    // Les tournois suivent le serveur lié : les rôles TO et le nettoyage Discord s'appuient sur guild_id.
+    // Les tournois suivent le serveur lié ; en cas de changement/retrait d'un serveur déjà lié, purger ses anciens IDs Discord (DAT-04).
     if (provider === "DISCORD" && externalId !== previousExternalId) {
+      const tournamentPatch =
+        previousExternalId !== null
+          ? {
+              guild_id: externalId,
+              discord_category_id: null,
+              discord_registration_channel_id: null,
+              discord_announcement_channel_id: null,
+              discord_checkin_channel_id: null,
+              discord_captain_role_id: null,
+              discord_to_role_id: null,
+            }
+          : { guild_id: externalId };
       const { error: tournamentsError } = await supabase
         .from("tournaments")
-        .update({ guild_id: externalId })
+        .update(tournamentPatch)
         .eq("organization_id", auth.org.id);
       if (tournamentsError) throw tournamentsError;
     }
 
-    // SEC-28 : stockage chiffré AES-256-GCM dans la table dédiée organization_integration_secrets
+    // SEC-28 / CLN-08 / ARC-04 : stockage chiffré versionné et calcul exact de has_secret.
+    let hasSecret = encryptedPayload !== null;
     if (encryptedPayload) {
       const { data: existingSecret, error: secretReadError } = await supabase
         .from("organization_integration_secrets")
@@ -754,15 +807,23 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       const { error: secretError } = existingSecret
         ? await supabase
             .from("organization_integration_secrets")
-            .update({ encrypted_payload: encryptedPayload, updated_at: now })
+            .update({ encrypted_payload: encryptedPayload, key_version: activeKeyVersion, updated_at: now })
             .eq("integration_id", integrationId)
         : await supabase.from("organization_integration_secrets").insert({
             integration_id: integrationId,
             encrypted_payload: encryptedPayload,
-            key_version: 1,
+            key_version: activeKeyVersion,
             updated_at: now,
           });
       if (secretError) throw secretError;
+    } else if (existingRow) {
+      const { data: existingSecret, error: secretReadError } = await supabase
+        .from("organization_integration_secrets")
+        .select("integration_id")
+        .eq("integration_id", integrationId)
+        .maybeSingle();
+      if (secretReadError) throw secretReadError;
+      hasSecret = Boolean(existingSecret);
     }
 
     // SEC-26 : révocation immédiate des accès issus de l'intégration et invalidation du cache
@@ -810,7 +871,7 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       enabled,
       config,
       status,
-      has_secret: encryptedPayload !== null,
+      has_secret: hasSecret,
       updated_at: now,
     });
   } catch (error: unknown) {

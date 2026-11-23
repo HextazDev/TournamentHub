@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { encryptSecretPayload, decryptSecretPayload } from "../utils/crypto.js";
+import { encryptSecretPayload, decryptSecretPayload, getActiveEncryptionKeyVersion } from "../utils/crypto.js";
 
 describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
   const originalEnv = { ...process.env };
@@ -206,6 +206,22 @@ describe("crypto utils - AES-256-GCM (SEC-01 & SEC-28)", () => {
       expect(encrypted).toMatch(/^v1:1:/);
 
       expect(decryptSecretPayload<typeof payload>(encrypted)).toEqual(payload);
+    });
+
+    it("CLN-08: chiffre avec la version active INTEGRATION_ENCRYPTION_KEY_VERSION et rejette une valeur invalide", () => {
+      const keyV1 = "a".repeat(64);
+      const keyV2 = "b".repeat(64);
+      process.env.INTEGRATION_ENCRYPTION_KEY = keyV1;
+      process.env.INTEGRATION_ENCRYPTION_KEY_V2 = keyV2;
+      process.env.INTEGRATION_ENCRYPTION_KEY_VERSION = "2";
+
+      expect(getActiveEncryptionKeyVersion()).toBe(2);
+      const encrypted = encryptSecretPayload({ secret: "rotated-write" });
+      expect(encrypted.startsWith("v1:2:")).toBe(true);
+      expect(decryptSecretPayload(encrypted)).toEqual({ secret: "rotated-write" });
+
+      process.env.INTEGRATION_ENCRYPTION_KEY_VERSION = "0";
+      expect(() => getActiveEncryptionKeyVersion()).toThrowError("INTEGRATION_ENCRYPTION_KEY_VERSION");
     });
   });
 });

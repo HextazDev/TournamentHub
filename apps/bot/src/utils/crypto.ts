@@ -54,10 +54,31 @@ export function parseIntegrationKey(value: string): Buffer | null {
 }
 
 /**
+ * CLN-08 : version de clé active utilisée à l'écriture (défaut : 1).
+ * Permet une vraie rotation de clés : définir INTEGRATION_ENCRYPTION_KEY_V2 puis basculer INTEGRATION_ENCRYPTION_KEY_VERSION=2.
+ */
+export function getActiveEncryptionKeyVersion(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.INTEGRATION_ENCRYPTION_KEY_VERSION?.trim();
+  if (!raw) return 1;
+  if (!/^\d+$/.test(raw)) {
+    throw new Error("SEC-03: INTEGRATION_ENCRYPTION_KEY_VERSION doit être un entier >= 1");
+  }
+  const version = Number.parseInt(raw, 10);
+  if (!Number.isSafeInteger(version) || version < 1) {
+    throw new Error("SEC-03: INTEGRATION_ENCRYPTION_KEY_VERSION doit être un entier >= 1");
+  }
+  return version;
+}
+
+/**
  * SEC-28 / SEC-03: Chiffre un objet secret en AES-256-GCM.
  * Format du blob: v1:<key_version>:<iv>:<tag>:<ciphertext>
  */
-export function encryptSecretPayload(payload: unknown, rawKey?: string, keyVersion = 1): string {
+export function encryptSecretPayload(
+  payload: unknown,
+  rawKey?: string,
+  keyVersion: number = getActiveEncryptionKeyVersion(),
+): string {
   const key = resolveKeyForVersion(keyVersion, rawKey);
   const iv = randomBytes(IV_LENGTH);
   const cipher = createCipheriv(ALGORITHM, key, iv);

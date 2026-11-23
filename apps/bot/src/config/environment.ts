@@ -34,6 +34,16 @@ export function readBotEnvironment(env: NodeJS.ProcessEnv) {
   for (const name of Object.keys(env).filter((key) => /^INTEGRATION_ENCRYPTION_KEY_V\d+$/.test(key))) {
     if (!parseIntegrationKey(env[name] ?? "")) throw new Error(`Invalid bot environment: ${name}`);
   }
+  const rawKeyVersion = env.INTEGRATION_ENCRYPTION_KEY_VERSION?.trim();
+  if (rawKeyVersion) {
+    if (!/^[1-9]\d*$/.test(rawKeyVersion)) {
+      throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY_VERSION");
+    }
+    const activeVersion = Number.parseInt(rawKeyVersion, 10);
+    if (activeVersion > 1 && !env[`INTEGRATION_ENCRYPTION_KEY_V${activeVersion}`]) {
+      throw new Error(`Invalid bot environment: INTEGRATION_ENCRYPTION_KEY_V${activeVersion}`);
+    }
+  }
   if (production) {
     if (!encryptionKey) throw new Error("Invalid bot environment: INTEGRATION_ENCRYPTION_KEY");
     if (result.data.BOT_API_SECRET.length < 32) throw new Error("Invalid bot environment: BOT_API_SECRET");

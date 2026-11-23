@@ -365,6 +365,103 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     expect(out.status).toBe(409);
     expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
   });
+
+  it("SEC-42: refuse de détruire une org shell discord-<id> ayant déjà un autre propriétaire natif ou une config Discord personnalisée", async () => {
+    const shellId = "00000000-0000-0000-0000-000000000034";
+    db.current!.tables.organizations!.push({ id: shellId, slug: `discord-${GUILD_NEW}`, name: "New Guild", language: "fr" });
+    db.current!.tables.organization_members!.push({ organization_id: shellId, user_id: "discord-server-owner", role: "ORG_OWNER" });
+    db.current!.tables.organization_integrations!.push({
+      id: "int-shell", organization_id: shellId, provider: "DISCORD", external_id: GUILD_NEW, enabled: true, status: "CONNECTED", config: {},
+    });
+
+    const stolenAttempt = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
+    expect(stolenAttempt.status).toBe(409);
+    expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
+
+    // Même si le propriétaire lui-même reprend, une config personnalisée déjà saisie empêche la suppression silencieuse
+    db.current!.tables.organization_members!.find((m) => m.organization_id === shellId)!.user_id = "u-owner-2";
+    db.current!.tables.organization_integrations!.find((i) => i.id === "int-shell")!.config = { to_role_id: "999999999999999999" };
+    const configuredAttempt = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
+    expect(configuredAttempt.status).toBe(409);
+    expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
+  });
+
+  it("SEC-42: un échec de chiffrement ne détruit jamais l'organisation shell discord-<id> avant écriture", async () => {
+    const shellId = "00000000-0000-0000-0000-000000000035";
+    db.current!.tables.organizations!.push({ id: shellId, slug: `discord-${GUILD_NEW}`, name: "New Guild", language: "fr" });
+    db.current!.tables.organization_integrations!.push({
+      id: "int-shell", organization_id: shellId, provider: "DISCORD", external_id: GUILD_NEW, enabled: true, status: "CONNECTED", config: {},
+    });
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("INTEGRATION_ENCRYPTION_KEY", "");
+    try {
+      const out = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), {
+        enabled: true,
+        external_id: GUILD_NEW,
+        secret_payload: "secret-that-fails-to-encrypt",
+      });
+      expect(out.status).toBe(500);
+      expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("DAT-04: changer de serveur Discord lié réinitialise les anciens salons/rôles Discord des tournois", async () => {
+    db.current!.tables.tournaments!.push({
+      id: "t-switch",
+      organization_id: ORG_1,
+      guild_id: GUILD_1,
+      discord_category_id: "111",
+      discord_registration_channel_id: "222",
+      discord_announcement_channel_id: "333",
+      discord_checkin_channel_id: "444",
+      discord_captain_role_id: "555",
+      discord_to_role_id: "666",
+    });
+
+    const out = await link("u-owner", discordClient({ id: "u-owner", manage: true }), { enabled: true, external_id: GUILD_NEW }, ORG_1);
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-switch")).toMatchObject({
+      guild_id: GUILD_NEW,
+      discord_category_id: null,
+      discord_registration_channel_id: null,
+      discord_announcement_channel_id: null,
+      discord_checkin_channel_id: null,
+      discord_captain_role_id: null,
+      discord_to_role_id: null,
+    });
+  });
+
+  it("CLN-08 / ARC-04: met à jour key_version selon INTEGRATION_ENCRYPTION_KEY_VERSION et conserve has_secret:true sans renvoyer de secret", async () => {
+    vi.stubEnv("INTEGRATION_ENCRYPTION_KEY", "a".repeat(64));
+    vi.stubEnv("INTEGRATION_ENCRYPTION_KEY_V2", "b".repeat(64));
+    vi.stubEnv("INTEGRATION_ENCRYPTION_KEY_VERSION", "2");
+    try {
+      const first = await callRoute(organizationRouter, {
+        method: "PUT",
+        path: `/${ORG_1}/integrations/AI`,
+        headers: { "x-discord-user-id": "u-owner" },
+        body: { provider: "AI", enabled: true, secret_payload: "sk-v2-secret" },
+      });
+      expect(first.status).toBe(200);
+      expect(first.body).toMatchObject({ has_secret: true });
+      const secretRow = db.current?.tables.organization_integration_secrets?.[0];
+      expect(secretRow?.key_version).toBe(2);
+      expect(String(secretRow?.encrypted_payload)).toMatch(/^v1:2:/);
+
+      const second = await callRoute(organizationRouter, {
+        method: "PUT",
+        path: `/${ORG_1}/integrations/AI`,
+        headers: { "x-discord-user-id": "u-owner" },
+        body: { provider: "AI", enabled: true, config: { model: "gemini-2.5-pro" } },
+      });
+      expect(second.status).toBe(200);
+      expect(second.body).toMatchObject({ has_secret: true });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("SEC-08 / SEC-07 / ACC-01: intégrations", () => {
