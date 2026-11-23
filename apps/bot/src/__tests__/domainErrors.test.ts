@@ -34,6 +34,7 @@ vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
   verifyPhaseGuild: vi.fn(async () => true),
   verifyTournamentGuild: vi.fn(async () => true),
+  resolveOrganization: vi.fn(async () => ({ id: "org-1", slug: "org", discordEnabled: true, discordGuildId: "111" })),
 }));
 
 import { DomainError } from "../utils/serverError";

@@ -23,6 +23,7 @@ vi.mock("../utils/tenant", async (importOriginal) => ({
   verifyPhaseGuild: async () => true,
   verifyTeamGuild: async () => true,
   verifyMatchGuild: async () => true,
+  resolveOrganization: async () => ({ id: "org-a", slug: "org-a", name: "A", language: "fr", discordEnabled: true, discordGuildId: "111", discordConfig: {} }),
 }));
 vi.mock("../services/MemberAccessService", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../services/MemberAccessService")>()),
@@ -204,14 +205,14 @@ describe("SEC-21: portée d'un TO de tournoi sur les routes réelles", () => {
 
 describe("SEC-25: lancement, clôture et synchronisation visent le serveur authentifié", () => {
   it.each([
-    ["launch", tournamentRouter, `/${T_A}/launch`, "launchTournament"],
-    ["close", tournamentRouter, `/${T_A}/close`, "closeTournament"],
-    ["sync", phaseRouter, "/phase-a/sync", "syncPhaseChannels"],
-  ] as const)("%s : un guildId du corps n'est jamais relu", async (_name, router, path, method) => {
+    ["launch", tournamentRouter, `/${T_A}/launch`, "launchTournament", [T_A, {}]],
+    ["close", tournamentRouter, `/${T_A}/close`, "closeTournament", [T_A]],
+    ["sync", phaseRouter, "/phase-a/sync", "syncPhaseChannels", ["phase-a", GUILD, undefined]],
+  ] as const)("%s : un guildId du corps n'est jamais relu", async (_name, router, path, method, args) => {
     const { LifecycleService } = await import("../services/LifecycleService");
     const out = await callRoute(router, { method: "POST", path, adminCheck: serverTo, body: { guildId: { evil: true } } });
     expect(out.status).toBe(200);
-    expect(vi.mocked(LifecycleService[method])).toHaveBeenCalledWith(expect.any(String), GUILD, undefined);
+    expect(vi.mocked(LifecycleService[method])).toHaveBeenCalledWith(...args);
   });
 });
 

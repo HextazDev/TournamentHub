@@ -32,6 +32,7 @@ vi.mock("../utils/logger", () => ({
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: (req: { adminCheck?: AdminCheck }) => req.adminCheck?.guildId ?? null,
   verifyMatchGuild: vi.fn(async () => tenant.allowed),
+  resolveOrganization: vi.fn(async () => ({ id: "org-1", slug: "org", discordEnabled: true, discordGuildId: "guild-1" })),
 }));
 
 import { matchRouter } from "../routes/MatchRouter";

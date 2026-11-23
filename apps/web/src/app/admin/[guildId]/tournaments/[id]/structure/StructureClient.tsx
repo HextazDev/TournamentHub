@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getBotApiUrl, botApiFetch } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
 import { useRouter } from "next/navigation";
 import { CopyX, GitMerge, LayoutGrid, Network, Trash2, LayoutList, MoreVertical, Search, Users, Plus } from "lucide-react";
 import Link from "next/link";
@@ -35,7 +35,7 @@ export function StructureClient({
   const createPhase = async (format: "SINGLE_ELIM" | "ROUND_ROBIN" | "DOUBLE_ELIM" | "SWISS") => {
     try {
       const order = initialPhases.length + 1;
-      const res = await fetch(`${getBotApiUrl()}/api/phases`, {
+      const res = await botApiFetch('/api/phases', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,8 +1,42 @@
 type Row = Record<string, unknown>;
-type Filter =
+
+/**
+ * TST-01 (#104) : colonnes réelles du schéma SQL validées à l'écriture pour reproduire
+ * le rejet PostgREST (`PGRST204`) en cas de colonne inexistante (ex: `winner_id` / `loser_id` sur `matches`).
+ */
+const TABLE_COLUMNS: Record<string, ReadonlySet<string>> = {
+  matches: new Set([
+    "id",
+    "phase_id",
+    "team1_id",
+    "team2_id",
+    "team1_score",
+    "team2_score",
+    "status",
+    "discord_channel_id",
+    "group_id",
+    "next_match_winner_id",
+    "next_match_loser_id",
+    "reported_by_team_id",
+    "round_number",
+    "match_number",
+    "version",
+    "created_at",
+    "updated_at",
+  ]),
+};
+
+export type Filter =
   | { column: string; value: unknown }
   | { column: string; values: readonly unknown[] }
-  | { column: string; not: unknown };
+  | { column: string; not: unknown }
+  | { column: string; ilike: string };
+
+export interface ReadLog {
+  table: string;
+  counting: boolean;
+  filters: Filter[];
+}
 
 export interface WriteLog {
   table: string;
@@ -28,7 +62,9 @@ export interface QueryResult {
  */
 export class FakeSupabase {
   public readonly writes: WriteLog[] = [];
+  public readonly reads: ReadLog[] = [];
   public readonly staleReads: Record<string, Row[]> = {};
+  public readonly tableErrors: Record<string, { code: string; message: string }> = {};
   public rpcHandler?: (fnName: string, args: Record<string, unknown>) => Promise<{ data: unknown; error: unknown }> | { data: unknown; error: unknown };
 
   constructor(public readonly tables: Record<string, Row[]>) {}
@@ -114,6 +150,12 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return this;
   }
 
+  /** Égalité insensible à la casse ; les jokers `%`/`_` sont neutralisés par l'appelant. */
+  public ilike(column: string, pattern: string) {
+    this.filters.push({ column, ilike: pattern });
+    return this;
+  }
+
   public order() {
     return this;
   }
@@ -155,6 +197,19 @@ class FakeQuery implements PromiseLike<QueryResult> {
   private matches(row: Row): boolean {
     return this.filters.every(f => {
       if ("values" in f) return f.values.includes(row[f.column]);
+      if ("ilike" in f) {
+        const value = row[f.column];
+        if (typeof value !== "string") return false;
+        // PostgREST convertit tout `*` en `%` dans `ilike` (REG-10).
+        const regexPattern = f.ilike
+          .replace(/\*/g, "%")
+          .replace(/\\([%_\\])/g, (_, ch: string) => `\u0000${ch}`)
+          .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/%/g, ".*")
+          .replace(/_/g, ".")
+          .replace(/\u0000(.)/g, (_, ch: string) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        return new RegExp(`^${regexPattern}$`, "i").test(value);
+      }
       if ("not" in f) return f.not === null ? row[f.column] != null : row[f.column] !== f.not;
       return row[f.column] === f.value;
     });
@@ -167,10 +222,35 @@ class FakeQuery implements PromiseLike<QueryResult> {
     return { data: rows[0], error: null };
   }
 
+  private findUnknownColumn(payload: Row | Row[]): string | null {
+    const allowed = TABLE_COLUMNS[this.table];
+    if (!allowed) return null;
+    const rows = Array.isArray(payload) ? payload : [payload];
+    for (const row of rows) {
+      for (const col of Object.keys(row)) {
+        if (!allowed.has(col)) return col;
+      }
+    }
+    return null;
+  }
+
   private execute(): QueryResult {
+    if (this.db.tableErrors[this.table]) {
+      return { data: null, error: this.db.tableErrors[this.table]! };
+    }
     const rows = this.db.tables[this.table] ?? (this.db.tables[this.table] = []);
 
     if (this.op === "insert") {
+      const unknownCol = this.findUnknownColumn(this.payload);
+      if (unknownCol) {
+        return {
+          data: null,
+          error: {
+            code: "PGRST204",
+            message: `Could not find the '${unknownCol}' column of '${this.table}' in the schema cache`,
+          },
+        };
+      }
       const list = Array.isArray(this.payload) ? this.payload : [this.payload];
       const inserted = list.map((r, idx) => ({ id: (r.id as string) || `fake-${this.table}-${rows.length + idx + 1}`, ...r }));
       rows.push(...inserted);
@@ -187,6 +267,16 @@ class FakeQuery implements PromiseLike<QueryResult> {
     }
 
     if (this.op === "update") {
+      const unknownCol = this.findUnknownColumn(this.payload);
+      if (unknownCol) {
+        return {
+          data: null,
+          error: {
+            code: "PGRST204",
+            message: `Could not find the '${unknownCol}' column of '${this.table}' in the schema cache`,
+          },
+        };
+      }
       const hit = rows.filter(r => this.matches(r));
       const update = Array.isArray(this.payload) ? {} : this.payload;
       hit.forEach(r => Object.assign(r, update));
@@ -196,6 +286,7 @@ class FakeQuery implements PromiseLike<QueryResult> {
 
     const source = this.db.staleReads[this.table] ?? rows;
     const found = source.filter(r => this.matches(r)).map(r => ({ ...r }));
+    this.db.reads.push({ table: this.table, counting: this.counting, filters: [...this.filters] });
     if (this.counting) return { data: null, error: null, count: found.length };
     return { data: this.max === null ? found : found.slice(0, this.max), error: null };
   }

@@ -41,14 +41,11 @@ export function DashboardKpis({ stats, locale, loading = false, error = null, on
           <span className="flex items-baseline gap-2">
             <span>{stats.totalTeams}</span>
             <span className="text-slate-400 text-sm font-normal">
-              ({stats.totalPlayers} {t(locale, "common.playersShort")})
+              {stats.totalTeams <= 1 ? "équipe" : "équipes"} ({stats.totalPlayers} {t(locale, "common.playersShort")})
             </span>
           </span>
         }
-        subtitle={t(locale, "adminDashboard.kpiRegistrationsValue", {
-          teams: stats.totalTeams,
-          players: stats.totalPlayers,
-        })}
+        subtitle={t(locale, "adminDashboard.kpiRegistrationsDesc")}
         icon={Users}
         variant="purple"
         loading={loading}

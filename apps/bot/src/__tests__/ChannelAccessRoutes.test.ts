@@ -38,9 +38,11 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       announcement?: string | null;
       checkin?: string | null;
     } = {}) {
+      const orgId = "00000000-0000-0000-0000-000000000001";
       const tournament = {
         id: TOURNAMENT_ID,
         guild_id: GUILD,
+        organization_id: orgId,
         status: "DRAFT",
         discord_registration_channel_id: existingChannels.registration ?? null,
         discord_announcement_channel_id: existingChannels.announcement ?? null,
@@ -51,11 +53,17 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       };
 
       vi.mocked(supabase.from).mockImplementation(((table: string) => {
+        let rowData: any = tournament;
+        if (table === "organizations") {
+          rowData = { id: orgId, slug: "test-org", name: "Test Org", language: "fr" };
+        } else if (table === "organization_integrations") {
+          rowData = { id: "int-1", organization_id: orgId, provider: "DISCORD", external_id: GUILD, enabled: true, config: {} };
+        }
         const chain: any = {
           select: () => chain,
           eq: () => chain,
-          maybeSingle: () => Promise.resolve({ data: tournament, error: null }),
-          single: () => Promise.resolve({ data: tournament, error: null }),
+          maybeSingle: () => Promise.resolve({ data: rowData, error: null }),
+          single: () => Promise.resolve({ data: rowData, error: null }),
           update: (payload: any) => ({
             eq: () => ({
               select: () => ({
@@ -141,27 +149,33 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       announcement?: string | null;
       checkin?: string | null;
     } = {}) {
-      const existing = {
-        guild_id: GUILD,
+      const orgId = "org-1";
+      const discordConfig = {
         to_role_id: "111111111111111111",
         registration_channel_id: existingChannels.registration ?? null,
         announcement_channel_id: existingChannels.announcement ?? null,
         checkin_channel_id: existingChannels.checkin ?? null,
       };
 
-      vi.mocked(supabase.from).mockImplementation((() => {
-        let op = "select";
-        let upsertPayload: any;
+      vi.mocked(supabase.from).mockImplementation(((table: string) => {
+        let rowData: any = {
+          id: "int-1",
+          organization_id: orgId,
+          provider: "DISCORD",
+          external_id: GUILD,
+          enabled: true,
+          config: discordConfig,
+        };
+        if (table === "organizations") {
+          rowData = { id: orgId, slug: "test-guild", name: "Test Guild", language: "fr", invite_url: null };
+        }
         const b: any = {
           select: () => b,
           eq: () => b,
-          upsert: (p: any) => {
-            op = "upsert";
-            upsertPayload = p;
-            return b;
-          },
-          maybeSingle: () => Promise.resolve({ data: existing, error: null }),
-          single: () => Promise.resolve({ data: op === "upsert" ? { ...existing, ...upsertPayload } : existing, error: null }),
+          update: () => b,
+          maybeSingle: () => Promise.resolve({ data: rowData, error: null }),
+          single: () => Promise.resolve({ data: rowData, error: null }),
+          then: (resolve: (v: any) => any) => Promise.resolve({ data: null, error: null }).then(resolve),
         };
         return b;
       }) as any);

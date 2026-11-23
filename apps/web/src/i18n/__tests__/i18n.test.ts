@@ -27,8 +27,8 @@ describe("Internationalization (i18n) Module", () => {
   });
 
   it("should correctly translate navigation keys for French and English", () => {
-    expect(t("fr", "nav.myServers")).toBe("Mes Serveurs");
-    expect(t("en", "nav.myServers")).toBe("My Servers");
+    expect(t("fr", "nav.myServers")).toBe("Mes Organisations");
+    expect(t("en", "nav.myServers")).toBe("My Organizations");
 
     expect(t("fr", "nav.loginDiscord")).toBe("Connexion Discord");
     expect(t("en", "nav.loginDiscord")).toBe("Discord Login");

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
 import { sendServerError } from "../utils/serverError";
-import { getAuthenticatedGuildId } from "../utils/tenant";
+import { getAuthenticatedGuildId, resolveOrganization } from "../utils/tenant";
 import { ServerSettingsUpdateSchema } from "@hub/shared";
 import { GuildRegistryService, readToRoleId } from "../services/GuildRegistryService";
 import { invalidateGuildAccess } from "../services/MemberAccessService";
@@ -31,25 +31,28 @@ serverSettingsRouter.put("/", async (req, res) => {
     return res.status(503).json({ error: "Lecture des paramètres impossible, réessayez." });
   }
 
-  // SEC-21 (#88) : un salon serveur spécifié ou modifié doit être accessible au membre demandeur et au bot.
-  const { data: currentSettings } = await supabase
-    .from("server_settings")
-    .select("registration_channel_id, announcement_channel_id, checkin_channel_id")
-    .eq("guild_id", authGuildId)
-    .maybeSingle();
+  // ARC-03: Lecture des paramètres depuis organization_integrations (Option 5A)
+  const org = await resolveOrganization(authGuildId);
+  const discordCfg = (org?.discordConfig ?? {}) as Record<string, unknown>;
+
+  const currentSettings = {
+    registration_channel_id: typeof discordCfg.registration_channel_id === "string" ? discordCfg.registration_channel_id : null,
+    announcement_channel_id: typeof discordCfg.announcement_channel_id === "string" ? discordCfg.announcement_channel_id : null,
+    checkin_channel_id: typeof discordCfg.checkin_channel_id === "string" ? discordCfg.checkin_channel_id : null,
+  };
 
   const discordId = req.adminCheck?.discordId ?? (req.headers["x-discord-user-id"] as string | undefined);
   const channelChanged = (requested: unknown, current: string | null | undefined) =>
     requested !== undefined && (requested || null) !== (current || null) && typeof requested === "string" && requested.trim().length > 0;
 
   const modifiedChannels: string[] = [];
-  if (channelChanged(parsed.data.registration_channel_id, currentSettings?.registration_channel_id)) {
+  if (channelChanged(parsed.data.registration_channel_id, currentSettings.registration_channel_id)) {
     modifiedChannels.push(parsed.data.registration_channel_id!);
   }
-  if (channelChanged(parsed.data.announcement_channel_id, currentSettings?.announcement_channel_id)) {
+  if (channelChanged(parsed.data.announcement_channel_id, currentSettings.announcement_channel_id)) {
     modifiedChannels.push(parsed.data.announcement_channel_id!);
   }
-  if (channelChanged(parsed.data.checkin_channel_id, currentSettings?.checkin_channel_id)) {
+  if (channelChanged(parsed.data.checkin_channel_id, currentSettings.checkin_channel_id)) {
     modifiedChannels.push(parsed.data.checkin_channel_id!);
   }
 
@@ -68,20 +71,38 @@ serverSettingsRouter.put("/", async (req, res) => {
     }
   }
 
-  // Les clés absentes (langue, invitation) ne sont pas envoyées : l'upsert conserve leur valeur actuelle.
-  const payload = Object.fromEntries(
-    Object.entries({ ...parsed.data, updated_at: new Date().toISOString() }).filter(([, v]) => v !== undefined),
-  );
+  // ARC-03: Sauvegarde dans organization_integrations et organizations
+  if (org) {
+    const nextConfig: Record<string, unknown> = {
+      ...discordCfg,
+      ...(parsed.data.to_role_id !== undefined ? { to_role_id: parsed.data.to_role_id } : {}),
+      ...(parsed.data.captain_role_id !== undefined ? { captain_role_id: parsed.data.captain_role_id } : {}),
+      ...(parsed.data.registration_channel_id !== undefined ? { registration_channel_id: parsed.data.registration_channel_id } : {}),
+      ...(parsed.data.announcement_channel_id !== undefined ? { announcement_channel_id: parsed.data.announcement_channel_id } : {}),
+      ...(parsed.data.checkin_channel_id !== undefined ? { checkin_channel_id: parsed.data.checkin_channel_id } : {}),
+    };
 
-  const { data, error } = await supabase
-    .from("server_settings")
-    .upsert(payload, { onConflict: "guild_id" })
-    .select()
-    .single();
+    const { error: intErr } = await supabase
+      .from("organization_integrations")
+      .update({ config: nextConfig, updated_at: new Date().toISOString() })
+      .eq("organization_id", org.id)
+      .eq("provider", "DISCORD");
+    if (intErr) {
+      sendServerError(res, intErr, `ServerSettingsRouter: update organization_integrations échoué pour ${authGuildId}`);
+      return;
+    }
 
-  if (error) {
-    sendServerError(res, error, `ServerSettingsRouter: upsert échoué pour ${authGuildId}`);
-    return;
+    const orgUpdates: Record<string, unknown> = {};
+    if (parsed.data.language !== undefined) orgUpdates.language = parsed.data.language;
+    if (parsed.data.invite_url !== undefined) orgUpdates.invite_url = parsed.data.invite_url;
+    if (Object.keys(orgUpdates).length > 0) {
+      orgUpdates.updated_at = new Date().toISOString();
+      const { error: orgErr } = await supabase.from("organizations").update(orgUpdates).eq("id", org.id);
+      if (orgErr) {
+        sendServerError(res, orgErr, `ServerSettingsRouter: update organizations échoué pour ${authGuildId}`);
+        return;
+      }
+    }
   }
 
   // DISC-08 : le nouveau rôle TO doit ouvrir (ou fermer) l'accès au panel sans attendre un redémarrage du bot.
@@ -92,5 +113,16 @@ serverSettingsRouter.put("/", async (req, res) => {
     if (guild) await GuildRegistryService.syncGuildAdmins(guild);
   }
 
-  res.json(data);
+  const responseData = {
+    guild_id: authGuildId,
+    to_role_id: parsed.data.to_role_id ?? (typeof discordCfg.to_role_id === "string" ? discordCfg.to_role_id : null),
+    captain_role_id: parsed.data.captain_role_id ?? (typeof discordCfg.captain_role_id === "string" ? discordCfg.captain_role_id : null),
+    registration_channel_id: parsed.data.registration_channel_id ?? currentSettings.registration_channel_id,
+    announcement_channel_id: parsed.data.announcement_channel_id ?? currentSettings.announcement_channel_id,
+    checkin_channel_id: parsed.data.checkin_channel_id ?? currentSettings.checkin_channel_id,
+    language: parsed.data.language ?? org?.language ?? "fr",
+    invite_url: parsed.data.invite_url ?? org?.invite_url ?? null,
+  };
+
+  res.json(responseData);
 });

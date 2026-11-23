@@ -6,6 +6,8 @@ const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }))
 vi.mock("../services/MemberAccessService", () => ({ invalidateGuildAccess: access.invalidateGuildAccess }));
 vi.mock("../services/GuildRegistryService", () => ({ GuildRegistryService: { syncGuildAdmins: registry.syncGuildAdmins } }));
 vi.mock("../utils/logger", () => ({ logger: log }));
+const org = vi.hoisted(() => vi.fn());
+vi.mock("../utils/tenant", () => ({ resolveOrganization: org }));
 
 import { refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
 
@@ -13,7 +15,10 @@ const guild = { id: "g1" };
 const client = (fetch: () => Promise<unknown>): GuildFetcher => ({ guilds: { fetch } }) as GuildFetcher;
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  org.mockResolvedValue({ id: "o1", slug: "s1", discordEnabled: true, discordGuildId: "g1" });
+});
 
 describe("refreshGuildAccess (SEC-05 / DISC-08)", () => {
   it("invalide le cache tout de suite, puis resynchronise guild_admins en arrière-plan", async () => {
@@ -23,6 +28,17 @@ describe("refreshGuildAccess (SEC-05 / DISC-08)", () => {
     expect(access.invalidateGuildAccess).toHaveBeenCalledWith("g1");
     await flush();
     expect(registry.syncGuildAdmins).toHaveBeenCalledWith(guild);
+  });
+
+  it("organisation Web : invalide tous ses identifiants sans jamais appeler Discord", async () => {
+    org.mockResolvedValue({ id: "o1", slug: "s1", discordEnabled: false, discordGuildId: null });
+    const fetch = vi.fn();
+    refreshGuildAccess(client(fetch), "s1");
+    await flush();
+    expect(access.invalidateGuildAccess).toHaveBeenCalledWith("o1");
+    expect(access.invalidateGuildAccess).toHaveBeenCalledWith("s1");
+    expect(fetch).not.toHaveBeenCalled();
+    expect(log.error).not.toHaveBeenCalled();
   });
 
   it("ne bloque jamais l'appelant : une synchro qui ne se résout pas ne retient rien", () => {

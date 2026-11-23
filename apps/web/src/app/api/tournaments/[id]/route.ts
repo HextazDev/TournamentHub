@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { canPerform } from "@hub/shared";
-import { getGuildAdminAccess } from "@/lib/viewer";
+import { getGuildAdminAccess, getServerProfile } from "@/lib/viewer";
 
 export async function DELETE(
   request: Request,
@@ -23,13 +23,16 @@ export async function DELETE(
     return NextResponse.json({ error: "NO_RIGHTS" }, { status: 403 });
   }
 
-  // SEC-01 : le filtre guild_id empêche de supprimer le tournoi d'un autre serveur.
-  const { data, error } = await supabaseAdmin
-    .from("tournaments")
-    .delete()
-    .eq("id", id)
-    .eq("guild_id", guildId)
-    .select("id");
+  const profile = await getServerProfile(guildId);
+
+  // SEC-01 / SEC-40 : filtre strict par organization_id résolu (aucune interpolation dans .or()).
+  let delQuery = supabaseAdmin.from("tournaments").delete().eq("id", id);
+  if (profile?.organization_id) {
+    delQuery = delQuery.eq("organization_id", profile.organization_id);
+  } else {
+    delQuery = delQuery.eq("guild_id", guildId);
+  }
+  const { data, error } = await delQuery.select("id");
 
   if (error) {
     console.error("[DELETE tournament]", error);

@@ -26,6 +26,7 @@ export function TournamentCard({
   showOrganizer: boolean;
 }) {
   const date = tournament.start_at ?? tournament.checkin_start_at;
+  const routeGuildId = tournament.guild_id || profile?.guild_id || tournament.organization_id || "";
 
   return (
     <div className="bg-[#151722] border border-slate-800/50 p-6 rounded-xl hover:border-slate-700 transition-colors h-full flex flex-col gap-3">
@@ -37,13 +38,13 @@ export function TournamentCard({
           </span>
         )}
       </div>
-      <Link href={`/${tournament.guild_id}/tournaments/${tournament.id}`} className="group">
+      <Link href={`/${routeGuildId}/tournaments/${tournament.id}`} className="group">
         <h2 className="text-2xl font-bold text-white group-hover:text-blue-400 transition-colors">{tournament.name}</h2>
       </Link>
       <p className="text-slate-400 flex-grow line-clamp-3">
         {tournament.description || t(locale, "tournaments.noDescription")}
       </p>
-      {showOrganizer && <OrganizerCard guildId={tournament.guild_id} profile={profile} locale={locale} compact />}
+      {showOrganizer && <OrganizerCard guildId={routeGuildId} profile={profile} locale={locale} compact />}
       <div className="flex items-center text-sm text-slate-500">
         <Calendar className="w-4 h-4 mr-2" />
         {date

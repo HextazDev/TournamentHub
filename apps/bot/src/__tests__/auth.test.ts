@@ -45,7 +45,11 @@ function settings(toRoleId: string | null, error: { message: string } | null = n
       eq: () => b,
       neq: () => b,
       not: () => b,
-      maybeSingle: () => Promise.resolve({ data: toRoleId === null && error ? null : { to_role_id: toRoleId }, error }),
+      maybeSingle: () =>
+        Promise.resolve({
+          data: error ? null : { config: { to_role_id: toRoleId }, to_role_id: toRoleId },
+          error,
+        }),
       then: (resolve: (v: unknown) => unknown) => Promise.resolve(tournaments).then(resolve),
     };
     return b;

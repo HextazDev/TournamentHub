@@ -5,11 +5,13 @@ const db = vi.hoisted(() => ({ from: vi.fn() }));
 const verify = vi.hoisted(() => vi.fn());
 const cleanup = vi.hoisted(() => vi.fn());
 const schedule = vi.hoisted(() => vi.fn());
+const org = vi.hoisted(() => vi.fn());
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/tenant", () => ({
   verifyTournamentGuild: verify,
   getAuthenticatedGuildId: (req: Request) => req.adminCheck?.guildId ?? null,
   getTournamentScope: (req: Request) => req.tournamentScope?.tournamentId ?? null,
+  resolveOrganization: org,
 }));
 vi.mock("../services/ArchiveService", () => ({ ArchiveService: { backgroundDiscordCleanup: cleanup } }));
 vi.mock("../services/SchedulerService", () => ({ SchedulerService: { scheduleTournament: schedule } }));
@@ -20,7 +22,10 @@ const response = () => {
   const out = { statusCode: 200, body: undefined as unknown, status(code: number) { this.statusCode = code; return this; }, json(value: unknown) { this.body = value; return this; } };
   return out;
 };
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  org.mockResolvedValue({ id: "org-a", slug: "a", discordEnabled: true, discordGuildId: "guild-a" });
+});
 
 describe("SEC-14 lifecycle tenant isolation", () => {
   it("rejects archive across guilds before writes, cleanup, or scheduling", async () => {
@@ -68,9 +73,28 @@ describe("SEC-14 lifecycle tenant isolation", () => {
     const res = response();
     await archiveAndInit(req, res as unknown as Response);
     expect(res.statusCode).toBe(202);
-    expect(filters).toContainEqual(["guild_id", "a"]);
+    expect(filters).toContainEqual(["organization_id", "org-a"]);
     expect(schedule).toHaveBeenCalledWith(tournament);
-    expect(cleanup).toHaveBeenCalledWith(expect.anything(), "a", [archivedRow]);
+    expect(cleanup).toHaveBeenCalledWith(expect.anything(), "guild-a", [archivedRow]);
+  });
+
+  it("LIFE-01: archive pour une organisation Web sans appel Discord", async () => {
+    verify.mockResolvedValue(true);
+    org.mockResolvedValue({ id: "org-a", slug: "a", discordEnabled: false, discordGuildId: null });
+    const tournament = { id: "t1", guild_id: null };
+    const chain = {
+      select: () => chain, update: () => chain,
+      eq: () => chain,
+      neq: () => chain,
+      single: async () => ({ data: tournament, error: null }),
+      then: (resolve: (value: unknown) => void) => resolve({ data: [{ id: "t-old" }], error: null }),
+    };
+    db.from.mockReturnValue(chain);
+    const req = { body: { guildId: "a", newTournamentId: "t1" }, adminCheck: { guildId: "a" }, app: { locals: { discordClient: {} } } } as unknown as Request;
+    const res = response();
+    await archiveAndInit(req, res as unknown as Response);
+    expect(res.statusCode).toBe(202);
+    expect(cleanup).not.toHaveBeenCalled();
   });
 
   it("ne déclenche pas backgroundDiscordCleanup si aucun autre tournoi n'a été archivé", async () => {

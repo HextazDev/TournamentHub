@@ -9,7 +9,7 @@ import { useToast } from "@/context/ToastContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 
 /**
- * Ouvre les inscriptions et publie l'annonce Discord (REG-08) : indépendant de la visibilité web du tournoi.
+ * Ouvre les inscriptions ; l'annonce Discord éventuelle est un effet rejouable (REG-08), jamais un prérequis.
  * Chaque blocage affiche sa raison au lieu d'un bouton grisé muet.
  */
 export function OpenRegistrationButton({
@@ -18,12 +18,14 @@ export function OpenRegistrationButton({
   isRegistrationOpen,
   hasRegistrationChannel,
   hasStartedOrCheckin,
+  discordEnabled = true,
 }: {
   tournamentId: string;
   guildId: string;
   isRegistrationOpen: boolean;
   hasRegistrationChannel: boolean;
   hasStartedOrCheckin: boolean;
+  discordEnabled?: boolean;
 }) {
   const [isSending, setIsSending] = useState(false);
   const { t } = useTranslation();
@@ -34,9 +36,7 @@ export function OpenRegistrationButton({
     ? t("adminTournaments.alreadyOpen")
     : hasStartedOrCheckin
       ? t("adminTournaments.passedCheckin")
-      : !hasRegistrationChannel
-        ? t("adminTournaments.missingRegistrationChannel")
-        : null;
+      : null;
   const isDisabled = isSending || blockedReason !== null;
 
   const onOpen = async () => {
@@ -50,10 +50,12 @@ export function OpenRegistrationButton({
       if (!res.ok) {
         throw new Error((await readApiError(res)) ?? t("common.unknown"));
       }
-      toast.success(t("adminTournaments.openEmbedSent"));
+      toast.success(discordEnabled && hasRegistrationChannel ? t("adminTournaments.openEmbedSent") : t("adminTournaments.openSuccessWeb"));
+      const { integrationWarnings } = (await res.json()) as { integrationWarnings?: unknown[] };
+      if (integrationWarnings?.length) toast.warning(t("integrationSync.warning"));
       router.refresh();
     } catch (e: unknown) {
-      toast.error(t("adminTournaments.discordError", { message: getErrorMessage(e) ?? t("common.unknown") }));
+      toast.error(getErrorMessage(e) ?? t("common.unknown"));
     } finally {
       setIsSending(false);
     }
@@ -67,7 +69,7 @@ export function OpenRegistrationButton({
         className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all shadow-md w-full ${isDisabled ? "bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700" : "bg-indigo-600 hover:bg-indigo-500 text-white"}`}
       >
         {isSending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-        {t("adminTournaments.openRegistrationsDiscord")}
+        {discordEnabled ? t("adminTournaments.openRegistrationsDiscord") : t("adminTournaments.openRegistrations")}
       </button>
       {blockedReason && <p className="text-xs text-slate-400">{blockedReason}</p>}
     </div>

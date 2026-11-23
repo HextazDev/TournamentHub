@@ -4,7 +4,8 @@ import { supabase } from "../lib/supabase";
 import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
-import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
+import { IntegrationBus } from "../services/IntegrationBus";
+import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseGuild, verifyTournamentGuild, resolveOrganization } from "../utils/tenant";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { DomainError, sendServerError } from "../utils/serverError";
 
@@ -143,15 +144,16 @@ phaseRouter.put("/:id/seeding", phaseScope, async (req, res) => {
       await BracketGeneratorService.generateBracket(phaseId, phaseData.bracket_size || 8);
     }
 
-    // Sync Discord channels if tournament is active
-    const { data: phaseWithTourney } = await supabase.from("phases").select("tournaments!inner(guild_id, status)").eq("id", phaseId).single();
-    const tourneyInfo: any = phaseWithTourney?.tournaments;
-    const tourneyStatus = Array.isArray(tourneyInfo) ? tourneyInfo[0]?.status : tourneyInfo?.status;
-    const tourneyGuild = Array.isArray(tourneyInfo) ? tourneyInfo[0]?.guild_id : tourneyInfo?.guild_id;
-
-    if (tourneyStatus === "ACTIVE") {
-      const discordClient = req.app.locals.discordClient;
-      await LifecycleService.syncPhaseChannels(phaseId, tourneyGuild, discordClient).catch(e => console.error("Auto Sync Failed", e));
+    // Salons Discord d'un tournoi en cours : effet isolé, sans impact sur le placement enregistré (INT-01).
+    const { data: phaseWithTourney } = await supabase.from("phases").select("tournaments!inner(organization_id, status)").eq("id", phaseId).single();
+    const tourneyInfo = phaseWithTourney?.tournaments as unknown;
+    const tourney = (Array.isArray(tourneyInfo) ? tourneyInfo[0] : tourneyInfo) as { organization_id?: string; status?: string } | undefined;
+    if (tourney?.status === "ACTIVE" && tourney.organization_id) {
+      await IntegrationBus.emit("onPhaseSynced", {
+        organizationId: tourney.organization_id,
+        phaseId,
+        discordClient: req.app.locals.discordClient,
+      });
     }
     res.status(200).json({ message: 'Placement et arbre mis à jour avec succès' });
   } catch (error: unknown) {
@@ -253,9 +255,12 @@ phaseRouter.post("/:id/sync", phaseScope, async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
-    // SEC-25 : le serveur visé est le serveur authentifié, jamais un guildId du corps.
-    const discordClient = req.app.locals.discordClient;
-    await LifecycleService.syncPhaseChannels(phaseId, authGuildId, discordClient);
+    // SEC-25 : le serveur visé est celui lié à l'organisation authentifiée, jamais un guildId du corps.
+    const org = await resolveOrganization(authGuildId);
+    if (!org?.discordEnabled || !org.discordGuildId) {
+      return res.status(409).json({ error: "L'intégration Discord n'est pas active pour cette organisation.", code: "DISCORD_NOT_ACTIVE" });
+    }
+    await LifecycleService.syncPhaseChannels(phaseId, org.discordGuildId, req.app.locals.discordClient);
     res.status(200).json({ message: 'Salons Discord générés avec succès' });
   } catch (error: unknown) {
     sendServerError(res, error, "PhaseRouter.sync");
