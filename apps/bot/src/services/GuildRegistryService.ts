@@ -23,6 +23,11 @@ export interface GuildLike {
   members: { fetch(): Promise<Map<string, MemberLike> | { values(): IterableIterator<MemberLike> }> };
 }
 
+/** Sous-ensemble du client Discord nécessaire au chargement d'un serveur (facilite les tests). */
+export interface GuildFetcher {
+  guilds: { fetch(guildId: string): Promise<GuildLike> };
+}
+
 /** Rôles qui donnent accès au panel : rôle TO du serveur et rôles TO des tournois non archivés. */
 export interface AdminRoles {
   toRoleId: string | null;
@@ -197,7 +202,7 @@ export class GuildRegistryService {
         .single();
 
       if (orgInsertError?.code === "23505") {
-        // DISC-11 : le slug `discord-<guildId>` existe déjà sans intégration liée — reprise propre.
+        // DISC-15 : le slug `discord-<guildId>` existe déjà sans intégration liée — reprise propre.
         const { data: existingOrg, error: existingOrgErr } = await supabase
           .from("organizations")
           .select("id")
@@ -208,6 +213,24 @@ export class GuildRegistryService {
           return false;
         }
         orgId = (existingOrg as { id: string }).id;
+
+        // DISC-16 : ne pas tenter d'insérer une seconde intégration DISCORD si cette organisation en a déjà une.
+        const { data: existingOrgInt, error: existingOrgIntErr } = await supabase
+          .from("organization_integrations")
+          .select("id, external_id")
+          .eq("organization_id", orgId)
+          .eq("provider", "DISCORD")
+          .maybeSingle();
+        if (existingOrgIntErr) {
+          logger.error(`[GuildRegistry] Vérification de l'intégration de ${slug} échouée:`, existingOrgIntErr);
+          return false;
+        }
+        if (existingOrgInt) {
+          logger.warn(
+            `[GuildRegistry] Reprise de ${slug} ignorée : l'organisation possède déjà une intégration Discord (${String((existingOrgInt as { external_id?: unknown }).external_id ?? "aucun")}).`,
+          );
+          return false;
+        }
       } else if (orgInsertError) {
         logger.error(`[GuildRegistry] Enregistrement de l'organisation pour ${guild.id} échoué:`, orgInsertError);
         return false;
@@ -241,6 +264,27 @@ export class GuildRegistryService {
 
     logger.info(`[GuildRegistry] Serveur ${guild.name} (${guild.id}) enregistré.`);
     return true;
+  }
+
+  /**
+   * DISC-16 (#105) : réenregistre un serveur Discord qui vient de perdre son intégration
+   * (suppression d'organisation, changement ou déliaison de serveur) si le bot y est encore présent.
+   * Ne lève jamais afin de ne pas invalider une mutation métier déjà validée en base.
+   * Distingue l'absence du bot (10004 Unknown Guild / 50001 Missing Access ➜ warn) d'une panne API/réseau (error).
+   */
+  static async reRegisterGuildById(client: GuildFetcher, guildId: string): Promise<boolean> {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      return await GuildRegistryService.registerGuild(guild);
+    } catch (error: unknown) {
+      const code = typeof error === "object" && error !== null && "code" in error ? (error as { code: unknown }).code : null;
+      if (code === 10004 || code === 50001) {
+        logger.warn(`[GuildRegistry] Réenregistrement du serveur ${guildId} ignoré (bot absent du serveur):`, error);
+      } else {
+        logger.error(`[GuildRegistry] Réenregistrement du serveur ${guildId} échoué:`, error);
+      }
+      return false;
+    }
   }
 
   /**
