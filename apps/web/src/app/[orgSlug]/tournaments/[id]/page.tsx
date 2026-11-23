@@ -1,10 +1,11 @@
 export const dynamic = 'force-dynamic';
 
 import { supabaseAdmin } from "@/lib/supabase-admin";
-import { getReadableTournament, getViewer } from "@/lib/viewer";
+import { getReadableTournament, getViewerSession } from "@/lib/viewer";
+import { formatGameType } from "@/lib/gameType";
 import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
-import { Calendar, Monitor, Users } from "lucide-react";
+import { Calendar, Gamepad2, Monitor, Users } from "lucide-react";
 import { cookies } from "next/headers";
 import { formatRoundName } from "@hub/shared";
 import { t } from "@/i18n";
@@ -16,9 +17,12 @@ export default async function PublicTournamentOverview({
   params: Promise<{ orgSlug: string; id: string }>;
 }) {
   const { orgSlug: guildId, id } = await params;
-  const [tournament, viewer] = await Promise.all([getReadableTournament(guildId, id), getViewer()]);
+  const [tournament, viewer, cookieStore] = await Promise.all([
+    getReadableTournament(guildId, id),
+    getViewerSession(),
+    cookies(),
+  ]);
   if (!tournament) notFound();
-  const cookieStore = await cookies();
   const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
   // Parallel fetching
@@ -242,11 +246,10 @@ export default async function PublicTournamentOverview({
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div className="bg-[#151722] border border-slate-800/50 p-5 rounded-lg flex items-start gap-4 hover:border-slate-700 transition-colors">
             <div className="w-10 h-10 bg-slate-800 rounded flex items-center justify-center shrink-0">
-               {/* Placeholder Splatoon Icon */}
-               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="w-6 h-6 text-orange-500"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+              <Gamepad2 className="w-5 h-5 text-blue-400" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-200">{t(locale, "tournaments.game")}</p>
+              <p className="text-sm font-semibold text-slate-200">{formatGameType(tournament.game_type, locale)}</p>
               <p className="text-xs text-slate-500 mt-1">{t(locale, "tournaments.platform")}</p>
             </div>
           </div>

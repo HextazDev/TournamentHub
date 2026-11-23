@@ -15,18 +15,19 @@ export default async function PublicTournamentLayout({
   params: Promise<{ orgSlug: string; id: string }>;
 }) {
   const { orgSlug: guildId, id } = await params;
-  const locale = await getServerLocale();
-
-  // SEC-10 : tournoi privé d'un serveur dont le visiteur n'est pas membre, ou URL incohérente ➜ 404.
-  const tournament = await getReadableTournament(guildId, id);
+  const [locale, tournament, profile] = await Promise.all([
+    getServerLocale(),
+    // SEC-10 : tournoi privé d'un serveur dont le visiteur n'est pas membre, ou URL incohérente ➜ 404.
+    getReadableTournament(guildId, id),
+    getServerProfile(guildId),
+  ]);
   if (!tournament) notFound();
-  const profile = await getServerProfile(guildId);
 
   return (
     <div className="min-h-screen bg-[#0f111a] text-slate-200 flex flex-col font-sans">
       {/* Top Banner (Header area) */}
       <div className="relative">
-        {/* Placeholder banner (Splatoon style/Toornament placeholder) */}
+        {/* Default tournament banner */}
         <div className="w-full h-48 sm:h-64 bg-slate-800 relative shadow-inner overflow-hidden">
           <div className="absolute inset-0 bg-gradient-to-t from-[#0f111a]/80 to-transparent"></div>
           {/* A potential CSS pattern or image here - empty for now */}
