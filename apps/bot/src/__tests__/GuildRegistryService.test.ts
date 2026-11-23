@@ -417,7 +417,7 @@ describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", (
     expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "delete")).toBe(true);
   });
 
-  it("DISC-11: registerGuild reprend une organisation existante en 23505 sur le slug discord-<id>", async () => {
+  it("DISC-15: registerGuild reprend une organisation existante en 23505 sur le slug discord-<id>", async () => {
     const calls = fakeSupabase({
       "organization_integrations.select": { data: null, error: null },
       "organizations.insert": { data: null, error: { code: "23505", message: "duplicate slug" } },
@@ -493,7 +493,7 @@ describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", (
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("discord-g1"));
   });
 
-  it("DISC-16: reRegisterGuildById réenregistre un serveur où le bot est toujours présent, et renvoie false sans lever sinon", async () => {
+  it("DISC-16: reRegisterGuildById distingue bot absent (10004/50001 -> warn) d'une panne API/réseau (error)", async () => {
     const calls = fakeSupabase({
       "organization_integrations.select": { data: null, error: null },
       "organizations.insert": { data: { id: "org-recreated" }, error: null },
@@ -504,12 +504,27 @@ describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", (
     expect(ok).toBe(true);
     expect(calls.some((c) => c.table === "organization_integrations" && c.op === "insert")).toBe(true);
 
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    const unknownGuildErr = Object.assign(new Error("Unknown Guild"), { code: 10004 });
     const missing = await GuildRegistryService.reRegisterGuildById(
-      { guilds: { fetch: async () => Promise.reject(new Error("Unknown Guild")) } },
+      { guilds: { fetch: async () => Promise.reject(unknownGuildErr) } },
       "g1",
     );
     expect(missing).toBe(false);
-    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("g1"), expect.any(Error));
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining("g1"), unknownGuildErr);
+    expect(logger.error).not.toHaveBeenCalled();
+
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    const apiOutage = Object.assign(new Error("Discord 503"), { status: 503 });
+    const failed = await GuildRegistryService.reRegisterGuildById(
+      { guilds: { fetch: async () => Promise.reject(apiOutage) } },
+      "g1",
+    );
+    expect(failed).toBe(false);
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining("g1"), apiOutage);
+    expect(logger.warn).not.toHaveBeenCalled();
   });
 });
 

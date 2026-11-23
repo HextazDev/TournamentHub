@@ -1,12 +1,13 @@
 import { logger } from "../utils/logger";
-import { GuildRegistryService, type GuildLike } from "./GuildRegistryService";
+import { GuildRegistryService, type GuildFetcher } from "./GuildRegistryService";
 import { invalidateGuildAccess } from "./MemberAccessService";
-import { resolveOrganization } from "../utils/tenant";
+import {
+  resolveOrganization,
+  runWithoutRequestTenantCache,
+  runWithRequestTenantCache,
+} from "../utils/tenant";
 
-/** Sous-ensemble du client Discord nécessaire à la resynchronisation (facilite les tests). */
-export interface GuildFetcher {
-  guilds: { fetch(guildId: string): Promise<GuildLike> };
-}
+export type { GuildFetcher };
 
 /** Délai minimal entre deux `guild.members.fetch()` réussis sur le même serveur (DISC-17 / #106). */
 const MIN_REFRESH_INTERVAL_MS = 5_000;
@@ -63,6 +64,25 @@ export function extractGatewayRetryAfterMs(error: unknown): number | null {
   return Math.min(delayMs, MAX_RETRY_DELAY_MS);
 }
 
+/**
+ * Annule tout rejeu planifié pour un serveur (départ du bot ou désactivation de l'intégration Discord).
+ * Par défaut, préserve un cooldown encore actif afin de ne pas violer la fenêtre gateway en cas de réactivation immédiate ;
+ * `forgetCooldown: true` supprime intégralement l'état (ex. `guildDelete`).
+ */
+export function cancelGuildAccessRefresh(guildId: string, options?: { forgetCooldown?: boolean }): void {
+  const state = refreshStates.get(guildId);
+  if (!state) return;
+  if (state.timer !== null) {
+    clearTimeout(state.timer);
+    state.timer = null;
+  }
+  state.pending = false;
+  state.retryCount = 0;
+  if (options?.forgetCooldown || (!state.inFlight && state.cooldownUntil <= Date.now())) {
+    refreshStates.delete(guildId);
+  }
+}
+
 /** Annule les timers et réinitialise les files par serveur (utilisé dans les tests). */
 export function resetAccessRefreshState(): void {
   for (const state of refreshStates.values()) {
@@ -72,6 +92,14 @@ export function resetAccessRefreshState(): void {
     }
   }
   refreshStates.clear();
+}
+
+function pruneExpiredStates(now: number): void {
+  for (const [id, s] of refreshStates) {
+    if (!s.inFlight && !s.pending && s.timer === null && s.cooldownUntil <= now) {
+      refreshStates.delete(id);
+    }
+  }
 }
 
 function scheduleGuildSync(guildId: string, state: GuildRefreshState, delayMs: number): void {
@@ -98,7 +126,8 @@ async function runGuildSync(guildId: string, state: GuildRefreshState): Promise<
   try {
     const guild = await state.client.guilds.fetch(guildId);
     if (refreshStates.get(guildId) !== state) return;
-    const synced = await GuildRegistryService.syncGuildAdmins(guild);
+    // PERF-01 / DISC-17 : cache de requête tout neuf et éphémère pour cette exécution (jamais hérité d'une route HTTP).
+    const synced = await runWithRequestTenantCache(() => GuildRegistryService.syncGuildAdmins(guild));
     if (refreshStates.get(guildId) !== state) return;
     if (!synced) logger.warn(`[AccessRefresh] Annuaire des accès Discord non resynchronisé pour ${guildId}.`);
     state.retryCount = 0;
@@ -106,6 +135,9 @@ async function runGuildSync(guildId: string, state: GuildRefreshState): Promise<
   } catch (error: unknown) {
     if (refreshStates.get(guildId) !== state) return;
     const retryAfterMs = extractGatewayRetryAfterMs(error);
+    if (retryAfterMs !== null) {
+      state.cooldownUntil = Math.max(state.cooldownUntil, Date.now() + retryAfterMs);
+    }
     if (retryAfterMs !== null && state.retryCount < MAX_RATE_LIMIT_RETRIES) {
       state.retryCount += 1;
       state.pending = false;
@@ -134,6 +166,7 @@ async function runGuildSync(guildId: string, state: GuildRefreshState): Promise<
 }
 
 async function enqueueDirectoryResync(client: GuildFetcher, tenantId: string): Promise<void> {
+  pruneExpiredStates(Date.now());
   const org = await resolveOrganization(tenantId);
   if (!org) return;
   // Une même décision est mise en cache sous chaque identifiant de l'organisation (UUID, slug, serveur).
@@ -181,14 +214,16 @@ async function enqueueDirectoryResync(client: GuildFetcher, tenantId: string): P
 /**
  * Un changement modifie qui accède au panel (rôle TO d'un tournoi, archivage, création avec rôle TO).
  * SEC-05 : le cache d'accès est invalidé immédiatement (synchrone) ; DISC-08 / DISC-17 : l'annuaire
- * `integration_access_grants` est resynchronisé en arrière-plan, regroupé par serveur (une seule synchro
- * en vol, fenêtre minimale entre deux appels réussis) avec rejeu borné sur `GatewayRateLimitError`.
- * Toute erreur est journalisée ; aucune promesse ne reste non gérée.
+ * `integration_access_grants` est resynchronisé en arrière-plan, hors du cache `AsyncLocalStorage` HTTP,
+ * regroupé par serveur (une seule synchro en vol, fenêtre minimale entre deux appels réussis) avec rejeu
+ * borné sur `GatewayRateLimitError`. Toute erreur est journalisée ; aucune promesse ne reste non gérée.
  */
 export function refreshGuildAccess(client: GuildFetcher, guildId: string): void {
   invalidateGuildAccess(guildId);
-  enqueueDirectoryResync(client, guildId).catch((error: unknown) => {
-    logger.error(`[AccessRefresh] Resynchronisation des accès de ${guildId} échouée:`, error);
+  runWithoutRequestTenantCache(() => {
+    enqueueDirectoryResync(client, guildId).catch((error: unknown) => {
+      logger.error(`[AccessRefresh] Resynchronisation des accès de ${guildId} échouée:`, error);
+    });
   });
 }
 

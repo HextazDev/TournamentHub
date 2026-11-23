@@ -730,41 +730,45 @@ describe("RFC Q2.4: transfert de propriété, suppression et invitations", () =>
 
 describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd son intégration", () => {
   const as = (user: string) => ({ "x-discord-user-id": user });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
 
   /** Faux client Discord qui connaît plusieurs serveurs et renvoie des objets GuildLike complets. */
   function multiGuildDiscordClient(presentGuilds: Record<string, { name: string; ownerId: string; manageUsers?: string[] }>) {
-    return {
-      guilds: {
-        fetch: (guildId: string) => {
-          const entry = presentGuilds[guildId];
-          if (!entry) return Promise.reject(new Error("Unknown Guild"));
-          return Promise.resolve({
-            id: guildId,
-            name: entry.name,
-            icon: null,
-            ownerId: entry.ownerId,
-            preferredLocale: "fr",
-            members: {
-              fetch: (userId?: string) => {
-                if (typeof userId === "string") {
-                  const canManage = entry.ownerId === userId || (entry.manageUsers ?? []).includes(userId);
-                  return Promise.resolve({
-                    id: userId,
-                    user: { bot: false },
-                    permissions: { has: () => canManage },
-                    roles: { cache: { has: () => false } },
-                  });
-                }
-                return Promise.resolve(new Map());
-              },
-            },
-          });
+    const fetch = vi.fn((guildId: string) => {
+      const entry = presentGuilds[guildId];
+      if (!entry) return Promise.reject(Object.assign(new Error("Unknown Guild"), { code: 10004 }));
+      const ownerMember = {
+        id: entry.ownerId,
+        user: { bot: false },
+        permissions: { has: () => true },
+        roles: { cache: { has: () => false } },
+      };
+      return Promise.resolve({
+        id: guildId,
+        name: entry.name,
+        icon: null,
+        ownerId: entry.ownerId,
+        preferredLocale: "fr",
+        members: {
+          fetch: (userId?: string) => {
+            if (typeof userId === "string") {
+              const canManage = entry.ownerId === userId || (entry.manageUsers ?? []).includes(userId);
+              return Promise.resolve({
+                id: userId,
+                user: { bot: false },
+                permissions: { has: () => canManage },
+                roles: { cache: { has: () => false } },
+              });
+            }
+            return Promise.resolve(new Map([[entry.ownerId, ownerMember]]));
+          },
         },
-      },
-    };
+      });
+    });
+    return { guilds: { fetch } };
   }
 
-  it("DISC-16: supprimer une organisation liée à un serveur où le bot est encore présent recrée l'organisation discord-<id> et son intégration", async () => {
+  it("DISC-16: supprimer une organisation liée à un serveur où le bot est encore présent recrée l'organisation discord-<id>, son intégration et resynchronise ses grants", async () => {
     const client = multiGuildDiscordClient({ [GUILD_1]: { name: "Serveur Splatoon", ownerId: "u-owner" } });
     const out = await callRoute(organizationRouter, {
       method: "DELETE",
@@ -787,6 +791,18 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
       status: "CONNECTED",
       config: expect.objectContaining({ bot_present: true, guild_name: "Serveur Splatoon" }),
     });
+
+    // Vérifie que refreshGuildAccess a bien resynchronisé l'annuaire en arrière-plan pour la nouvelle org
+    await flush();
+    await flush();
+    expect(db.current?.tables.integration_access_grants).toContainEqual(
+      expect.objectContaining({
+        organization_id: recreatedOrg?.id,
+        provider: "DISCORD",
+        user_id: "u-owner",
+        reason: "SERVER_OWNER",
+      }),
+    );
   });
 
   it("DISC-16: supprimer une organisation reste 200 si le bot n'est plus sur le serveur (Unknown Guild)", async () => {
@@ -815,6 +831,18 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
     });
     expect(wrongSlug.status).toBe(400);
     expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Un ORG_ADMIN natif (sans droit DELETE_ORGANIZATION) reçoit 403 sans réenregistrement
+    const forbidden = await callRoute(organizationRouter, {
+      method: "DELETE",
+      path: `/${ORG_1}`,
+      headers: as("u-admin"),
+      body: { confirm_slug: "splatoon-fr" },
+      locals: { discordClient: { guilds: { fetch: fetchSpy } } },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(db.current?.tables.organizations?.some((o) => o.id === ORG_1)).toBe(true);
+    expect(db.current?.tables.organizations?.some((o) => o.slug === `discord-${GUILD_1}`)).toBe(false);
   });
 
   it("DISC-16: changer de serveur Discord lié (G1 -> G2) réenregistre l'ancien serveur G1 si le bot y est encore", async () => {
@@ -875,7 +903,7 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
     });
   });
 
-  it("DISC-16: délier le serveur Discord depuis l'organisation discord-<id> elle-même ne la réattache pas de force", async () => {
+  it("DISC-16: délier ou changer de serveur depuis l'organisation shell discord-<id> elle-même ne tente pas de recréer son propre slug", async () => {
     const shellId = "00000000-0000-0000-0000-000000000099";
     const shellGuild = "333333333333333333";
     db.current!.tables.organizations!.push({ id: shellId, slug: `discord-${shellGuild}`, name: "Shell Guild", language: "fr" });
@@ -892,9 +920,23 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
 
     const client = multiGuildDiscordClient({
       [shellGuild]: { name: "Shell Guild", ownerId: "u-shell-owner", manageUsers: ["u-shell-owner"] },
+      [GUILD_NEW]: { name: "Nouveau Serveur", ownerId: "u-shell-owner", manageUsers: ["u-shell-owner"] },
     });
 
-    const out = await callRoute(organizationRouter, {
+    // 1) Bascule vers un autre serveur G2 : aucun fetch de réenregistrement sur shellGuild
+    const switched = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${shellId}/integrations/DISCORD`,
+      headers: as("u-shell-owner"),
+      body: { enabled: true, external_id: GUILD_NEW },
+      locals: { discordClient: client },
+    });
+    expect(switched.status).toBe(200);
+    expect(db.current?.tables.organization_integrations?.some((i) => i.external_id === shellGuild)).toBe(false);
+
+    // 2) Rétablissement puis déliaison (external_id: null) : ne réattache pas de force
+    db.current!.tables.organization_integrations!.find((i) => i.organization_id === shellId)!.external_id = shellGuild;
+    const unlinked = await callRoute(organizationRouter, {
       method: "PUT",
       path: `/${shellId}/integrations/DISCORD`,
       headers: as("u-shell-owner"),
@@ -902,7 +944,7 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
       locals: { discordClient: client },
     });
 
-    expect(out.status).toBe(200);
+    expect(unlinked.status).toBe(200);
     expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === shellId)).toMatchObject({
       external_id: null,
       enabled: false,

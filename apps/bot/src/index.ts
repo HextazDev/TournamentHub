@@ -24,7 +24,7 @@ import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
 import { applyPresence, hasPresenceFailure } from "./services/CaptainPresenceService";
 import { GuildRegistryService, readAdminRoles } from "./services/GuildRegistryService";
-import { refreshGuildAccess } from "./services/AccessRefreshService";
+import { cancelGuildAccessRefresh, refreshGuildAccess } from "./services/AccessRefreshService";
 import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
@@ -203,8 +203,12 @@ const bootstrap = async () => {
 
     // Cycle de vie des serveurs : enregistrement dans organizations et organization_integrations (DISC-07).
     client.on("guildCreate", async (guild) => {
-      if (await GuildRegistryService.registerGuild(guild)) {
-        await GuildRegistryService.syncGuildAdmins(guild);
+      try {
+        if (await GuildRegistryService.registerGuild(guild)) {
+          refreshGuildAccess(client, guild.id);
+        }
+      } catch (error: unknown) {
+        logger.error(`[GuildRegistry] Enregistrement guildCreate de ${guild.id} échoué:`, error);
       }
     });
     client.on("guildUpdate", async (oldGuild, newGuild) => {
@@ -212,6 +216,7 @@ const bootstrap = async () => {
       await GuildRegistryService.registerGuild(newGuild);
     });
     client.on("guildDelete", async (guild) => {
+      cancelGuildAccessRefresh(guild.id, { forgetCooldown: true });
       invalidateGuildAccess(guild.id);
       await GuildRegistryService.markGuildLeft(guild.id);
     });
@@ -220,8 +225,12 @@ const bootstrap = async () => {
     // Attendre ClientReady : avant, le cache ne contient que des serveurs indisponibles (sans nom ni membres).
     client.once(Events.ClientReady, async (readyClient) => {
       for (const guild of readyClient.guilds.cache.values()) {
-        if (await GuildRegistryService.registerGuild(guild)) {
-          await GuildRegistryService.syncGuildAdmins(guild);
+        try {
+          if (await GuildRegistryService.registerGuild(guild)) {
+            refreshGuildAccess(client, guild.id);
+          }
+        } catch (error: unknown) {
+          logger.error(`[GuildRegistry] Rattrapage au démarrage de ${guild.id} échoué:`, error);
         }
       }
     });

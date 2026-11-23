@@ -7,9 +7,19 @@ vi.mock("../services/MemberAccessService", () => ({ invalidateGuildAccess: acces
 vi.mock("../services/GuildRegistryService", () => ({ GuildRegistryService: { syncGuildAdmins: registry.syncGuildAdmins } }));
 vi.mock("../utils/logger", () => ({ logger: log }));
 const org = vi.hoisted(() => vi.fn());
-vi.mock("../utils/tenant", () => ({ resolveOrganization: org }));
+vi.mock("../utils/tenant", () => ({
+  resolveOrganization: org,
+  runWithoutRequestTenantCache: <T,>(fn: () => T) => fn(),
+  runWithRequestTenantCache: <T,>(fn: () => T) => fn(),
+}));
 
-import { refreshGuildAccess, resetAccessRefreshState, type GuildFetcher } from "../services/AccessRefreshService";
+import {
+  cancelGuildAccessRefresh,
+  extractGatewayRetryAfterMs,
+  refreshGuildAccess,
+  resetAccessRefreshState,
+  type GuildFetcher,
+} from "../services/AccessRefreshService";
 
 const guild = { id: "g1" };
 const client = (fetch: (guildId: string) => Promise<unknown>): GuildFetcher => ({ guilds: { fetch } }) as GuildFetcher;
@@ -220,6 +230,85 @@ describe("refreshGuildAccess — regroupement et rejeu sur GatewayRateLimitError
     expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(2);
     expect(registry.syncGuildAdmins).toHaveBeenNthCalledWith(1, { id: "g1" });
     expect(registry.syncGuildAdmins).toHaveBeenNthCalledWith(2, { id: "g2" });
+  });
+
+  it("DISC-17: respecte la fenêtre retry_after après épuisement des retries si un appel pending attend", async () => {
+    vi.useFakeTimers();
+    let rejectFourth!: (err: unknown) => void;
+    const rateErr = makeGatewayRateLimitError(3);
+    registry.syncGuildAdmins
+      .mockRejectedValueOnce(rateErr)
+      .mockRejectedValueOnce(rateErr)
+      .mockRejectedValueOnce(rateErr)
+      .mockImplementationOnce(() => new Promise<boolean>((_resolve, reject) => { rejectFourth = reject; }))
+      .mockResolvedValueOnce(true);
+
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(1);
+
+    // Avance jusqu'à la 4e tentative (retry #3) en vol
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(3_200);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(4);
+
+    // Un nouvel appel arrive pendant que retry #3 est en vol -> pending = true
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Retry #3 échoue sur GatewayRateLimitError(3s) : abandon journalisé, mais pending ne doit PAS partir à 0 ms
+    rejectFourth(rateErr);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining("g1"), rateErr);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(4);
+
+    // Après expiration de la fenêtre retry_after (3s + 150ms), la relance pending s'exécute proprement
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(5);
+  });
+
+  it("DISC-17: cancelGuildAccessRefresh annule un timer armé et préserve le cooldown sauf forgetCooldown", async () => {
+    vi.useFakeTimers();
+    registry.syncGuildAdmins.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(1);
+
+    // Appel 1 s plus tard -> timer de cooldown armé (~4 s)
+    await vi.advanceTimersByTimeAsync(1_000);
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(1);
+
+    // Désactivation Discord : annule le timer armé sans lancer de synchro
+    cancelGuildAccessRefresh("g1");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(1);
+
+    // Avec forgetCooldown (guildDelete), le cooldown est oublié immédiatement
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(2);
+    cancelGuildAccessRefresh("g1", { forgetCooldown: true });
+    registry.syncGuildAdmins.mockResolvedValueOnce(true);
+    refreshGuildAccess(client(() => Promise.resolve(guild)), "o1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(registry.syncGuildAdmins).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("extractGatewayRetryAfterMs (DISC-17)", () => {
+  it("gère retry_after=0, le plafond 60 s, opcode 8 sans name et rejette les erreurs non rate-limit", () => {
+    expect(extractGatewayRetryAfterMs(makeGatewayRateLimitError(0))).toBe(150);
+    expect(extractGatewayRetryAfterMs(makeGatewayRateLimitError(120))).toBe(60_000);
+    expect(extractGatewayRetryAfterMs({ data: { opcode: 8, retry_after: 1.2 } })).toBe(1_350);
+    expect(extractGatewayRetryAfterMs(new Error("Retry after 5 seconds"))).toBeNull();
+    expect(extractGatewayRetryAfterMs({ name: "GatewayRateLimitError", data: { retry_after: -1 } })).toBeNull();
+    expect(extractGatewayRetryAfterMs(null)).toBeNull();
   });
 });
 

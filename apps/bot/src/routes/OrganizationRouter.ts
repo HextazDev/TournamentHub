@@ -25,7 +25,7 @@ import {
   resolveMemberAccess,
   type DiscordClientLike,
 } from "../services/MemberAccessService";
-import { refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
+import { cancelGuildAccessRefresh, refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
 import { GuildRegistryService } from "../services/GuildRegistryService";
 import { ChannelAccessService } from "../services/ChannelAccessService";
 import { discordIntegrationPlugin } from "../services/integrations/DiscordIntegrationPlugin";
@@ -914,13 +914,19 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
 
     invalidateOrganizationCaches(auth.org, externalId);
     const discordClient = req.app?.locals?.discordClient as GuildFetcher | undefined;
-    if (provider === "DISCORD" && discordClient) {
-      if (enabled) {
-        refreshGuildAccess(discordClient, auth.org.id);
+    if (provider === "DISCORD") {
+      if (!enabled) {
+        if (previousExternalId) cancelGuildAccessRefresh(previousExternalId);
+        if (externalId && externalId !== previousExternalId) cancelGuildAccessRefresh(externalId);
       }
-      const isSelfShellUnlink = externalId === null && auth.org.slug === `discord-${previousExternalId}`;
-      if (serverChanged && previousExternalId && !isSelfShellUnlink) {
-        await reRegisterOrphanedGuild(discordClient, previousExternalId);
+      if (discordClient) {
+        if (enabled) {
+          refreshGuildAccess(discordClient, auth.org.id);
+        }
+        const isSelfShell = previousExternalId !== null && auth.org.slug === `discord-${previousExternalId}`;
+        if (serverChanged && previousExternalId && !isSelfShell) {
+          await reRegisterOrphanedGuild(discordClient, previousExternalId);
+        }
       }
     }
 

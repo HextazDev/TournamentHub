@@ -171,4 +171,100 @@ describe("PERF-01: cache de résolution d'organisation borné à la requête", (
       expect(from).toHaveBeenCalledTimes(callsAfterFirst);
     });
   });
+
+  it("DISC-17 / SEC-26: un timer de rejeu planifié depuis une requête HTTP ne lit jamais le cache HTTP périmé", async () => {
+    vi.useFakeTimers();
+    const { refreshGuildAccess, resetAccessRefreshState } = await import("../services/AccessRefreshService");
+    resetAccessRefreshState();
+    try {
+      const orgId = "88888888-8888-8888-8888-888888888888";
+      const guildId = "111222333444555666";
+      let discordEnabled = true;
+      const grantOps: string[] = [];
+
+      from.mockImplementation((table: string) => {
+        if (table === "organizations") {
+          return chainable({ data: { id: orgId, slug: "live-org", name: "Live Org", language: "fr", invite_url: null }, error: null });
+        }
+        if (table === "organization_integrations") {
+          return chainable({
+            data: { organization_id: orgId, provider: "DISCORD", external_id: guildId, enabled: discordEnabled, config: {} },
+            error: null,
+          });
+        }
+        if (table === "tournaments") {
+          const b: Record<string, unknown> = {};
+          for (const m of ["select", "eq", "neq"]) b[m] = vi.fn(() => b);
+          b.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve);
+          return b;
+        }
+        if (table === "integration_access_grants") {
+          const b: Record<string, unknown> = {};
+          b.upsert = vi.fn(() => (grantOps.push("upsert"), Promise.resolve({ error: null })));
+          b.delete = vi.fn(() => (grantOps.push("delete"), b));
+          b.eq = vi.fn(() => b);
+          b.lt = vi.fn(() => b);
+          b.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(resolve);
+          return b;
+        }
+        return chainable({ data: null, error: null });
+      });
+
+      const rateLimitErr = Object.assign(
+        new Error("Request with opcode 8 was rate limited. Retry after 2 seconds."),
+        { name: "GatewayRateLimitError", data: { opcode: 8, retry_after: 2 } },
+      );
+      const membersFetch = vi
+        .fn()
+        .mockRejectedValueOnce(rateLimitErr)
+        .mockResolvedValueOnce(
+          new Map([
+            [
+              "owner-1",
+              {
+                id: "owner-1",
+                user: { bot: false },
+                permissions: { has: () => true },
+                roles: { cache: { has: () => false } },
+              },
+            ],
+          ]),
+        );
+
+      const discordClient = {
+        guilds: {
+          fetch: vi.fn(async () => ({
+            id: guildId,
+            name: "Live Guild",
+            icon: null,
+            ownerId: "owner-1",
+            preferredLocale: "fr",
+            members: { fetch: membersFetch },
+          })),
+        },
+      };
+
+      // Requête HTTP #1 : active Discord et peuple le cache AsyncLocalStorage avec discordEnabled = true
+      await runWithRequestTenantCache(async () => {
+        const cached = await resolveOrganization(orgId);
+        expect(cached?.discordEnabled).toBe(true);
+        refreshGuildAccess(discordClient, orgId);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(membersFetch).toHaveBeenCalledTimes(1);
+
+      // Avant l'échéance du timer de rejeu (2 s), une autre requête coupe Discord en base (SEC-26)
+      discordEnabled = false;
+
+      // Le timer de rejeu se déclenche : il doit relire discordEnabled=false et purger au lieu de réinsérer
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(grantOps).not.toContain("upsert");
+      expect(grantOps).toContain("delete");
+      expect(membersFetch).toHaveBeenCalledTimes(1);
+    } finally {
+      resetAccessRefreshState();
+      vi.useRealTimers();
+    }
+  });
 });
