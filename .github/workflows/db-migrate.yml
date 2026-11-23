@@ -1,69 +1,64 @@
-name: DB migrations (Supabase)
+name: DB migrations (Supabase — manual replay)
 
-# Migrations are applied from supabase/migrations/ via the Supabase CLI.
-# - staging: applied automatically on every push to `staging`.
-# - prod (main): the job runs in the protected `production` environment and
-#   WAITS FOR MANUAL APPROVAL (Settings -> Environments -> production ->
-#   required reviewers). Migrations are never auto-applied to prod.
+# Automatic migrations on push to `main` / `staging` run inside
+# `.github/workflows/docker-bot.yml` (job `migrate-db`), strictly AFTER
+# `validate-monorepo` + `docker-bot` + `docker-web` succeed and strictly BEFORE
+# `promote-tags` moves `:prod` / `:staging`.
+#
+# This standalone workflow is kept for manual replay / recovery via `workflow_dispatch`.
 #
 # Required repository secrets:
 #   SUPABASE_PROJECT_REF_STAGING / SUPABASE_DB_PASSWORD_STAGING
 #   SUPABASE_PROJECT_REF_PROD    / SUPABASE_DB_PASSWORD_PROD
 #
-# REQUIRED SUPABASE DASHBOARD SETTING (per project, prod + staging):
-#   Settings -> Database -> Network restrictions -> DISABLE (or allow 0.0.0.0/0).
-#   Otherwise GitHub-hosted runner IPs are refused: dial error ECONNREFUSED.
-#
-# CONNECTION: shared POOLER in SESSION MODE (port 5432 on aws-0-<region>.pooler.supabase.com).
-# The direct host db.<ref>.supabase.co is IPv6-only on current Supabase infra (no A record),
-# so IPv4-only networks (GitHub runners, homelab without IPv6) get ECONNREFUSED on 5432.
-# Session mode on the pooler is IPv4-compatible and required for `db push`
-# (transaction mode port 6543 does not support SET session_replication_role).
-# Pooler username format: postgres.<project-ref>. Region for both projects here: eu-west-1.
+# CONNECTION: shared POOLER in SESSION MODE (port 5432 on aws-0-eu-west-1.pooler.supabase.com).
 
 on:
-  push:
-    branches: [main, staging]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target Supabase environment"
+        required: true
+        type: choice
+        options:
+          - staging
+          - prod
 
-permissions: {}
+permissions:
+  contents: read
 
 concurrency:
-  group: db-migrate-${{ github.ref }}
+  group: db-migrate-manual-${{ inputs.target }}
   cancel-in-progress: false
 
 jobs:
-  migrate-staging:
-    name: Apply migrations to STAGING (automatic)
-    if: github.ref == 'refs/heads/staging'
+  migrate:
+    name: Apply migrations to ${{ inputs.target }} (manual)
     runs-on: ubuntu-latest
-    environment: staging
     steps:
       - uses: actions/checkout@v4
       - name: Install Supabase CLI
         run: npm install -g supabase
-      - name: Push local migrations to staging DB
+      - name: Push local migrations to ${{ inputs.target }} DB
         env:
-          DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
-          DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          TARGET: ${{ inputs.target }}
+          DB_REF_PROD: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
+          DB_PASSWORD_PROD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
+          DB_REF_STAGING: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          DB_PASSWORD_STAGING: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
         run: |
-          ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
-          DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
-          supabase db push --db-url "$DB_URL" --yes
-
-  migrate-prod:
-    name: Apply migrations to PROD (requires approval)
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Supabase CLI
-        run: npm install -g supabase
-      - name: Push local migrations to prod DB
-        env:
-          DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
-          DB_REF: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
-        run: |
+          if [[ "${TARGET}" == "prod" ]]; then
+            DB_REF="${DB_REF_PROD}"
+            DB_PASSWORD="${DB_PASSWORD_PROD}"
+          elif [[ "${TARGET}" == "staging" ]]; then
+            DB_REF="${DB_REF_STAGING}"
+            DB_PASSWORD="${DB_PASSWORD_STAGING}"
+          else
+            echo "Unsupported target: ${TARGET}"
+            exit 1
+          fi
+          test -n "${DB_REF}" || { echo "Missing Supabase project ref secret for ${TARGET}"; exit 1; }
+          test -n "${DB_PASSWORD}" || { echo "Missing Supabase DB password secret for ${TARGET}"; exit 1; }
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
           DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
           supabase db push --db-url "$DB_URL" --yes
