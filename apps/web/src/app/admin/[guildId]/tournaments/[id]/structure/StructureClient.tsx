@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { getBotApiUrl, botApiFetch } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
 import { useRouter } from "next/navigation";
 import { CopyX, GitMerge, LayoutGrid, Network, Trash2, LayoutList, MoreVertical, Search, Users, Plus } from "lucide-react";
 import Link from "next/link";
@@ -9,6 +9,7 @@ import { useToast } from "@/context/ToastContext";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
+import { GROUP_POINTS_DEFAULTS } from "@hub/shared";
 
 export function StructureClient({
   tournamentId,
@@ -34,7 +35,7 @@ export function StructureClient({
   const createPhase = async (format: "SINGLE_ELIM" | "ROUND_ROBIN" | "DOUBLE_ELIM" | "SWISS") => {
     try {
       const order = initialPhases.length + 1;
-      const res = await fetch(`${getBotApiUrl()}/api/phases`, {
+      const res = await botApiFetch('/api/phases', {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -45,7 +46,7 @@ export function StructureClient({
           phase_order: order,
           bracket_size: 8,
           settings: format === "ROUND_ROBIN"
-            ? { points_win: 3, points_draw: 1, points_loss: 0, points_forfeit: 0 }
+            ? { ...GROUP_POINTS_DEFAULTS }
             : (format === "DOUBLE_ELIM" ? { bracket_reset: true } : (format === "SWISS" ? { swiss_rounds_count: 3 } : { third_place_match: false })),
         }),
       });

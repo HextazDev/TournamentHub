@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { BOT_UNREACHABLE, botAccessError, relayedBotError } from "@/lib/accessErrors";
+import { getServerLocale } from "@/i18n/server";
+import { discordListQuery } from "@/lib/accessRules";
 import { resolveServerBotApiUrl } from "@/lib/config";
 
 export async function GET(request: Request) {
@@ -26,24 +29,26 @@ export async function GET(request: Request) {
   const discordId = (session.user as any)?.id || "";
 
   try {
-    const res = await fetch(`${botApiUrl}/api/discord/channels?guildId=${guildId}`, {
+    // SEC-21 : un TO de tournoi désigne son tournoi, vérifié par le bot.
+    const tournamentId = url.searchParams.get("tournamentId") ?? undefined;
+    const res = await fetch(`${botApiUrl}/api/discord/channels?${discordListQuery(guildId, tournamentId)}`, {
       headers: {
         Authorization: `Bearer ${botApiSecret}`,
         "X-Discord-User-Id": discordId,
         "X-Guild-Id": guildId,
       },
-      next: { revalidate: 60 } // cache for 1 minute
+      cache: "no-store",
     });
 
     if (!res.ok) {
-      const errText = await res.text();
-      return NextResponse.json({ error: `Bot returned ${res.status}: ${errText}` }, { status: res.status });
+      // SEC-18 : refus d'accès traduit, jamais le texte brut du bot.
+      return NextResponse.json(relayedBotError(await res.text(), await getServerLocale()), { status: res.status });
     }
 
     const data = await res.json();
     return NextResponse.json(data);
   } catch (error: any) {
     console.error("Error calling bot API:", error);
-    return NextResponse.json({ error: "Internal Server Error" }, { status: 500 });
+    return NextResponse.json(botAccessError(BOT_UNREACHABLE, await getServerLocale()), { status: 502 });
   }
 }

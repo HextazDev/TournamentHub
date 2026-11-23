@@ -9,6 +9,12 @@ import {
 } from "discord.js";
 import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage } from "../i18n";
+import { logger } from "../utils/logger";
+import { resolveActiveDiscordGuild } from "../utils/tenant";
+import type { Tournament } from "@hub/shared";
+
+export type SchedulableTournament = Pick<Tournament, "id"> &
+  Partial<Pick<Tournament, "checkin_mode" | "checkin_start_at" | "checkin_end_at" | "guild_id" | "status">>;
 
 export class SchedulerService {
   private static activeJobs: Map<string, schedule.Job> = new Map();
@@ -16,7 +22,7 @@ export class SchedulerService {
 
   public static async init(client: Client) {
     this.client = client;
-    console.log("[Scheduler] Initializing SchedulerService...");
+    logger.info("[Scheduler] Initializing SchedulerService...");
 
     const { data: tournaments, error } = await supabase
       .from("tournaments")
@@ -30,17 +36,37 @@ export class SchedulerService {
     }
 
     if (tournaments && tournaments.length > 0) {
-      console.log(`[Scheduler] Found ${tournaments.length} active tournaments to schedule.`);
+      logger.info(`[Scheduler] Found ${tournaments.length} active tournaments to schedule.`);
       for (const t of tournaments) {
-        if (t.checkin_start_at && t.checkin_end_at && t.guild_id) {
+        if (t.checkin_start_at && t.checkin_end_at) {
           this.scheduleTournament(t);
         }
       }
     }
   }
 
-  public static scheduleTournament(tournament: any) {
+  public static async scheduleTournament(tournament: SchedulableTournament) {
     this.cancelTournamentJobs(tournament.id);
+
+    // CHK-05 (#15) : si checkin_mode === "DISABLED", aucun job de check-in et toutes les équipes sont prêtes
+    if (tournament.checkin_mode === "DISABLED") {
+      const { error } = await supabase
+        .from("teams")
+        .update({ is_checked_in: true })
+        .eq("tournament_id", tournament.id)
+        .eq("is_checked_in", false);
+
+      if (error) {
+        logger.error(`[Scheduler] Failed to auto-checkin teams for tournament ${tournament.id}:`, error);
+      } else {
+        logger.info(`[Scheduler] Tournament ${tournament.id} has checkin DISABLED, all registered teams marked checked in.`);
+      }
+      return;
+    }
+
+    if (!tournament.checkin_start_at || !tournament.checkin_end_at) {
+      return;
+    }
 
     const now = new Date();
     const startAt = new Date(tournament.checkin_start_at);
@@ -56,7 +82,7 @@ export class SchedulerService {
       // Catch-up: check-in window already started
       // Refresh from DB to get the latest checkin_message_id
       this.catchUpCheckin(tournament.id).catch((err) =>
-        console.error(`[Scheduler] Catch-up failed for ${tournament.id}:`, err)
+        logger.error(`[Scheduler] Catch-up failed for ${tournament.id}:`, err)
       );
     }
 
@@ -92,7 +118,7 @@ export class SchedulerService {
       this.activeJobs.set(`${tournament.id}_close`, closeJob);
     }
 
-    console.log(
+    logger.info(
       `[Scheduler] Programmed check-in jobs for tournament ${tournament.id} (Open: ${startAt.toISOString()}, Close: ${endAt.toISOString()})`,
     );
   }
@@ -118,7 +144,7 @@ export class SchedulerService {
       job.cancel();
       this.activeJobs.delete(key);
     }
-    console.log("[Scheduler] All jobs cancelled.");
+    logger.info("[Scheduler] All jobs cancelled.");
   }
 
   // ============== HANDLERS ==============
@@ -126,15 +152,16 @@ export class SchedulerService {
   private static async catchUpCheckin(tournamentId: string) {
     const { data: tournament } = await supabase
       .from("tournaments")
-      .select("id, checkin_message_id, discord_checkin_channel_id")
+      .select("id, organization_id, checkin_message_id, discord_checkin_channel_id")
       .eq("id", tournamentId)
       .single();
 
     if (!tournament) return;
+    if (!(await resolveActiveDiscordGuild(tournament.organization_id))) return;
 
     // Already has a message ID — the embed was published, skip
     if (tournament.checkin_message_id) {
-      console.log(`[Scheduler] Check-in already triggered for ${tournamentId}, resuming reminders and close jobs.`);
+      logger.info(`[Scheduler] Check-in already triggered for ${tournamentId}, resuming reminders and close jobs.`);
       return;
     }
 
@@ -143,7 +170,7 @@ export class SchedulerService {
     if (tournament.discord_checkin_channel_id) {
       const alreadySent = await this.botAlreadySentCheckinMessage(tournament.discord_checkin_channel_id, tournamentId);
       if (alreadySent) {
-        console.log(`[Scheduler] Catch-up: bot already sent a check-in message in channel ${tournament.discord_checkin_channel_id}. Updating DB and skipping.`);
+        logger.info(`[Scheduler] Catch-up: bot already sent a check-in message in channel ${tournament.discord_checkin_channel_id}. Updating DB and skipping.`);
         // Save the message ID so future restarts won't re-trigger
         await supabase
           .from("tournaments")
@@ -154,7 +181,7 @@ export class SchedulerService {
     }
 
     // No message found — genuinely missed, send it now
-    console.log(`[Scheduler] Catch-up: Starting missed check-in for tournament ${tournamentId} immediately.`);
+    logger.info(`[Scheduler] Catch-up: Starting missed check-in for tournament ${tournamentId} immediately.`);
     await this.handleOpenCheckin(tournamentId);
   }
 
@@ -181,14 +208,14 @@ export class SchedulerService {
         }
       }
     } catch (err) {
-      console.warn(`[Scheduler] Failed to check existing messages in channel ${channelId}:`, err);
+      logger.warn(`[Scheduler] Failed to check existing messages in channel ${channelId}:`, err);
     }
     return null;
   }
 
   private static async handleOpenCheckin(tournamentId: string) {
     try {
-      console.log(`[Scheduler] Executing Check-in Open for tournament ${tournamentId}`);
+      logger.info(`[Scheduler] Executing Check-in Open for tournament ${tournamentId}`);
 
       // Always fetch fresh tournament data
       const { data: tournament } = await supabase
@@ -198,10 +225,13 @@ export class SchedulerService {
         .single();
 
       if (!tournament) return;
+      // CHK-01 : la fenêtre de check-in vit en base ; sans intégration active, rien n'est publié sur Discord.
+      const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
+      if (!guildId) return;
 
       // Double-check: if message already exists, skip
       if (tournament.checkin_message_id) {
-        console.log(`[Scheduler] Check-in message already exists for ${tournamentId}, skipping.`);
+        logger.info(`[Scheduler] Check-in message already exists for ${tournamentId}, skipping.`);
         return;
       }
 
@@ -209,14 +239,14 @@ export class SchedulerService {
       const captainRoleId = tournament.discord_captain_role_id;
 
       if (!checkinChannelId) {
-        console.warn(`[Scheduler] Missing discord_checkin_channel_id for tournament ${tournamentId}`);
+        logger.warn(`[Scheduler] Missing discord_checkin_channel_id for tournament ${tournamentId}`);
         return;
       }
 
       const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;
       if (!channel || !("send" in channel)) return;
 
-      const lang = await getGuildLanguage(tournament.guild_id, tournamentId);
+      const lang = await getGuildLanguage(guildId, tournamentId);
       const mentionsMessage = captainRoleId
         ? tBot(lang, "checkin.openMention", { role: `<@&${captainRoleId}>` })
         : tBot(lang, "checkin.openNoMention");
@@ -251,24 +281,26 @@ export class SchedulerService {
         .update({ checkin_message_id: msg.id })
         .eq("id", tournamentId);
 
-      console.log(`[Scheduler] Check-in Embed published and checkin_message_id saved for ${tournamentId}.`);
+      logger.info(`[Scheduler] Check-in Embed published and checkin_message_id saved for ${tournamentId}.`);
     } catch (e) {
-      console.error("[Scheduler] Failed opening checkin:", e);
+      logger.error("[Scheduler] Failed opening checkin:", e);
     }
   }
 
   private static async handleReminders(tournamentId: string, minutesLeft: number) {
     try {
-      console.log(`[Scheduler] Warning: Check-in closes in ${minutesLeft}min for tournament ${tournamentId}`);
+      logger.info(`[Scheduler] Warning: Check-in closes in ${minutesLeft}min for tournament ${tournamentId}`);
 
       // Fetch fresh tournament data
       const { data: tournament } = await supabase
         .from("tournaments")
-        .select("guild_id, discord_checkin_channel_id")
+        .select("organization_id, discord_checkin_channel_id")
         .eq("id", tournamentId)
         .single();
 
       if (!tournament?.discord_checkin_channel_id) return;
+      const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
+      if (!guildId) return;
 
       const { data: teams } = await supabase
         .from("teams")
@@ -281,25 +313,27 @@ export class SchedulerService {
       const channel = (await this.client.channels.fetch(tournament.discord_checkin_channel_id)) as TextChannel;
       if (!channel || !("send" in channel)) return;
 
-      const lang = await getGuildLanguage(tournament.guild_id, tournamentId);
+      const lang = await getGuildLanguage(guildId, tournamentId);
       const mentions = teams.map((t) => `<@${t.captain_discord_id}>`).join(" ");
       await channel.send(tBot(lang, "checkin.reminder", { minutes: minutesLeft, mentions }));
     } catch (e) {
-      console.error("[Scheduler] Failed sending reminders:", e);
+      logger.error("[Scheduler] Failed sending reminders:", e);
     }
   }
 
   public static async handleCloseCheckin(tournamentId: string) {
     try {
-      console.log(`[Scheduler] Closing checkin for tournament ${tournamentId}`);
+      logger.info(`[Scheduler] Closing checkin for tournament ${tournamentId}`);
 
       const { data: latestTournament } = await supabase
         .from("tournaments")
-        .select("guild_id, checkin_message_id, discord_checkin_channel_id")
+        .select("organization_id, checkin_message_id, discord_checkin_channel_id")
         .eq("id", tournamentId)
         .single();
 
       if (!latestTournament?.checkin_message_id) return;
+      const guildId = await resolveActiveDiscordGuild(latestTournament.organization_id);
+      if (!guildId) return;
 
       const checkinChannelId = latestTournament.discord_checkin_channel_id;
       if (!checkinChannelId) return;
@@ -309,7 +343,7 @@ export class SchedulerService {
 
       const msg = await channel.messages.fetch(latestTournament.checkin_message_id).catch(() => null);
       if (msg) {
-        const lang = await getGuildLanguage(latestTournament.guild_id, tournamentId);
+        const lang = await getGuildLanguage(guildId, tournamentId);
         const checkinEmbed = new EmbedBuilder()
           .setTitle(tBot(lang, "checkin.closedTitle"))
           .setDescription(tBot(lang, "checkin.closedDescription"))
@@ -322,7 +356,7 @@ export class SchedulerService {
         });
       }
     } catch (e) {
-      console.error("[Scheduler] Failed closing checkin:", e);
+      logger.error("[Scheduler] Failed closing checkin:", e);
     }
   }
 }

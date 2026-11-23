@@ -56,6 +56,7 @@ Edit the private files; Git and the Docker build context exclude `*.env`. Never 
 | `SUPABASE_SERVICE_ROLE_KEY` | Private key from that same Supabase instance; required |
 | `BOT_API_SECRET` | Random shared server-to-server secret, at least 32 characters in production; required |
 | `FRONTEND_URL` | Optional exact web origin for CORS; absent means no browser CORS access |
+| `INTEGRATION_ENCRYPTION_KEY` | AES-256-GCM master key for integration secrets, 32 bytes in hex or base64 (`openssl rand -hex 32`); required in production. Back it up: stored secrets cannot be decrypted without it |
 | `WEBHOOK_SECRET` | Optional additional webhook credential; defaults to `BOT_API_SECRET` |
 | `DISCORD_GUILD_ID` | Test guild for explicit guild command registration |
 | `DISCORD_COMMAND_SCOPE` | `global` (default) or `guild`, only used by the container command registration entrypoint |
@@ -199,6 +200,8 @@ docker compose -p tournamenthub-staging -f compose.production.yml run --rm \
 
 Both `bot` (`127.0.0.1:8080`) and `web` (`127.0.0.1:3000`) bind to loopback by default. Place an HTTPS reverse proxy on the host and preserve `Host`, `X-Forwarded-Proto` and `X-Forwarded-For` headers so NextAuth OAuth callbacks and `__Secure-` cookies work behind TLS:
 
+The web asks the bot API for every back-office access decision: if the web cannot reach the bot, the admin panel stays closed ("permission check failed") for everyone, including server owners. Public pages remain available.
+
 ```caddyfile
 tournoi.your-community.example {
     reverse_proxy 127.0.0.1:3000
@@ -213,13 +216,15 @@ api.your-community.example {
 - **Vercel frontend mode**: Set `BOT_API_URL` (or `NEXT_PUBLIC_BOT_API_URL`) on Vercel to `https://api.your-community.example`, since Vercel cannot reach the Docker bridge or host loopback.
 - **Self-hosted Supabase Realtime**: Ensure your Supabase reverse proxy supports WebSocket `Upgrade: websocket` on `/realtime/v1/websocket` for browser Realtime subscriptions. Cloudflare Tunnel is optional and never required.
 
-### Teams webhook contract (`OPS-05`)
+### Optional teams webhook contract (`OPS-05`)
 
-`POST /api/webhook/team-update` requires **both** headers:
+Check-ins made through the bot (Discord check-in button, back-office check-in toggle) apply the captain role and team nickname directly: no webhook is needed for them. The Supabase `teams` database webhook is **optional** and only resynchronizes changes made outside the bot (direct database edits).
+
+If you provision it, `POST /api/webhook/team-update` requires **both** headers:
 - `Authorization: Bearer <BOT_API_SECRET>`
 - `x-webhook-secret: <WEBHOOK_SECRET or BOT_API_SECRET>`
 
-Query-string secrets (`?secret=`) are rejected (`401`). Configure these private headers in your Supabase `teams` (`INSERT`, `UPDATE`, `DELETE`) Database Webhook. See [`apps/bot/TROUBLESHOOTING.md`](../apps/bot/TROUBLESHOOTING.md) for the `curl` test recipe.
+Query-string secrets (`?secret=`) are rejected (`401`). Configure these private headers in your Supabase `teams` (`INSERT`, `UPDATE`, `DELETE`) Database Webhook. Malformed payloads are rejected without touching Discord. A failed Discord update returns a failure response, but may leave a partial change (the role is still attempted when the nickname is refused); retries are handled by the webhook operator. See [`apps/bot/TROUBLESHOOTING.md`](../apps/bot/TROUBLESHOOTING.md) for the `[CaptainPresence]` log reasons and `curl` test recipe.
 
 ## Staging, production, logs and health
 

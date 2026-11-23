@@ -1,14 +1,15 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { getBotApiUrl, botApiFetch } from '@/utils/api';
+import { botApiFetch } from '@/utils/api';
+import { discordListQuery } from "@/lib/accessRules";
 
 import { useRouter } from "next/navigation";
 import { CheckCircle2, XCircle, UserPlus, Trash2, Search, Pencil, Sparkles } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { PromptModal } from "@/components/ui/PromptModal";
 import { useTranslation } from "@/i18n/LanguageContext";
-import { MAX_FAKE_TEAMS } from "@hub/shared";
+import { MAX_FAKE_TEAMS, generateSyntheticDiscordId, isSyntheticDiscordId, isDiscordSnowflake } from "@hub/shared";
 import { getErrorMessage, readApiError } from "@/utils/errors";
 
 export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { tournamentId: string; guildId: string; initialTeams: any[] }) {
@@ -46,16 +47,16 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!guildId) return;
+    if (!guildId || !isDiscordSnowflake(guildId)) return;
     if (isAdding && members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?guildId=${guildId}`)
+      botApiFetch(`/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) setMembers(data);
         })
         .catch((err) => console.error(err));
     }
-  }, [isAdding]);
+  }, [isAdding, guildId, tournamentId, members.length]);
 
   // Click outside to close dropdown
   useEffect(() => {
@@ -78,12 +79,13 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
 
   const handleAddTeam = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newTeamName.trim() || !selectedMember) return;
+    if (!newTeamName.trim()) return;
 
     try {
+      const captainDiscordId = selectedMember?.id || generateSyntheticDiscordId();
       const validMembers = teamMembers.filter(m => m.ingame_name.trim() || m.friend_code.trim() || m.is_captain);
       const membersPayload = validMembers.map(m => ({
-        user_id: m.is_captain ? selectedMember.id : null,
+        user_id: m.is_captain && selectedMember ? selectedMember.id : null,
         ingame_name: m.ingame_name.trim(),
         friend_code: m.friend_code.trim(),
         is_captain: m.is_captain
@@ -96,8 +98,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
           tournament_id: tournamentId,
           guildId,
           name: newTeamName,
-          captain_discord_id: selectedMember.id,
-          is_checked_in: true,
+          captain_discord_id: captainDiscordId,
           members: membersPayload,
         }),
       });
@@ -113,6 +114,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
       setSelectedMember(null);
       setIsAdding(false);
       toast.success(t("feedback.teamAdded"));
+      if (data.presence_warning === true) toast.warning(t("feedback.teamAddedPresenceWarning"));
       router.refresh();
     } catch (err: unknown) {
       console.error(err);
@@ -176,23 +178,29 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
 
   const handleEditTeam = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editTeamName.trim() || !selectedMember) return;
+    if (!editTeamName.trim()) return;
 
     try {
       const validMembers = teamMembers.filter(m => m.ingame_name.trim() || m.friend_code.trim() || m.is_captain);
       const membersPayload = validMembers.map(m => ({
-        user_id: m.is_captain ? selectedMember.id : null,
+        user_id: m.is_captain && selectedMember ? selectedMember.id : null,
         ingame_name: m.ingame_name.trim(),
         friend_code: m.friend_code.trim(),
         is_captain: m.is_captain
       }));
+
+      const captainDiscordId = selectedMember?.id ?? (
+        isSyntheticDiscordId(editingTeam.captain_discord_id)
+          ? editingTeam.captain_discord_id
+          : generateSyntheticDiscordId()
+      );
 
       const res = await botApiFetch(`/api/teams/${editingTeam.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: editTeamName,
-          captain_discord_id: selectedMember.id,
+          captain_discord_id: captainDiscordId,
           guildId,
           members: membersPayload,
         }),
@@ -203,7 +211,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
       }
 
       const data = await res.json();
-      setTeams(teams.map(t => t.id === editingTeam.id ? { ...t, name: editTeamName, captain_discord_id: selectedMember.id, team_members: data.team_members || [] } : t));
+      setTeams(teams.map(t => t.id === editingTeam.id ? { ...t, name: editTeamName, captain_discord_id: captainDiscordId, team_members: data.team_members || [] } : t));
       setEditingTeam(null);
       setEditTeamName("");
       setSelectedMember(null);
@@ -240,10 +248,14 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
   const openEditModal = (team: any) => {
     setEditingTeam(team);
     setEditTeamName(team.name);
-    // Dummy member fallback
-    const member = members.find(m => m.id === team.captain_discord_id) || { id: team.captain_discord_id, displayName: "Chargement (ID: " + team.captain_discord_id + ")" };
-    setSelectedMember(member);
-    setSearchTerm(member.displayName);
+    if (isSyntheticDiscordId(team.captain_discord_id)) {
+      setSelectedMember(null);
+      setSearchTerm("");
+    } else {
+      const member = members.find(m => m.id === team.captain_discord_id) || { id: team.captain_discord_id, displayName: "Chargement (ID: " + team.captain_discord_id + ")" };
+      setSelectedMember(member);
+      setSearchTerm(member.displayName);
+    }
     setIsDropdownOpen(false);
 
     const existingMembers = [...(team.team_members || [])].sort((a: any, b: any) =>
@@ -267,9 +279,9 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
     for(let i=1; i<6; i++) editMembers[i].is_captain = false;
     setTeamMembers(editMembers);
 
-    if (!guildId) return;
+    if (!guildId || !isDiscordSnowflake(guildId)) return;
     if (members.length === 0) {
-      fetch(`${getBotApiUrl()}/api/discord/members?guildId=${guildId}`)
+      botApiFetch(`/api/discord/members?${discordListQuery(guildId, tournamentId)}`)
         .then((res) => res.json())
         .then((data) => {
           if(Array.isArray(data)) {
@@ -340,13 +352,24 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                 </div>
 
                 <div className="space-y-2">
-                  <label className="text-sm font-semibold text-slate-400">{t("adminParticipants.captainDiscord")}</label>
+                  <div className="flex justify-between items-center">
+                    <label className="text-sm font-semibold text-slate-400">{t("adminParticipants.captainDiscordOptional")}</label>
+                    {selectedMember && (
+                      <button
+                        type="button"
+                        onClick={() => { setSelectedMember(null); setSearchTerm(""); }}
+                        className="text-xs text-slate-400 hover:text-red-400 transition-colors"
+                      >
+                        {t("adminParticipants.clearCaptain")}
+                      </button>
+                    )}
+                  </div>
                   <div className="relative" ref={dropdownRef}>
                     <div className="relative">
                       <Search className="w-5 h-5 absolute left-3 top-3.5 text-slate-400" />
                       <input
                         type="text"
-                        placeholder={t("adminParticipants.searchCaptainPlaceholder")}
+                        placeholder={t("adminParticipants.searchCaptainPlaceholderOptional")}
                         className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-white focus:outline-none focus:border-blue-500"
                         value={selectedMember ? selectedMember.displayName : searchTerm}
                         onChange={(e) => {
@@ -355,7 +378,6 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                           setIsDropdownOpen(true);
                         }}
                         onFocus={() => setIsDropdownOpen(true)}
-                        required={!selectedMember}
                       />
                     </div>
 
@@ -434,7 +456,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                 </button>
                 <button
                   type="submit"
-                  disabled={!selectedMember || !newTeamName}
+                  disabled={!newTeamName.trim()}
                   className="bg-green-600 hover:bg-green-700 text-white px-5 py-2.5 rounded-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {t("common.save")}
@@ -475,7 +497,13 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                       </div>
                       {team.name}
                     </div>
-                    <span className="text-xs text-slate-500 font-normal ml-11">Capt ID: {team.captain_discord_id}</span>
+                    {isSyntheticDiscordId(team.captain_discord_id) ? (
+                      <span className="text-xs text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/60 ml-11 w-max">
+                        {t("adminParticipants.noDiscordCaptain")}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500 font-normal ml-11">Capt ID: {team.captain_discord_id}</span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-slate-300">
                     {team.team_members && team.team_members.length > 0 ? (
@@ -560,13 +588,24 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-semibold text-slate-400">{t("adminParticipants.captainDiscord")}</label>
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-semibold text-slate-400">{t("adminParticipants.captainDiscordOptional")}</label>
+                  {selectedMember && (
+                    <button
+                      type="button"
+                      onClick={() => { setSelectedMember(null); setSearchTerm(""); }}
+                      className="text-xs text-slate-400 hover:text-red-400 transition-colors"
+                    >
+                      {t("adminParticipants.clearCaptain")}
+                    </button>
+                  )}
+                </div>
                 <div className="relative" ref={dropdownRef}>
                   <div className="relative">
                     <Search className="w-5 h-5 absolute left-3 top-3.5 text-slate-400" />
                     <input
                       type="text"
-                      placeholder={t("adminParticipants.searchCaptainPlaceholder")}
+                      placeholder={t("adminParticipants.searchCaptainPlaceholderOptional")}
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-10 pr-4 py-3 text-white focus:outline-none focus:border-blue-500"
                       value={selectedMember ? selectedMember.displayName : searchTerm}
                       onChange={(e) => {
@@ -575,7 +614,6 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                         setIsDropdownOpen(true);
                       }}
                       onFocus={() => setIsDropdownOpen(true)}
-                      required={!selectedMember}
                     />
                   </div>
 
@@ -657,7 +695,7 @@ export function ParticipantsClient({ tournamentId, guildId, initialTeams }: { to
                 </button>
                 <button
                   type="submit"
-                  disabled={!selectedMember || !editTeamName}
+                  disabled={!editTeamName.trim()}
                   className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-lg font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {t("common.save")}

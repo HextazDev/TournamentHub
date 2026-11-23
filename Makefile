@@ -1,4 +1,4 @@
-.PHONY: install dev dev-bot dev-bot-start bot-start dev-bot-stop bot-stop dev-web dev-web-start web-start dev-web-stop web-stop dev-stop dev-build dev-logs supabase-start supabase-stop db-init db-test-rls db-push env-init init lint build help
+.PHONY: install dev dev-bot dev-bot-start bot-start dev-bot-stop bot-stop dev-web dev-web-start web-start dev-web-stop web-stop dev-stop dev-build dev-logs supabase-start supabase-stop db-init db-test-rls db-push env-init init build-shared lint test build help
 
 help:
 	@echo "Commandes disponibles :"
@@ -18,8 +18,10 @@ help:
 	@echo "  make dev-web-stop   - Arrête uniquement le site Next.js (alias: web-stop)"
 	@echo "  make dev-build      - Reconstruit les images de développement (après ajout de paquets npm)"
 	@echo "  make dev-stop       - Arrête l'ensemble des conteneurs (Bot et Next.js)"
-	@echo "  make lint           - Valide les types du bot et lint le code du web"
-	@echo "  make build          - Compile le bot et le projet web"
+	@echo "  make build-shared   - Compile le package partagé @hub/shared (dépendance de test, lint et build)"
+	@echo "  make test           - Compile @hub/shared puis exécute les tests unitaires (Vitest, sans watch)"
+	@echo "  make lint           - Compile @hub/shared, valide les types et lint le code du web"
+	@echo "  make build          - Compile @hub/shared, le bot et le projet web"
 
 init: install supabase-start env-init db-init
 	@echo "🎉 Environnement de développement initialisé avec succès !"
@@ -110,7 +112,12 @@ dev-build:
 	@echo "🛠️ Reconstruction des images de développement..."
 	docker compose build
 
-lint:
+# @hub/shared est consommé via son build (dist/ non versionné) : test, lint et build en dépendent.
+build-shared:
+	@echo "🛠️ Compilation du package partagé @hub/shared..."
+	cd packages/shared && npm run build
+
+lint: build-shared
 	@echo "🔍 Vérification du typage dans packages/shared..."
 	cd packages/shared && npx tsc --noEmit
 	@echo "🔍 Vérification du typage dans apps/bot..."
@@ -118,13 +125,11 @@ lint:
 	@echo "🔍 Linting dans apps/web..."
 	cd apps/web && npm run lint
 
-test:
+test: build-shared
 	@echo "🧪 Exécution des tests unitaires..."
 	npm run test
 
-build:
-	@echo "🛠️ Compilation du package partagé @hub/shared..."
-	cd packages/shared && npm run build
+build: build-shared
 	@echo "🛠️ Compilation de apps/bot..."
 	cd apps/bot && npm run build
 	@echo "🛠️ Compilation de apps/web..."

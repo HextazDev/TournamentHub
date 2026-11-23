@@ -1,32 +1,41 @@
-import {
-  Client,
-  GatewayIntentBits,
-  Collection,
-  ChannelType,
-  Events,
-  PermissionFlagsBits,
-} from "discord.js";
+import { Client, GatewayIntentBits, Collection, Events } from "discord.js";
 import express from "express";
 import { botEnvironment } from "./config/runtime";
 import { createHealthRouter } from "./routes/HealthRouter";
 import cors from "cors";
 import http from "http";
 import { logger } from "./utils/logger";
-import { authMiddleware, requireGuildAdmin } from "./middleware/auth";
+import { sendServerError } from "./utils/serverError";
+import {
+  authMiddleware,
+  guildPermissionsHandler,
+  requireGuildAction,
+  requireGuildAdmin,
+  requireTournamentScope,
+  tournamentFrom,
+} from "./middleware/auth";
+import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
+import { runWithRequestTenantCache } from "./utils/tenant";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
 import { SchedulerRecovery } from "./services/SchedulerRecovery";
 import { ScoreService } from "./services/ScoreService";
 import { RegistrationService } from "./services/RegistrationService";
-import { GuildRegistryService, readToRoleId } from "./services/GuildRegistryService";
-import { resolveAdminReason } from "./utils/adminAccess";
+import { applyPresence, hasPresenceFailure } from "./services/CaptainPresenceService";
+import { GuildRegistryService, readAdminRoles } from "./services/GuildRegistryService";
 import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
 import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
+import { organizationRouter } from "./routes/OrganizationRouter";
+import { playerRouter } from "./routes/PlayerRouter";
+import { IntegrationBus } from "./services/IntegrationBus";
+import { discordIntegrationPlugin } from "./services/integrations/DiscordIntegrationPlugin";
 import { archiveAndInit, syncSchedule } from "./routes/LifecycleRouter";
+import { discordListHandlers } from "./routes/DiscordListRouter";
+import { autoSetupHandler } from "./routes/DiscordSetupRouter";
 import { createWebhookRouter } from "./routes/WebhookRouter";
 
 // Importer les commandes locales
@@ -61,13 +70,31 @@ const app = express();
 app.use(express.json());
 app.use(cors({ origin: process.env.FRONTEND_URL || false }));
 
+// PERF-01 : cache de résolution de tenant borné à la requête, actif sur tout /api.
+app.use("/api", (req, res, next) => runWithRequestTenantCache(() => next()));
+
 // Apply authentication middleware to all API routes
 app.use("/api", authMiddleware);
 
 // Inject client globally
 app.locals.discordClient = client;
 
+// Enregistrement du plugin d'intégration Discord dans le bus d'intégrations (INT-01).
+IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
+// SEC-21 : niveau SERVER exigé par défaut. Le montage ouvert aux TO de tournoi n'est utilisé que là où chaque
+// route déclare requireTournamentScope ou requireServerLevel (vérifié par tournamentScopeRoutes.test.ts).
 const guildAdminGuard = requireGuildAdmin(client);
+const tournamentLevelGuard = requireGuildAdmin(client, { tournamentLevel: true });
+// Listes Discord : un TO de tournoi doit désigner un de ses tournois ; le niveau SERVER peut s'en dispenser.
+// SEC-25 : les listes ne lisent que le serveur authentifié (req.adminCheck), jamais un guildId de query ou de corps.
+const discordLists = discordListHandlers(client);
+const discordListGuard = [
+  tournamentLevelGuard,
+  requireTournamentScope(tournamentFrom.query("tournamentId"), { optionalForServer: true }),
+];
+// SEC-16 : l'auto-setup Discord reste hors de portée du rôle TO (comme /api/server-settings, gardé par son routeur).
+const serverSettingsGuard = [guildAdminGuard, requireGuildAction("MANAGE_SERVER_SETTINGS")];
 
 // Health check (no auth required — skipped in middleware)
 const schedulerRecovery = new SchedulerRecovery(
@@ -76,7 +103,7 @@ const schedulerRecovery = new SchedulerRecovery(
 );
 app.use(createHealthRouter(() => client.isReady(), async () => {
   if (!schedulerRecovery.isReady()) return false;
-  const { error } = await supabase.from("server_settings").select("guild_id").limit(1)
+  const { error } = await supabase.from("tournaments").select("id").limit(1)
     .abortSignal(AbortSignal.timeout(3000));
   return !error;
 }));
@@ -85,35 +112,7 @@ app.use(createHealthRouter(() => client.isReady(), async () => {
 app.use("/api", createWebhookRouter(client));
 
 // Endpoint: Fetch Roles for the connected Discord Guild
-app.get("/api/discord/roles", guildAdminGuard, async (req, res) => {
-  const guildId = (req.query.guildId || req.body?.guildId) as string;
-  if (!guildId) {
-    return res.status(400).json({ error: "Missing guildId parameter." });
-  }
-
-  try {
-    const guild = await client.guilds.fetch(guildId).catch(() => null);
-    if (!guild) {
-      return res
-        .status(404)
-        .json({ error: "Guild not found. Ensure bot is in the server." });
-    }
-
-    const rolesInfo = guild.roles.cache
-      .filter((role) => role.name !== "@everyone")
-      .map((role) => ({
-        id: role.id,
-        name: role.name,
-        color: role.hexColor,
-      }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-    return res.status(200).json(rolesInfo);
-  } catch (error) {
-    logger.error("Error fetching roles:", error);
-    return res.status(500).json({ error: "Failed to fetch roles." });
-  }
-});
+app.get("/api/discord/roles", ...discordListGuard, discordLists.roles);
 
 // Endpoint: Ordonne au client Discord de créer/supprimer des salons/rôles!
 app.post("/api/discord/publish-phase", guildAdminGuard, async (_req, res) => {
@@ -124,152 +123,39 @@ app.post("/api/discord/publish-phase", guildAdminGuard, async (_req, res) => {
   }
 });
 
-const getGuild = async (res: any, guildId: string): Promise<any> => {
-  if (!guildId) {
-    res.status(400).json({ error: "Missing guildId parameter" });
-    return null;
-  }
-  const guild = await client.guilds.fetch(guildId).catch(() => null);
-  if (!guild) {
-    res.status(404).json({ error: "Guild not found. Ensure bot is in the server." });
-    return null;
-  }
-  return guild;
-};
 
-// Endpoint: Vérifier si un membre a les droits d'admin/TO sur un serveur (appel serveur Next.js uniquement :
-// le proxy /api/bot ne relaie pas cette route, cf. SEC-13). Le rôle TO est relu en base, jamais pris du client.
-app.get("/api/discord/permissions", async (req, res) => {
-  const guildId = typeof req.query.guildId === "string" ? req.query.guildId : "";
-  const userId = typeof req.query.userId === "string" ? req.query.userId : "";
-  if (!guildId || !userId) return res.status(400).json({ error: "Missing parameters" });
-
-  try {
-    const guild = await client.guilds.fetch(guildId).catch(() => null);
-    if (!guild) return res.status(200).json({ hasPermission: false, reason: "BOT_NOT_IN_GUILD" });
-
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return res.status(200).json({ hasPermission: false, reason: "NOT_A_MEMBER" });
-
-    const settings = await readToRoleId(guildId);
-    if (!settings.ok) return res.status(503).json({ error: "Permission check temporarily unavailable" });
-
-    const reason = resolveAdminReason({
-      isOwner: guild.ownerId === userId,
-      hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
-      hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
-      hasToRole: !!settings.toRoleId && member.roles.cache.has(settings.toRoleId),
-    });
-    return res.status(200).json({ hasPermission: reason !== null, reason: reason ?? "NO_RIGHTS" });
-  } catch (error) {
-    logger.error("Error checking permissions:", error);
-    return res.status(500).json({ error: "Internal Server Error" });
-  }
-});
+// Endpoint: décision d'accès au back-office pour le web (SEC-11 / SEC-13), partagée avec requireGuildAdmin.
+app.get("/api/discord/permissions", guildPermissionsHandler(client));
 
 // Endpoint: Fetch Channels for Check-in configurations
-app.get("/api/discord/channels", guildAdminGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const channelsInfo = guild.channels.cache
-      .filter((channel: any) => channel.isTextBased())
-      .map((channel: any) => ({
-        id: channel.id,
-        name: channel.name,
-      }))
-      .sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-    return res.status(200).json(channelsInfo);
-  } catch (error) {
-    logger.error("Error fetching channels:", error);
-    return res.status(500).json({ error: "Failed to fetch channels." });
-  }
-});
+app.get("/api/discord/channels", ...discordListGuard, discordLists.channels);
 
 // Endpoint: Fetch Guild Members for Manual Input Combobox
-app.get("/api/discord/members", guildAdminGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const members = await guild.members.fetch({ limit: 1000 });
-
-    const membersInfo = Array.from(members.values())
-      .filter((member: any) => !member.user.bot)
-      .map((member: any) => ({
-        id: member.user.id,
-        username: member.user.username,
-        displayName: member.displayName,
-      }))
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
-
-    return res.status(200).json(membersInfo);
-  } catch (error) {
-    logger.error("Error fetching members:", error);
-    return res.status(500).json({ error: "Failed to fetch members." });
-  }
-});
+app.get("/api/discord/members", ...discordListGuard, discordLists.members);
 
 // Endpoint: Auto-setup for Checkin requirements
-app.post("/api/discord/auto-setup", guildAdminGuard, async (req, res) => {
-  try {
-    const guildId = (req.query.guildId || req.body?.guildId) as string;
-    const guild = await getGuild(res, guildId);
-    if (!guild) return;
-
-    const lang = await getGuildLanguage(guildId);
-    const captainRole = await guild.roles.create({
-      name: tBot(lang, "autoSetup.captainRoleName"),
-      color: 0xffa500,
-      reason: tBot(lang, "autoSetup.auditReason"),
-    });
-
-    const checkinChannel = await guild.channels.create({
-      name: tBot(lang, "autoSetup.checkinChannelName"),
-      type: ChannelType.GuildText,
-      reason: tBot(lang, "autoSetup.auditReason"),
-      permissionOverwrites: [
-        {
-          id: guild.id,
-          deny: [PermissionFlagsBits.ViewChannel],
-        },
-        {
-          id: captainRole.id,
-          allow: [
-            PermissionFlagsBits.ViewChannel,
-            PermissionFlagsBits.SendMessages,
-          ],
-        },
-      ],
-    });
-
-    return res.status(200).json({
-      message: "Setup généré avec succès !",
-      captain_role_id: captainRole.id,
-      checkin_channel_id: checkinChannel.id,
-    });
-  } catch (error) {
-    logger.error("Erreur durant l'auto-setup Discord:", error);
-    return res
-      .status(500)
-      .json({ error: "Échec de l'auto-setup sur Discord." });
-  }
-});
+app.post("/api/discord/auto-setup", ...serverSettingsGuard, autoSetupHandler(client));
 
 // Lifecycle routes: authenticate the guild before loading or changing a tournament.
-app.post('/api/discord/sync-schedule', guildAdminGuard, syncSchedule);
+app.post(
+  '/api/discord/sync-schedule',
+  tournamentLevelGuard,
+  requireTournamentScope(tournamentFrom.body("tournament_id")),
+  syncSchedule,
+);
 app.post('/api/tournaments/archive-and-init', guildAdminGuard, archiveAndInit);
 
 // Mutation routes: protected by authMiddleware + requireGuildAdmin (live Discord perm check)
-app.use('/api/phases', guildAdminGuard, phaseRouter);
-app.use('/api/matches', guildAdminGuard, matchRouter);
-app.use('/api/tournaments', guildAdminGuard, tournamentRouter);
-app.use('/api/teams', guildAdminGuard, teamRouter);
+// archive-and-init (monté plus haut) reste au niveau SERVER : il archive tous les autres tournois du serveur.
+app.use('/api/phases', tournamentLevelGuard, phaseRouter);
+app.use('/api/matches', tournamentLevelGuard, matchRouter);
+app.use('/api/tournaments', tournamentLevelGuard, tournamentRouter);
+app.use('/api/teams', tournamentLevelGuard, teamRouter);
+// La garde MANAGE_SERVER_SETTINGS (SEC-16) est appliquée par le routeur lui-même.
 app.use('/api/server-settings', guildAdminGuard, serverSettingsRouter);
+// Routes RFC 0001 : organisations (création Web sans Discord + gestion) et actions joueurs Web (INT-02, SEC-30).
+app.use('/api/organizations', organizationRouter);
+app.use('/api/player', playerRouter);
 
 // 3. Connect DB and Start Systems
 let server: http.Server;
@@ -286,11 +172,14 @@ const bootstrap = async () => {
 
   try {
     // Droits back-office : guild_admins suit les membres, leurs rôles et leurs permissions (DISC-08).
+    // SEC-05 : chaque changement connu invalide aussi le cache d'accès, sans attendre son expiration.
     client.on('guildMemberRemove', async (member) => {
+      invalidateMemberAccess(member.guild.id, member.user.id);
       await GuildRegistryService.removeMember(member.guild.id, member.user.id);
     });
 
     client.on('guildMemberUpdate', async (oldMember, newMember) => {
+      invalidateMemberAccess(newMember.guild.id, newMember.id);
       const oldRoleIds = new Set(oldMember.roles.cache.keys());
       const newRoleIds = new Set(newMember.roles.cache.keys());
       const rolesChanged =
@@ -298,27 +187,36 @@ const bootstrap = async () => {
         [...newRoleIds].some(id => !oldRoleIds.has(id));
       if (!rolesChanged && !oldMember.partial) return;
 
-      const settings = await readToRoleId(newMember.guild.id);
-      if (!settings.ok) return;
-      await GuildRegistryService.syncMemberAdmin(newMember.guild, newMember, settings.toRoleId);
+      const roles = await readAdminRoles(newMember.guild.id);
+      if (!roles.ok) return;
+      await GuildRegistryService.syncMemberAdmin(newMember.guild, newMember, roles);
     });
 
     // Un rôle peut gagner ou perdre Administrateur / Gérer le serveur sans qu'aucun membre ne change de rôle.
     client.on('roleUpdate', async (oldRole, newRole) => {
       if (oldRole.permissions.bitfield === newRole.permissions.bitfield) return;
+      invalidateGuildAccess(newRole.guild.id);
       await GuildRegistryService.syncGuildAdmins(newRole.guild);
     });
 
-    // Cycle de vie des serveurs : la ligne server_settings rend le serveur visible sur le web (DISC-07).
+    // SEC-23 : un rôle supprimé (rôle TO du serveur ou d'un tournoi) ne donne plus accès, sans attendre le TTL.
+    client.on('roleDelete', async (role) => {
+      invalidateGuildAccess(role.guild.id);
+      await GuildRegistryService.syncGuildAdmins(role.guild);
+    });
+
+    // Cycle de vie des serveurs : enregistrement dans organizations et organization_integrations (DISC-07).
     client.on("guildCreate", async (guild) => {
       if (await GuildRegistryService.registerGuild(guild)) {
         await GuildRegistryService.syncGuildAdmins(guild);
       }
     });
-    client.on("guildUpdate", async (_oldGuild, newGuild) => {
+    client.on("guildUpdate", async (oldGuild, newGuild) => {
+      if (oldGuild.ownerId !== newGuild.ownerId) invalidateGuildAccess(newGuild.id);
       await GuildRegistryService.registerGuild(newGuild);
     });
     client.on("guildDelete", async (guild) => {
+      invalidateGuildAccess(guild.id);
       await GuildRegistryService.markGuildLeft(guild.id);
     });
 
@@ -438,10 +336,25 @@ const bootstrap = async () => {
               });
             }
 
-            return interaction.reply({
+            await interaction.reply({
               content: tBot(lang, "checkin.success", { teamName: team.name }),
               ephemeral: true,
             });
+
+            // DISC-11 : présence appliquée directement (sans dépendre du webhook Supabase), après la réponse (DISC-01).
+            const presence = await applyPresence(client, {
+              id: team.id,
+              tournament_id: currentTournament.id,
+              name: team.name,
+              captain_discord_id: captainId,
+            });
+            if (hasPresenceFailure(presence)) {
+              await interaction.followUp({
+                content: tBot(lang, "checkin.presenceIncomplete"),
+                ephemeral: true,
+              });
+            }
+            return;
           } catch (err: any) {
             logger.error("Check-in interaction error", err);
           }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { botApiFetch } from "@/utils/api";
 import Link from "next/link";
@@ -8,6 +8,33 @@ import { CheckCircle2, ChevronLeft } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
+import {
+  GROUP_POINTS_DEFAULTS,
+  GROUP_POINTS_KEYS,
+  GROUP_POINTS_MAX,
+  GROUP_POINTS_MIN,
+  GroupPointValueSchema,
+  GroupPointsSettingsSchema,
+  resolveGroupPoints,
+  type GroupPoints,
+  type GroupPointsKey,
+} from "@hub/shared";
+
+/** `""` représente un champ numérique en cours d'édition (vidé par l'utilisateur). */
+type PhaseSettingsForm = Partial<Record<GroupPointsKey, number | "">> & {
+  bracket_reset?: boolean;
+  third_place_match?: boolean;
+  swiss_rounds_count?: number | "";
+  [key: string]: unknown;
+};
+
+function isPlainSettings(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isGroupPointsKey(key: string): key is GroupPointsKey {
+  return (GROUP_POINTS_KEYS as readonly string[]).includes(key);
+}
 
 export function PhaseConfigClient({ 
   phase, 
@@ -28,23 +55,25 @@ export function PhaseConfigClient({
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const isGroups = phase.format === "ROUND_ROBIN";
-  const defaultSettings: any = isGroups 
-    ? { points_win: 3, points_draw: 1, points_loss: 0, points_forfeit: 0 }
+  const defaultSettings: PhaseSettingsForm = isGroups 
+    ? { ...GROUP_POINTS_DEFAULTS }
     : (phase.format === "DOUBLE_ELIM" 
         ? { bracket_reset: true } 
         : (phase.format === "SWISS"
             ? { swiss_rounds_count: 3 }
             : { third_place_match: false }));
     
-  const parsedSettings = phase.settings || {};
-  const initialSettings = { ...defaultSettings, ...parsedSettings };
-  
-  if (isGroups) {
-    if (initialSettings.points_win === '' || initialSettings.points_win === undefined || initialSettings.points_win === null || Number.isNaN(initialSettings.points_win)) initialSettings.points_win = 3;
-    if (initialSettings.points_draw === '' || initialSettings.points_draw === undefined || initialSettings.points_draw === null || Number.isNaN(initialSettings.points_draw)) initialSettings.points_draw = 1;
-    if (initialSettings.points_loss === '' || initialSettings.points_loss === undefined || initialSettings.points_loss === null || Number.isNaN(initialSettings.points_loss)) initialSettings.points_loss = 0;
-    if (initialSettings.points_forfeit === '' || initialSettings.points_forfeit === undefined || initialSettings.points_forfeit === null || Number.isNaN(initialSettings.points_forfeit)) initialSettings.points_forfeit = 0;
-  }
+  const parsedSettings: unknown = phase.settings ?? {};
+  // Les points invalides ou absents (settings `{}`, `""`, `NaN`…) retombent sur 3 / 1 / 0 / 0 ;
+  // un barème personnalisé par l'organisateur est conservé tel quel.
+  const resolvedPoints = resolveGroupPoints(parsedSettings);
+  const initialSettings: PhaseSettingsForm = {
+    ...defaultSettings,
+    ...(isPlainSettings(parsedSettings) ? parsedSettings : {}),
+    ...(isGroups ? resolvedPoints : {}),
+  };
+  // Dernière valeur valide de chaque champ de points, restaurée si le champ est quitté vide.
+  const lastValidPoints = useRef<GroupPoints>(resolvedPoints);
 
   const [formData, setFormData] = useState({
     name: phase.name,
@@ -61,11 +90,16 @@ export function PhaseConfigClient({
     
     if (name.startsWith("settings.")) {
       const settingName = name.split(".")[1];
+      const nextValue = type === "number" ? (value === '' ? '' : Number(value)) : (type === "checkbox" ? checked : (value === 'true'));
+      if (settingName && isGroupPointsKey(settingName)) {
+        const parsedPoint = GroupPointValueSchema.safeParse(nextValue);
+        if (parsedPoint.success) lastValidPoints.current = { ...lastValidPoints.current, [settingName]: parsedPoint.data };
+      }
       setFormData(prev => ({
         ...prev,
         settings: {
           ...prev.settings,
-          [settingName]: type === "number" ? (value === '' ? '' : Number(value)) : (type === "checkbox" ? checked : (value === 'true'))
+          [settingName]: nextValue
         }
       }));
     } else {
@@ -76,6 +110,15 @@ export function PhaseConfigClient({
                  : value
       }));
     }
+  };
+
+  // Un champ de points ne reste jamais vide ni invalide : on restaure la dernière valeur valide.
+  const handlePointsBlur = (key: GroupPointsKey) => {
+    if (GroupPointValueSchema.safeParse(formData.settings[key]).success) return;
+    setFormData(prev => ({
+      ...prev,
+      settings: { ...prev.settings, [key]: lastValidPoints.current[key] }
+    }));
   };
 
   const handleRadioChange = (name: string, val: boolean) => {
@@ -89,6 +132,10 @@ export function PhaseConfigClient({
   };
 
   const onSubmit = async (shouldRedirect: boolean) => {
+    if (isGroups && !GroupPointsSettingsSchema.safeParse(formData.settings).success) {
+      toast.error(t("adminPhaseConfig.invalidPoints", { min: GROUP_POINTS_MIN, max: GROUP_POINTS_MAX }));
+      return;
+    }
     setIsSubmitting(true);
     try {
       const res = await botApiFetch(`/api/phases/${phase.id}`, {
@@ -315,28 +362,31 @@ export function PhaseConfigClient({
                       <input 
                         type="number" 
                         name="settings.points_win" 
-                        value={formData.settings.points_win ?? 3} 
+                        value={formData.settings.points_win ?? GROUP_POINTS_DEFAULTS.points_win} 
                         onChange={handleChange}
+                        onBlur={() => handlePointsBlur("points_win")}
                         className="w-full border border-slate-800 rounded-lg px-3 py-2 text-white bg-slate-950 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-medium" 
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-1">{t("stages.table.draws")}</label>
+                      <label className="block text-xs font-bold text-slate-400 mb-1">{t("adminPhaseConfig.draw")}</label>
                       <input 
                         type="number" 
                         name="settings.points_draw" 
-                        value={formData.settings.points_draw ?? 1} 
+                        value={formData.settings.points_draw ?? GROUP_POINTS_DEFAULTS.points_draw} 
                         onChange={handleChange}
+                        onBlur={() => handlePointsBlur("points_draw")}
                         className="w-full border border-slate-800 rounded-lg px-3 py-2 text-white bg-slate-950 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-medium" 
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-slate-400 mb-1">{t("stages.table.losses")}</label>
+                      <label className="block text-xs font-bold text-slate-400 mb-1">{t("adminPhaseConfig.loss")}</label>
                       <input 
                         type="number" 
                         name="settings.points_loss" 
-                        value={formData.settings.points_loss ?? 0} 
+                        value={formData.settings.points_loss ?? GROUP_POINTS_DEFAULTS.points_loss} 
                         onChange={handleChange}
+                        onBlur={() => handlePointsBlur("points_loss")}
                         className="w-full border border-slate-800 rounded-lg px-3 py-2 text-white bg-slate-950 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-medium" 
                       />
                     </div>
@@ -348,7 +398,7 @@ export function PhaseConfigClient({
                  <div className="flex items-start gap-3 mb-4">
                    <input type="checkbox" checked readOnly className="mt-1 accent-indigo-600 w-4 h-4 rounded bg-slate-950 border-slate-800" />
                    <div>
-                     <span className="font-extrabold text-white text-sm block">{t("stages.table.forfeits")}</span>
+                     <span className="font-extrabold text-white text-sm block">{t("adminPhaseConfig.forfeit")}</span>
                      <p className="text-sm text-slate-400 mt-1 leading-relaxed">{t("adminPhaseConfig.forfeitDesc")}</p>
                    </div>
                  </div>
@@ -356,8 +406,9 @@ export function PhaseConfigClient({
                     <input 
                       type="number" 
                       name="settings.points_forfeit" 
-                      value={formData.settings.points_forfeit ?? 0} 
+                      value={formData.settings.points_forfeit ?? GROUP_POINTS_DEFAULTS.points_forfeit} 
                       onChange={handleChange}
+                      onBlur={() => handlePointsBlur("points_forfeit")}
                       className="w-full border border-slate-800 rounded-lg px-3 py-2 text-white bg-slate-950 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none font-medium" 
                     />
                  </div>

@@ -40,7 +40,7 @@ describe("scheduler recovery", () => {
     vi.useFakeTimers();
     const tournament = { id: "t1", guild_id: "g1", checkin_start_at: "2030-01-01", checkin_end_at: "2030-01-02" };
     database.result = { data: null, error: { message: "offline" } };
-    const schedule = vi.spyOn(SchedulerService, "scheduleTournament").mockImplementation(() => {});
+    const schedule = vi.spyOn(SchedulerService, "scheduleTournament").mockImplementation(async () => {});
     const recovery = new SchedulerRecovery(() => SchedulerService.init({} as Client), () => {}, 1000);
     await recovery.start();
     expect(recovery.isReady()).toBe(false);

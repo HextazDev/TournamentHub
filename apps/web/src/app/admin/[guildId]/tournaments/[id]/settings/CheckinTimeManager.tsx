@@ -29,10 +29,13 @@ export function CheckinTimeManager({ tournament, guildId }: Props) {
     return () => clearInterval(timer);
   }, []);
 
+  const isCheckinDisabled = tournament.checkin_mode === "DISABLED";
+
   const checkinStart = tournament.checkin_start_at ? new Date(tournament.checkin_start_at) : null;
   const checkinEnd = tournament.checkin_end_at ? new Date(tournament.checkin_end_at) : null;
   
   const isCheckinRunning =
+    !isCheckinDisabled &&
     tournament.status === "REGISTRATION" &&
     checkinStart &&
     checkinEnd &&
@@ -40,9 +43,9 @@ export function CheckinTimeManager({ tournament, guildId }: Props) {
     now < checkinEnd;
 
   const isCheckinClosed =
-    checkinEnd && now >= checkinEnd;
+    !isCheckinDisabled && checkinEnd && now >= checkinEnd;
 
-  const isDraft = tournament.status === "DRAFT";
+  const isDraft = !isCheckinDisabled && tournament.status === "DRAFT";
 
   const handleStopCheckin = async () => {
     setLoadingStop(true);
@@ -82,7 +85,9 @@ export function CheckinTimeManager({ tournament, guildId }: Props) {
         <div>
           <span
             className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
-              isCheckinRunning
+              isCheckinDisabled
+                ? "bg-purple-500/20 text-purple-400 border border-purple-500/30"
+                : isCheckinRunning
                 ? "bg-green-500/20 text-green-400 border border-green-500/30"
                 : isCheckinClosed
                 ? "bg-slate-700/50 text-slate-400 border border-slate-600/30"
@@ -91,7 +96,9 @@ export function CheckinTimeManager({ tournament, guildId }: Props) {
                 : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
             }`}
           >
-            {isCheckinRunning
+            {isCheckinDisabled
+              ? t("adminCheckin.disabledStatus")
+              : isCheckinRunning
               ? t("adminCheckin.runningStatus")
               : isCheckinClosed
               ? t("adminCheckin.closedStatus")
@@ -101,6 +108,17 @@ export function CheckinTimeManager({ tournament, guildId }: Props) {
           </span>
         </div>
       </div>
+
+      {/* 0. STATE: DISABLED */}
+      {isCheckinDisabled && (
+        <div className="bg-purple-950/20 border border-purple-900/40 rounded-xl p-5 flex items-center gap-3 text-slate-300">
+          <Calendar className="w-5 h-5 text-purple-400 shrink-0" />
+          <div className="text-xs space-y-1">
+            <p className="font-semibold text-purple-400">{t("adminCheckin.disabledNoticeTitle")}</p>
+            <p className="text-slate-300">{t("adminCheckin.disabledNoticeText")}</p>
+          </div>
+        </div>
+      )}
 
       {/* 1. STATE: RUNNING (SHOW KILL SWITCH) */}
       {isCheckinRunning && checkinEnd && (

@@ -9,7 +9,7 @@ permissions:
   contents: read
 concurrency:
   group: containers-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   validate-monorepo:
     name: Validate Monorepo Before Container Build
@@ -155,10 +155,65 @@ jobs:
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
           echo "Published web image: \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
 
+  migrate-db:
+    name: Apply Supabase migrations before tag promotion
+    needs: [docker-bot, docker-web]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Verify ref still points to current commit (prevent stale migration)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CURRENT_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_REF}" --jq '.sha')"
+          if [[ "${CURRENT_SHA}" != "${GITHUB_SHA}" ]]; then
+            echo "Ref ${GITHUB_REF} has advanced to ${CURRENT_SHA} (current run is ${GITHUB_SHA}); skipping stale migration."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - name: Install Supabase CLI
+        run: npm install -g supabase
+      - name: Push local migrations to target Supabase DB (session pooler, IPv4)
+        env:
+          DB_REF_PROD: ${{ secrets.SUPABASE_PROJECT_REF_PROD }}
+          DB_PASSWORD_PROD: ${{ secrets.SUPABASE_DB_PASSWORD_PROD }}
+          DB_REF_STAGING: ${{ secrets.SUPABASE_PROJECT_REF_STAGING }}
+          DB_PASSWORD_STAGING: ${{ secrets.SUPABASE_DB_PASSWORD_STAGING }}
+        run: |
+          if [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            TARGET="prod"
+            DB_REF="${DB_REF_PROD}"
+            DB_PASSWORD="${DB_PASSWORD_PROD}"
+          elif [[ "${GITHUB_REF}" == "refs/heads/staging" ]]; then
+            TARGET="staging"
+            DB_REF="${DB_REF_STAGING}"
+            DB_PASSWORD="${DB_PASSWORD_STAGING}"
+          else
+            echo "Unsupported ref for migration: ${GITHUB_REF}"
+            exit 1
+          fi
+          test -n "${DB_REF}" || { echo "Missing Supabase project ref secret for ${TARGET}"; exit 1; }
+          test -n "${DB_PASSWORD}" || { echo "Missing Supabase DB password secret for ${TARGET}"; exit 1; }
+          ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
+          DB_URL="postgresql://postgres.${DB_REF}:${ENC_PW}@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
+          supabase db push --db-url "$DB_URL" --yes
+          echo "Applied Supabase migrations to \`${TARGET}\`." >> "$GITHUB_STEP_SUMMARY"
+
   promote-tags:
     name: Atomically promote matching bot and web tags
-    needs: [docker-bot, docker-web]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [docker-bot, docker-web, migrate-db]
+    if: >-
+      !failure() && !cancelled() &&
+      needs.docker-bot.result == 'success' &&
+      needs.docker-web.result == 'success' &&
+      github.event_name == 'push' &&
+      (
+        (github.ref == 'refs/heads/main' && needs.migrate-db.result == 'success') ||
+        (github.ref == 'refs/heads/staging' && needs.migrate-db.result == 'success') ||
+        startsWith(github.ref, 'refs/tags/v')
+      )
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -191,9 +246,11 @@ jobs:
           WEB_REPO="ghcr.io/${OWNER_LC}/tournamenthub-web"
           if [[ "${GITHUB_REF}" == "refs/heads/staging" ]]; then
             PROMO_TAG="staging"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            PROMO_TAG="prod"
           else
             PROMO_TAG="${GITHUB_REF#refs/tags/}"
           fi
-          docker buildx imagetools create -t "${BOT_REPO}:${PROMO_TAG}" "${BOT_DIGEST}"
-          docker buildx imagetools create -t "${WEB_REPO}:${PROMO_TAG}" "${WEB_DIGEST}"
+          docker buildx imagetools create -t "${BOT_REPO}:${PROMO_TAG}" "${BOT_REPO}@${BOT_DIGEST#*@}"
+          docker buildx imagetools create -t "${WEB_REPO}:${PROMO_TAG}" "${WEB_REPO}@${WEB_DIGEST#*@}"
           echo "Promoted \`${PROMO_TAG}\` for both bot (\`${BOT_DIGEST}\`) and web (\`${WEB_DIGEST}\`)." >> "$GITHUB_STEP_SUMMARY"

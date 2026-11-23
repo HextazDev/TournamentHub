@@ -15,7 +15,7 @@ export default async function MatchesOverviewPage({
   // Fetch all matches for the tournament, joined with phase and teams
   const { data: matches, error } = await supabaseAdmin
     .from("matches")
-    .select("*, phase:phases!inner(name, tournament_id, phase_order), team1:teams!team1_id(name), team2:teams!team2_id(name)")
+    .select("*, phase:phases!inner(name, tournament_id, phase_order, format), team1:teams!team1_id(name), team2:teams!team2_id(name)")
     .eq("phase.tournament_id", tournamentId)
     .order("created_at", { ascending: false });
 

@@ -9,7 +9,7 @@ import { authMiddleware } from "../middleware/auth";
 import { createWebhookRouter } from "../routes/WebhookRouter";
 import { callRoute } from "./helpers/route";
 
-const record = { name: "Team", tournament_id: "t", captain_discord_id: "u", is_checked_in: true };
+const record = { id: "team-1", name: "Team", tournament_id: "t", captain_discord_id: "u", is_checked_in: true };
 const tournament = { guild_id: "g", discord_captain_role_id: "r" };
 const originalBotSecret = process.env.BOT_API_SECRET;
 const originalWebhookSecret = process.env.WEBHOOK_SECRET;
@@ -24,19 +24,23 @@ afterEach(() => {
   if (originalWebhookSecret === undefined) delete process.env.WEBHOOK_SECRET;
   else process.env.WEBHOOK_SECRET = originalWebhookSecret;
 });
-function setup(fail: "nickname" | "role" | "none") {
+function setup(fail: "nickname" | "role" | "none", manageable = true) {
   const member = {
-    manageable: true, nickname: null, user: { tag: "test", displayName: "old" },
+    manageable, nickname: null, displayName: "old",
     setNickname: vi.fn().mockImplementation(async () => { if (fail === "nickname") throw Error("denied"); }),
-    roles: { cache: { has: () => false }, add: vi.fn().mockImplementation(async () => { if (fail === "role") throw Error("denied"); }) },
+    roles: {
+      cache: { has: () => false },
+      add: vi.fn().mockImplementation(async () => { if (fail === "role") throw Error("denied"); }),
+      remove: vi.fn().mockResolvedValue(undefined),
+    },
   };
-  const role = { id: "r", name: "Captain" };
-  const guild = { name: "test", members: { fetch: async () => member }, roles: { cache: { get: () => role } } };
+  const role = { id: "r", name: "Captain", editable: true };
+  const guild = { id: "g", name: "test", members: { fetch: async () => member }, roles: { cache: { get: () => role }, fetch: async () => role } };
   const client = { guilds: { fetch: async () => guild } } as unknown as Client;
   return { service: new WebhookRolesService(client), client, member };
 }
 describe("webhook Discord operation results", () => {
-  it.each(["nickname", "role"] as const)("returns failure when %s update fails", async (failure) => {
+  it.each(["nickname", "role"] as const)("OPS-05: returns failure when %s update fails", async (failure) => {
     const { service } = setup(failure);
     expect((await service.handleTeamUpdate({ type: "UPDATE", record })).success).toBe(false);
   });
@@ -46,11 +50,33 @@ describe("webhook Discord operation results", () => {
     expect(member.setNickname).toHaveBeenCalledOnce();
     expect(member.roles.add).toHaveBeenCalledOnce();
   });
+  it("DISC-09: still adds the role when the captain cannot be renamed, but reports failure", async () => {
+    const { service, member } = setup("none", false);
+    expect((await service.handleTeamUpdate({ type: "UPDATE", record })).success).toBe(false);
+    expect(member.roles.add).toHaveBeenCalledOnce();
+  });
+  it("DISC-09: still adds the role when the nickname is rejected", async () => {
+    const { service, member } = setup("nickname");
+    await service.handleTeamUpdate({ type: "UPDATE", record });
+    expect(member.roles.add).toHaveBeenCalledOnce();
+  });
   it("reports failure when the configured Discord role is missing", async () => {
-    const member = { manageable: true, nickname: "Team", user: { tag: "test", displayName: "Team" }, roles: { cache: { has: () => false } } };
-    const guild = { name: "test", members: { fetch: async () => member }, roles: { cache: { get: () => undefined } } };
+    const member = { manageable: true, nickname: "Team", displayName: "Team", roles: { cache: { has: () => false } } };
+    const guild = { id: "g", members: { fetch: async () => member }, roles: { cache: { get: () => undefined }, fetch: async () => null } };
     const service = new WebhookRolesService({ guilds: { fetch: async () => guild } } as unknown as Client);
     expect((await service.handleTeamUpdate({ type: "UPDATE", record })).success).toBe(false);
+  });
+  it("removes presence from old_record on DELETE (Supabase sends record: null)", async () => {
+    const { service, member } = setup("none");
+    const old_record = { ...record };
+    const result = await service.handleTeamUpdate({ type: "DELETE", record: null, old_record });
+    expect(result.success).toBe(true);
+    expect(member.roles.add).not.toHaveBeenCalled();
+  });
+  it("rejects a malformed payload without touching Discord", async () => {
+    const { service, member } = setup("none");
+    expect((await service.handleTeamUpdate({ type: "UPDATE", record: { name: 42 } })).success).toBe(false);
+    expect(member.roles.add).not.toHaveBeenCalled();
   });
 });
 

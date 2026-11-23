@@ -1,4 +1,5 @@
 import { supabase } from "../lib/supabase";
+import { DomainError } from "../utils/serverError";
 import crypto from "crypto";
 
 interface MatchData {
@@ -52,7 +53,7 @@ export class BracketGeneratorService {
       if (row.seed !== null && row.seed !== undefined) {
         const absSeed = Math.abs(row.seed);
         if (seedSet.has(absSeed)) {
-          throw new Error(`Duplicate seed ${row.seed} found in phase ${phaseId}. Each team must have a unique seed.`);
+          throw new DomainError(409, `Duplicate seed ${row.seed} found in phase ${phaseId}. Each team must have a unique seed.`);
         }
         seedSet.add(absSeed);
       }
@@ -331,7 +332,7 @@ export class BracketGeneratorService {
         .limit(1);
 
       if (existingMatches && existingMatches.length > 0) {
-        throw new Error(`Matches already exist for phase ${phaseId}. Delete them before regenerating.`);
+        throw new DomainError(409, `Matches already exist for phase ${phaseId}. Delete them before regenerating.`);
       }
 
       // Insert all matches
@@ -460,7 +461,7 @@ export class BracketGeneratorService {
       .limit(1);
 
     if (existingMatches && existingMatches.length > 0) {
-      throw new Error(`Matches already exist for phase ${phaseId}. Delete them before regenerating.`);
+      throw new DomainError(409, `Matches already exist for phase ${phaseId}. Delete them before regenerating.`);
     }
 
     const flattenMatches = rounds.flat();

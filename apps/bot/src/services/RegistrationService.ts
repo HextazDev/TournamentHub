@@ -2,6 +2,7 @@ import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, Moda
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage, isBotLocale } from '../i18n';
 import { logger } from '../utils/logger';
+import { applyPresence } from './CaptainPresenceService';
 
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -28,7 +29,12 @@ function setCacheWithTTL(key: string, data: Omit<CachedRegistration, 'timer'>) {
 
 export class RegistrationService {
 
-  static async sendRegistrationEmbed(tournamentId: string, client: Client) {
+  /**
+   * Annonce Discord des inscriptions, exécutée par le plugin après l'ouverture en base (REG-08).
+   * Sans salon configuré, il n'y a rien à publier. Idempotent : un message déjà publié n'est pas renvoyé au rejeu.
+   * Le salon doit appartenir au serveur lié : son identifiant vient d'une configuration, jamais d'une preuve.
+   */
+  static async publishRegistrationEmbed(tournamentId: string, client: Client, guildId: string): Promise<boolean> {
     try {
       const { data: tournament, error } = await supabase
         .from('tournaments')
@@ -37,15 +43,17 @@ export class RegistrationService {
         .single();
 
       if (error || !tournament) throw new Error("Tournoi introuvable dans la base de données.");
-
-      if (!tournament.discord_registration_channel_id) {
-        throw new Error("Aucun salon d'inscription n'a été défini pour ce tournoi dans ses paramètres. Impossible d'envoyer l'annonce.");
-      }
+      if (!tournament.discord_registration_channel_id) return false;
 
       const channel = await client.channels.fetch(tournament.discord_registration_channel_id).catch(() => null) as TextChannel | null;
       if (!channel) throw new Error(`Impossible de trouver le salon Discord avec l'ID ${tournament.discord_registration_channel_id}. Vérifiez que le bot y a accès.`);
+      if (channel.guildId !== guildId) throw new Error(`Le salon ${tournament.discord_registration_channel_id} n'appartient pas au serveur lié.`);
 
-      const lang = await getGuildLanguage(tournament.guild_id, tournament.id);
+      const discordConfig = (tournament.discord_config ?? {}) as Record<string, unknown>;
+      const previousMessageId = typeof discordConfig.registration_message_id === "string" ? discordConfig.registration_message_id : null;
+      if (previousMessageId && await channel.messages.fetch(previousMessageId).catch(() => null)) return false;
+
+      const lang = await getGuildLanguage(guildId, tournament.id);
 
       const embed = {
         title: tBot(lang, 'registration.embedTitle', { name: tournament.name }),
@@ -78,12 +86,17 @@ export class RegistrationService {
             .setStyle(ButtonStyle.Secondary)
         );
 
-      await channel.send({ embeds: [embed], components: [row] });
+      const message = await channel.send({ embeds: [embed], components: [row] });
+      const { error: saveError } = await supabase
+        .from('tournaments')
+        .update({ discord_config: { ...discordConfig, registration_message_id: message.id } })
+        .eq('id', tournamentId);
+      if (saveError) throw saveError;
       return true;
 
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error("[RegistrationService] Error sending embed:", e);
-      throw new Error(e.message);
+      throw e;
     }
   }
 
@@ -369,12 +382,15 @@ export class RegistrationService {
 
       const { data: tournament } = await supabase.from('tournaments').select('*').eq('id', tournamentId).single();
 
+      const isCheckedIn = tournament?.checkin_mode === 'DISABLED';
+
       const { data: team, error: teamErr } = await supabase
         .from('teams')
         .insert({
           tournament_id: tournamentId,
           name: cachedData.teamName,
-          captain_discord_id: interaction.user.id
+          captain_discord_id: interaction.user.id,
+          is_checked_in: isCheckedIn
         })
         .select()
         .single();
@@ -430,6 +446,20 @@ export class RegistrationService {
         }
       }
 
+      // Si check-in désactivé, appliquer la présence Discord dès l'inscription (#15 / #68)
+      if (isCheckedIn) {
+        try {
+          await applyPresence(interaction.client, {
+            id: team.id,
+            tournament_id: team.tournament_id,
+            name: team.name,
+            captain_discord_id: team.captain_discord_id,
+          });
+        } catch (presenceErr) {
+          logger.warn("Failed to apply presence on registration for disabled checkin tournament:", presenceErr);
+        }
+      }
+
       const warningStr = insertErrors.length > 0
         ? tBot(lang, 'registration.technicalWarning', { count: allPlayers.length })
         : '';
@@ -438,8 +468,8 @@ export class RegistrationService {
         title: tBot(lang, 'registration.registrationSuccessTitle'),
         description: `${tBot(lang, 'registration.registrationSuccessDesc', { teamName: cachedData.teamName })}${warningStr}`,
         fields: [
-          { name: tBot(lang, 'registration.nameChangeField'), value: tBot(lang, 'registration.pendingCheckin'), inline: true },
-          { name: tBot(lang, 'registration.captainRoleField'), value: tBot(lang, 'registration.pendingCheckin'), inline: true }
+          { name: tBot(lang, 'registration.nameChangeField'), value: isCheckedIn ? tBot(lang, 'registration.presenceApplied') : tBot(lang, 'registration.pendingCheckin'), inline: true },
+          { name: tBot(lang, 'registration.captainRoleField'), value: isCheckedIn ? tBot(lang, 'registration.presenceApplied') : tBot(lang, 'registration.pendingCheckin'), inline: true }
         ],
         color: 0x57F287
       };
