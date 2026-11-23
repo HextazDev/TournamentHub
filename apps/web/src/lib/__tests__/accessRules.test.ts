@@ -1,28 +1,27 @@
 import { describe, it, expect } from "vitest";
 import {
   buildBotInviteUrl,
+  canAccessAdminPanel,
   canManageFromOAuth,
-  canViewTournament,
+  canViewPrivateTournament,
+  discordListQuery,
+  managedTournamentIds,
+  panelCapabilities,
+  panelEntryPath,
   serverSetupChecklist,
   splitServers,
   tournamentNextStep,
 } from "../accessRules";
 
-describe("canViewTournament", () => {
-  const members = new Set(["g1"]);
+describe("canViewPrivateTournament (SEC-10)", () => {
+  const none = { isOrganizationMember: false, isTournamentStaff: false, isParticipant: false, hasValidInvite: false, isActiveDiscordMember: false };
 
-  it("SEC-10: un tournoi public est visible de tous, même sans connexion", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g2", new Set())).toBe(true);
+  it("refuse par défaut", () => {
+    expect(canViewPrivateTournament(none)).toBe(false);
   });
 
-  it("SEC-10: un tournoi privé n'est visible que des membres de son serveur", () => {
-    expect(canViewTournament({ guild_id: "g1", is_public: false }, "g1", members)).toBe(true);
-    expect(canViewTournament({ guild_id: "g2", is_public: false }, "g2", members)).toBe(false);
-    expect(canViewTournament({ guild_id: "g2", is_public: null }, "g2", members)).toBe(false);
-  });
-
-  it("SEC-10: une URL dont le serveur ne correspond pas au tournoi est refusée (même public)", () => {
-    expect(canViewTournament({ guild_id: "g2", is_public: true }, "g1", members)).toBe(false);
+  it.each(Object.keys(none))("accepte %s à lui seul", (fact) => {
+    expect(canViewPrivateTournament({ ...none, [fact]: true })).toBe(true);
   });
 });
 
@@ -66,7 +65,7 @@ describe("splitServers", () => {
       ["with-bot", { ...complete, bot_present: true }],
       ["bot-left", { ...complete, bot_present: false }],
     ]);
-    const { memberServers } = splitServers([g("with-bot"), g("bot-left"), g("unknown")], settings, new Set());
+    const { memberServers } = splitServers([g("with-bot"), g("bot-left"), g("unknown")], settings, new Map());
     expect(memberServers.map((s) => s.id)).toEqual(["with-bot"]);
   });
 
@@ -80,7 +79,7 @@ describe("splitServers", () => {
     const { managedServers } = splitServers(
       [g("ready", "8"), g("setup", "0", true), g("left", "32"), g("no-bot", "8"), g("to-role"), g("member-only")],
       settings,
-      new Set(["to-role"]),
+      new Map([["to-role", "TO_ROLE"]]),
     );
     expect(managedServers.map((s) => [s.guild.id, s.state])).toEqual([
       ["setup", "setup"],
@@ -89,6 +88,40 @@ describe("splitServers", () => {
       ["no-bot", "install"],
       ["to-role", "install"],
     ]);
+    expect(managedServers.every((s) => s.scope === "server")).toBe(true);
+  });
+
+  it("SEC-24: un TO de tournoi voit le serveur dans le panel avec une portée limitée à ses tournois", () => {
+    const settings = new Map([
+      ["t-only", { ...complete, bot_present: true }],
+      ["both", { ...complete, bot_present: true }],
+    ]);
+    const { managedServers } = splitServers(
+      [g("t-only"), g("both", "8")],
+      settings,
+      new Map([
+        ["t-only", "TOURNAMENT_TO_ROLE"],
+        ["both", "TOURNAMENT_TO_ROLE"],
+      ]),
+    );
+    expect(managedServers.map((s) => [s.guild.id, s.scope])).toEqual([
+      ["both", "server"],
+      ["t-only", "tournament"],
+    ]);
+  });
+});
+
+describe("panelEntryPath (SEC-24)", () => {
+  it("un TO de tournoi arrive toujours sur la liste filtrée de ses tournois, jamais sur les paramètres serveur", () => {
+    for (const state of ["install", "setup", "ready"] as const) {
+      expect(panelEntryPath("g1", state, "tournament")).toBe("/admin/g1/tournaments");
+    }
+  });
+
+  it("le niveau serveur garde son parcours : configuration, puis tableau de bord", () => {
+    expect(panelEntryPath("g1", "setup", "server")).toBe("/admin/g1/settings");
+    expect(panelEntryPath("g1", "ready", "server")).toBe("/admin/g1");
+    expect(panelEntryPath("g1", "install", "server")).toBeNull();
   });
 });
 
@@ -115,6 +148,20 @@ describe("tournamentNextStep", () => {
     expect(tournamentNextStep({ ...dated, status: "ACTIVE" }, ctx)).toBe("runMatches");
     expect(tournamentNextStep({ ...dated, status: "COMPLETED" }, ctx)).toBeNull();
   });
+
+  it("CHK-05: si checkin_mode === 'DISABLED', saute l'étape checkinDates et passe directement à waitParticipants ou placementAndLaunch", () => {
+    const ctx = { phasesCount: 1, teamsCount: 0, serverSetupComplete: true };
+    const disabled = { ...base, is_registration_open: true, checkin_mode: "DISABLED" as const };
+    expect(tournamentNextStep(disabled, ctx)).toBe("waitParticipants");
+    expect(tournamentNextStep(disabled, { ...ctx, teamsCount: 2 })).toBe("placementAndLaunch");
+  });
+
+  it("INT-02: si discordEnabled === false, saute serverSetup et registrationChannel pour un tournoi Web autonome", () => {
+    const webTournament = { ...base, discord_registration_channel_id: null };
+    const ctx = { phasesCount: 0, teamsCount: 0, serverSetupComplete: false, discordEnabled: false };
+    expect(tournamentNextStep(webTournament, ctx)).toBe("structure");
+    expect(tournamentNextStep(webTournament, { ...ctx, phasesCount: 1 })).toBe("openRegistrations");
+  });
 });
 
 describe("buildBotInviteUrl", () => {
@@ -125,5 +172,50 @@ describe("buildBotInviteUrl", () => {
     expect(url.searchParams.get("guild_id")).toBe("456");
     expect(url.searchParams.get("disable_guild_select")).toBe("true");
     expect(BigInt(url.searchParams.get("permissions") ?? "0") & BigInt(8)).toBe(BigInt(0));
+  });
+
+  it("ignore le guild_id s'il s'agit d'un slug d'organisation non-numérique", () => {
+    const url = new URL(buildBotInviteUrl("123", "inklings-arena"));
+    expect(url.searchParams.get("guild_id")).toBeNull();
+    expect(url.searchParams.get("disable_guild_select")).toBeNull();
+  });
+});
+
+describe("SEC-21: panel d'un TO de tournoi", () => {
+  const scoped = { level: "TOURNAMENT", tournamentIds: ["t1", "t2"] } as const;
+  const serverTo = { level: "SERVER", reason: "TO_ROLE" } as const;
+
+  it("la liste des tournois est bornée à ceux du TO ; le niveau SERVER voit tout le serveur", () => {
+    expect(managedTournamentIds(scoped)).toEqual(["t1", "t2"]);
+    expect(managedTournamentIds(serverTo)).toBeNull();
+  });
+
+  it("création et suppression masquées pour un TO de tournoi", () => {
+    expect(panelCapabilities(scoped)).toEqual({ canCreate: false, canDelete: false, canConfigureServer: false });
+    expect(panelCapabilities(serverTo)).toEqual({ canCreate: true, canDelete: true, canConfigureServer: false });
+    expect(panelCapabilities({ level: "SERVER", reason: "ADMINISTRATOR" })).toEqual({ canCreate: true, canDelete: true, canConfigureServer: true });
+  });
+
+  it("les listes Discord désignent le tournoi (exigé par le bot pour ce niveau)", () => {
+    expect(discordListQuery("g1", "t1")).toBe("guildId=g1&tournamentId=t1");
+    expect(discordListQuery("g1")).toBe("guildId=g1");
+  });
+
+  it("UX-04: un casteur ou statisticien n'est pas listé comme gestionnaire du tournoi et n'a pas accès au panel de gestion", () => {
+    const casterOnly = {
+      level: "TOURNAMENT" as const,
+      tournamentIds: ["t1"],
+      tournamentRoles: { t1: "CASTER" as const },
+    };
+    const mixed = {
+      level: "TOURNAMENT" as const,
+      tournamentIds: ["t1", "t2", "t3"],
+      tournamentRoles: { t1: "CASTER" as const, t2: "TOURNAMENT_TO" as const, t3: "STATISTICIAN" as const },
+    };
+    expect(managedTournamentIds(casterOnly)).toEqual([]);
+    expect(canAccessAdminPanel(casterOnly)).toBe(false);
+    expect(managedTournamentIds(mixed)).toEqual(["t2"]);
+    expect(canAccessAdminPanel(mixed)).toBe(true);
+    expect(canAccessAdminPanel(serverTo)).toBe(true);
   });
 });

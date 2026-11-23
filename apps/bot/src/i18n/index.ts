@@ -3,6 +3,7 @@ import { fr } from './locales/fr';
 import { en } from './locales/en';
 import { supabase } from '../lib/supabase';
 import { logger } from '../utils/logger';
+import { resolveOrganization } from '../utils/tenant';
 
 export type BotLocale = Locale;
 
@@ -48,24 +49,28 @@ export function discordLocalizations(key: BotTranslationKey): { fr: string; 'en-
   return { fr: tBot('fr', key), 'en-US': tBot('en', key), 'en-GB': tBot('en', key) };
 }
 
-async function readLanguage(table: 'tournaments' | 'server_settings', column: 'id' | 'guild_id', value: string): Promise<BotLocale | null> {
-  const { data, error } = await supabase.from(table).select('language').eq(column, value).single();
+async function readTournamentLanguage(tournamentId: string): Promise<BotLocale | null> {
+  const { data, error } = await supabase.from('tournaments').select('language').eq('id', tournamentId).single();
   if (error && error.code !== NO_ROWS) {
-    logger.warn(`[i18n] Lecture de la langue impossible (${table}.${column}=${value}), repli sur la locale suivante:`, error);
+    logger.warn(`[i18n] Lecture de la langue impossible (tournaments.id=${tournamentId}), repli sur la locale suivante:`, error);
     return null;
   }
   return isBotLocale(data?.language) ? data.language : null;
 }
 
-/** Langue d'un message bot : tournoi ➜ serveur ➜ `fr`. */
+/** Langue d'un message bot : tournoi ➜ organisation ➜ `fr`. */
 export async function getGuildLanguage(guildId?: string | null, tournamentId?: string | null): Promise<BotLocale> {
   if (tournamentId) {
-    const tournamentLang = await readLanguage('tournaments', 'id', tournamentId);
+    const tournamentLang = await readTournamentLanguage(tournamentId);
     if (tournamentLang) return tournamentLang;
   }
   if (guildId) {
-    const guildLang = await readLanguage('server_settings', 'guild_id', guildId);
-    if (guildLang) return guildLang;
+    try {
+      const org = await resolveOrganization(guildId);
+      if (org && isBotLocale(org.language)) return org.language;
+    } catch (err) {
+      logger.warn(`[i18n] Lecture de la langue impossible pour l'organisation (${guildId}), repli sur la locale suivante:`, err);
+    }
   }
   return 'fr';
 }

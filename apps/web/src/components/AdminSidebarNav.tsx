@@ -4,7 +4,8 @@ import Link from "next/link";
 import { LayoutDashboard, Settings, Trophy, ArrowLeft, Menu, X } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 
-export function AdminSidebarNav({ guildId }: { guildId: string }) {
+/** `canManageServer` masque les paramètres du serveur aux TO (SEC-16) ; la page et le bot refusent de toute façon. */
+export function AdminSidebarNav({ guildId, canManageServer }: { guildId: string; canManageServer: boolean }) {
   const { t } = useTranslation();
 
   return (
@@ -59,13 +60,15 @@ export function AdminSidebarNav({ guildId }: { guildId: string }) {
             <LayoutDashboard className="w-5 h-5" />
             {t("adminSidebar.dashboard")}
           </Link>
-          <Link
-            href={`/admin/${guildId}/settings`}
-            className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
-          >
-            <Settings className="w-5 h-5" />
-            {t("adminSidebar.serverSettings")}
-          </Link>
+          {canManageServer && (
+            <Link
+              href={`/admin/${guildId}/settings`}
+              className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+            >
+              <Settings className="w-5 h-5" />
+              {t("adminSidebar.serverSettings")}
+            </Link>
+          )}
           <Link
             href={`/admin/${guildId}/tournaments`}
             className="flex items-center gap-3 px-4 py-3 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"

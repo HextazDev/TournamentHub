@@ -13,23 +13,17 @@ export default async function ServersPage() {
   const viewer = await getViewer();
   if (!viewer.discordId) redirect("/");
 
-  if (viewer.guildsError || !viewer.guilds) {
-    return (
-      <div className="p-8 text-center text-red-400 font-medium bg-red-950/30 border border-red-900/50 mt-12 rounded-xl max-w-xl mx-4 sm:mx-auto">
-        <p>{t(locale, "servers.sessionExpired")}</p>
-        <Link href="/servers" className="mt-4 inline-block underline">
-          {t(locale, "access.retry")}
-        </Link>
-      </div>
-    );
-  }
-
-  const { memberServers, managedServers } = await loadServerOverview({ ...viewer, discordId: viewer.discordId, guilds: viewer.guilds });
+  const { memberServers, managedServers } = await loadServerOverview({ ...viewer, discordId: viewer.discordId });
   const managed = new Set(managedServers.map((s) => s.guild.id));
 
   return (
     <div className="w-full min-h-[calc(100vh-4rem)] bg-[#0a0a0f] p-4 sm:p-8 pt-12 text-slate-200">
       <div className="max-w-[1600px] mx-auto">
+        {viewer.guildsError && (
+          <div role="status" className="mb-6 text-sm text-amber-300 bg-amber-950/30 border border-amber-900/50 rounded-xl p-4">
+            {t(locale, "servers.discordUnavailable")}
+          </div>
+        )}
         <div className="mb-10">
           <h1 className="text-4xl font-extrabold text-white tracking-tight">{t(locale, "servers.title")}</h1>
           <p className="text-slate-400 mt-3 text-lg max-w-2xl">{t(locale, "servers.subtitle")}</p>

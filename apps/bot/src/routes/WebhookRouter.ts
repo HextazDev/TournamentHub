@@ -3,6 +3,7 @@ import { Router } from "express";
 import type { Client } from "discord.js";
 import { WebhookRolesService } from "../services/WebhookRolesService";
 import { logger } from "../utils/logger";
+import { sendServerError } from "../utils/serverError";
 
 function matchesSecret(received: string | undefined, expected: string): boolean {
   if (!received || !expected) return false;
@@ -34,13 +35,9 @@ export function createWebhookRouter(client: Client) {
       if (result.success) {
         return res.status(200).json({ received: true });
       }
-      return res.status(500).json({ received: false, error: result.error });
+      sendServerError(res, result.error, "Webhook.teamUpdate");
     } catch (error: unknown) {
-      logger.error("Error handling team update webhook:", error);
-      return res.status(500).json({
-        received: false,
-        error: error instanceof Error ? error.message : "Failed to handle webhook",
-      });
+      sendServerError(res, error, "Webhook.teamUpdate");
     }
   });
 

@@ -1,5 +1,7 @@
 import { Client, TextChannel } from "discord.js";
 import { supabase } from "../lib/supabase";
+import { logger } from "../utils/logger";
+import { resolveOrganization } from "../utils/tenant";
 
 const BATCH_SIZE = 5;
 const DELAY_BETWEEN_BATCHES_MS = 100;
@@ -19,60 +21,141 @@ async function processInBatches<T>(
   }
 }
 
+export interface ArchivedTournamentInfo {
+  id: string;
+  discord_captain_role_id?: string | null;
+  discord_checkin_channel_id?: string | null;
+}
+
 export class ArchiveService {
   public static async backgroundDiscordCleanup(
     client: Client,
     guildId: string,
-    captainRoleId: string | null
-  ) {
+    archivedTournaments: ArchivedTournamentInfo[]
+  ): Promise<void> {
+    if (!archivedTournaments || archivedTournaments.length === 0) {
+      return;
+    }
+
     try {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) {
-        console.error(`[ArchiveService] Guild ${guildId} not found.`);
+        logger.error(`[ArchiveService] Guild ${guildId} not found.`);
         return;
       }
 
-      // 1. Remove "Captain" role from all members — parallel batches
-      if (captainRoleId) {
-        const role = await guild.roles.fetch(captainRoleId);
-        if (role) {
-          await guild.members.fetch();
+      // 1. Fetch non-archived tournaments for this guild to protect active resources
+      const { data: nonArchived, error: nonArchivedErr } = await supabase
+        .from("tournaments")
+        .select("id, discord_captain_role_id, discord_checkin_channel_id")
+        .eq("guild_id", guildId)
+        .neq("status", "ARCHIVED");
 
-          const members = [...role.members.entries()];
+      if (nonArchivedErr) {
+        logger.error(`[ArchiveService] Failed to fetch non-archived tournaments for ${guildId}:`, nonArchivedErr);
+        return;
+      }
 
-          await processInBatches(members, BATCH_SIZE, async ([, member]) => {
-            try {
-              await member.roles.remove(role, "Archivage du Tournoi");
-            } catch (err) {
-              console.error(`[ArchiveService] Failed to remove role for ${member.user.tag}:`, err);
+      const activeTournaments = (nonArchived ?? []) as {
+        id: string;
+        discord_captain_role_id: string | null;
+        discord_checkin_channel_id: string | null;
+      }[];
+      const activeTournamentIds = activeTournaments.map((t) => t.id);
+
+      // Fetch organization Discord settings for fallback role/channel
+      const org = await resolveOrganization(guildId);
+      const serverCaptainRoleId =
+        typeof org?.discordConfig?.captain_role_id === "string" ? org.discordConfig.captain_role_id : null;
+      const serverCheckinChannelId =
+        typeof org?.discordConfig?.checkin_channel_id === "string" ? org.discordConfig.checkin_channel_id : null;
+
+      // Collect active captains (who must keep their role)
+      const activeCaptainDiscordIds = new Set<string>();
+      if (activeTournamentIds.length > 0) {
+        const { data: activeTeams, error: teamsErr } = await supabase
+          .from("teams")
+          .select("captain_discord_id")
+          .in("tournament_id", activeTournamentIds);
+
+        if (teamsErr) {
+          logger.error(`[ArchiveService] Failed to fetch active teams for guild ${guildId}:`, teamsErr);
+          return;
+        }
+
+        if (activeTeams) {
+          for (const team of activeTeams) {
+            if (team.captain_discord_id) {
+              activeCaptainDiscordIds.add(team.captain_discord_id);
             }
-          });
-
-          console.log(`[ArchiveService] Rôle Capitaine retiré pour ${members.length} membres du serveur ${guild.name}.`);
+          }
         }
       }
 
-      // 2. Make tournament check-in channel read-only
-      const { data: settings } = await supabase
-        .from("server_settings")
-        .select("checkin_channel_id")
-        .eq("guild_id", guildId)
-        .single();
+      // Collect captain roles to clean from archived tournaments
+      const captainRolesToClean = new Set<string>();
+      for (const t of archivedTournaments) {
+        const roleId = t.discord_captain_role_id || serverCaptainRoleId;
+        if (roleId) {
+          captainRolesToClean.add(roleId);
+        }
+      }
 
-      if (settings?.checkin_channel_id) {
-        const checkinChannel = await guild.channels.fetch(settings.checkin_channel_id).catch(() => null);
+      // Remove captain role from members, EXCEPT those who are captains of active tournaments
+      for (const roleId of captainRolesToClean) {
+        const role = await guild.roles.fetch(roleId).catch(() => null);
+        if (!role) continue;
+
+        await guild.members.fetch();
+        const membersToRemove = [...role.members.entries()].filter(
+          ([memberId]) => !activeCaptainDiscordIds.has(memberId)
+        );
+
+        await processInBatches(membersToRemove, BATCH_SIZE, async ([, member]) => {
+          try {
+            await member.roles.remove(role, "Archivage du Tournoi");
+          } catch (err) {
+            logger.error(`[ArchiveService] Failed to remove role for ${member.user.tag}:`, err);
+          }
+        });
+
+        logger.info(
+          `[ArchiveService] Rôle Capitaine (${roleId}) retiré pour ${membersToRemove.length} membre(s) du serveur ${guild.name} (${activeCaptainDiscordIds.size} capitaine(s) actif(s) épargné(s)).`
+        );
+      }
+
+      // Collect active checkin channels (must NOT be locked)
+      const activeCheckinChannels = new Set<string>();
+      for (const t of activeTournaments) {
+        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
+        if (chanId) activeCheckinChannels.add(chanId);
+      }
+
+      // Collect archived checkin channels that can be locked
+      const checkinChannelsToLock = new Set<string>();
+      for (const t of archivedTournaments) {
+        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
+        if (chanId && !activeCheckinChannels.has(chanId)) {
+          checkinChannelsToLock.add(chanId);
+        }
+      }
+
+      for (const chanId of checkinChannelsToLock) {
+        const checkinChannel = await guild.channels.fetch(chanId).catch(() => null);
         if (checkinChannel && checkinChannel.isTextBased() && !checkinChannel.isThread()) {
           const textChannel = checkinChannel as TextChannel;
-          await textChannel.permissionOverwrites.edit(guild.roles.everyone, {
-            SendMessages: false,
-          }, { reason: "Archivage du Tournoi" });
-          console.log(`[ArchiveService] Salon ${textChannel.name} passé en lecture seule.`);
+          await textChannel.permissionOverwrites.edit(
+            guild.roles.everyone,
+            { SendMessages: false },
+            { reason: "Archivage du Tournoi" }
+          );
+          logger.info(`[ArchiveService] Salon ${textChannel.name} passé en lecture seule.`);
         }
       }
 
-      console.log(`[ArchiveService] Nettoyage asynchrone terminé avec succès.`);
+      logger.info(`[ArchiveService] Nettoyage asynchrone terminé avec succès.`);
     } catch (error) {
-      console.error("[ArchiveService] Erreur lors du nettoyage background:", error);
+      logger.error("[ArchiveService] Erreur lors du nettoyage background:", error);
     }
   }
 }

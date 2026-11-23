@@ -1,18 +1,27 @@
 import { Router } from "express";
+import { GroupPointsSettingsSchema, PhaseSeedingSchema, isMatchStarted } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
-import { getAuthenticatedGuildId, verifyPhaseGuild, verifyTournamentGuild } from "../utils/tenant";
+import { IntegrationBus } from "../services/IntegrationBus";
+import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseGuild, verifyTournamentGuild, resolveOrganization } from "../utils/tenant";
+import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
+import { DomainError, sendServerError } from "../utils/serverError";
 
 export const phaseRouter = Router();
 
+// SEC-21 : chaque route déclare sa garde de portée (montage ouvert aux TO de tournoi).
+const phaseScope = requireTournamentScope(tournamentFrom.phase("id"));
+
 // Créer une phase
-phaseRouter.post("/", async (req, res) => {
+phaseRouter.post("/", requireTournamentScope(tournamentFrom.body("tournament_id")), async (req, res) => {
   try {
-    const { tournament_id, name, format, phase_order, bracket_size, settings } = req.body;
+    const { name, format, phase_order, bracket_size, settings } = req.body;
+    // Le tournoi vient de la garde de portée, jamais directement du corps (SEC-21).
+    const tournament_id = getTournamentScope(req);
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -31,13 +40,13 @@ phaseRouter.post("/", async (req, res) => {
 
     if (error) throw error;
     res.status(201).json(newPhase);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.create");
   }
 });
 
 // Obtenir les phases d'un tournoi
-phaseRouter.get("/:tournamentId", async (req, res) => {
+phaseRouter.get("/:tournamentId", requireTournamentScope(tournamentFrom.param("tournamentId")), async (req, res) => {
   try {
     const tournamentId = req.params.tournamentId;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -53,13 +62,13 @@ phaseRouter.get("/:tournamentId", async (req, res) => {
 
     if (error) throw error;
     res.json(phases || []);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.list");
   }
 });
 
 // Appliquer le seeding et régénérer l'arbre (Live Edit) — transactionnel via RPC
-phaseRouter.put("/:id/seeding", async (req, res) => {
+phaseRouter.put("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -67,31 +76,54 @@ phaseRouter.put("/:id/seeding", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
-    const { participants } = req.body;
+    // PH-02 : le corps est une entrée externe, validé avant toute lecture ou suppression.
+    const parsed = PhaseSeedingSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
+    }
+    const { participants } = parsed.data;
 
-    // 0. Sécurité : Vérifier si des matchs ont déjà commencé
-    const { data: activeMatches, error: matchCheckErr } = await supabase
+    // SCR-09 : le re-seed supprime les matchs de la phase ; refusé dès qu'un match réel a commencé (même à 0-0).
+    const { data: phaseMatches, error: matchCheckErr } = await supabase
       .from('matches')
       .select('id, status, team1_score, team2_score, team1_id, team2_id')
       .eq('phase_id', phaseId);
 
     if (matchCheckErr) throw matchCheckErr;
-    if (activeMatches && activeMatches.length > 0) {
-      const hasStarted = activeMatches.some((m: any) => {
-        const isRealMatch = m.team1_id !== null && m.team2_id !== null;
-        if (!isRealMatch) return false;
-        return m.status === 'COMPLETED' || m.team1_score > 0 || m.team2_score > 0;
-      });
-      if (hasStarted) return res.status(400).json({ error: 'Impossible de modifier le placement : des matchs ont déjà des scores ou sont terminés.' });
+    if (phaseMatches.some(isMatchStarted)) {
+      return res.status(400).json({ error: 'Impossible de modifier le placement : des matchs ont déjà des scores ou sont terminés.' });
     }
 
     // Use atomic RPC to delete phase_teams + matches, then insert new seeding
-    if (participants && participants.length > 0) {
+    if (participants.length > 0) {
+      // SEC-20 : seules les équipes du tournoi de la phase peuvent y être placées (jamais celles d'un autre tournoi/serveur).
+      const { data: phase, error: phaseLookupErr } = await supabase
+        .from('phases')
+        .select('tournament_id')
+        .eq('id', phaseId)
+        .single();
+      if (phaseLookupErr) throw phaseLookupErr;
+      const teamIds = participants.map((p) => p.team_id);
+      const { data: ownTeams, error: teamsErr } = await supabase
+        .from('teams')
+        .select('id')
+        .in('id', teamIds)
+        .eq('tournament_id', phase.tournament_id);
+      if (teamsErr) throw teamsErr;
+      if (ownTeams.length !== teamIds.length) {
+        throw new DomainError(400, "Le placement contient une équipe qui n'est pas inscrite à ce tournoi.");
+      }
+
       const { error: rpcError } = await supabase.rpc('regenerate_phase_seeding', {
         p_phase_id: phaseId,
         p_participants: participants
       });
-      if (rpcError) throw rpcError;
+      if (rpcError) {
+        if (rpcError.code === 'P0001' || rpcError.message?.includes("n'appartient pas au tournoi")) {
+          throw new DomainError(400, "Le placement contient une équipe qui n'est pas inscrite à ce tournoi.");
+        }
+        throw rpcError;
+      }
     } else {
       const { error: delMatches } = await supabase.from('matches').delete().eq('phase_id', phaseId);
       if (delMatches) throw delMatches;
@@ -112,25 +144,25 @@ phaseRouter.put("/:id/seeding", async (req, res) => {
       await BracketGeneratorService.generateBracket(phaseId, phaseData.bracket_size || 8);
     }
 
-    // Sync Discord channels if tournament is active
-    const { data: phaseWithTourney } = await supabase.from("phases").select("tournaments!inner(guild_id, status)").eq("id", phaseId).single();
-    const tourneyInfo: any = phaseWithTourney?.tournaments;
-    const tourneyStatus = Array.isArray(tourneyInfo) ? tourneyInfo[0]?.status : tourneyInfo?.status;
-    const tourneyGuild = Array.isArray(tourneyInfo) ? tourneyInfo[0]?.guild_id : tourneyInfo?.guild_id;
-
-    if (tourneyStatus === "ACTIVE") {
-      const discordClient = req.app.locals.discordClient;
-      await LifecycleService.syncPhaseChannels(phaseId, tourneyGuild, discordClient).catch(e => console.error("Auto Sync Failed", e));
+    // Salons Discord d'un tournoi en cours : effet isolé, sans impact sur le placement enregistré (INT-01).
+    const { data: phaseWithTourney } = await supabase.from("phases").select("tournaments!inner(organization_id, status)").eq("id", phaseId).single();
+    const tourneyInfo = phaseWithTourney?.tournaments as unknown;
+    const tourney = (Array.isArray(tourneyInfo) ? tourneyInfo[0] : tourneyInfo) as { organization_id?: string; status?: string } | undefined;
+    if (tourney?.status === "ACTIVE" && tourney.organization_id) {
+      await IntegrationBus.emit("onPhaseSynced", {
+        organizationId: tourney.organization_id,
+        phaseId,
+        discordClient: req.app.locals.discordClient,
+      });
     }
     res.status(200).json({ message: 'Placement et arbre mis à jour avec succès' });
-  } catch (error: any) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.updateSeeding");
   }
 });
 
 // Récupérer le seeding actuel
-phaseRouter.get("/:id/seeding", async (req, res) => {
+phaseRouter.get("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -141,13 +173,13 @@ phaseRouter.get("/:id/seeding", async (req, res) => {
     const { data: seeded, error: err1 } = await supabase.from('phase_teams').select('team_id, seed, teams(id, name, logo_url)').eq('phase_id', phaseId).order('seed', { ascending: true });
     if (err1) throw err1;
     res.status(200).json(seeded || []);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.getSeeding");
   }
 });
 
 // DELETE /api/phases/:id — Delete a phase and its matches
-phaseRouter.delete("/:id", async (req, res) => {
+phaseRouter.delete("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -165,14 +197,13 @@ phaseRouter.delete("/:id", async (req, res) => {
     if (error) throw error;
 
     res.json({ success: true });
-  } catch (error: any) {
-    console.error("[PhaseRouter] Delete error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.delete");
   }
 });
 
 // PUT /api/phases/:id — Update phase config (name, order, bracket_size, max_groups, settings)
-phaseRouter.put("/:id", async (req, res) => {
+phaseRouter.put("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -187,7 +218,19 @@ phaseRouter.put("/:id", async (req, res) => {
     if (phase_order !== undefined) updatePayload.phase_order = phase_order;
     if (bracket_size !== undefined) updatePayload.bracket_size = bracket_size;
     if (max_groups !== undefined) updatePayload.max_groups = max_groups;
-    if (settings !== undefined) updatePayload.settings = settings;
+    if (settings !== undefined) {
+      const parsedSettings = GroupPointsSettingsSchema.safeParse(settings);
+      if (!parsedSettings.success) {
+        return res.status(400).json({
+          error: "Validation Error",
+          details: parsedSettings.error.issues.map((e) => ({
+            field: ["settings", ...e.path].join("."),
+            message: e.message,
+          })),
+        });
+      }
+      updatePayload.settings = parsedSettings.data;
+    }
 
     const { data, error } = await supabase
       .from("phases")
@@ -198,14 +241,13 @@ phaseRouter.put("/:id", async (req, res) => {
 
     if (error) throw error;
     res.json(data);
-  } catch (error: any) {
-    console.error("[PhaseRouter] Update error:", error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.update");
   }
 });
 
 // Synchroniser les salons Discord
-phaseRouter.post("/:id/sync", async (req, res) => {
+phaseRouter.post("/:id/sync", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
@@ -213,15 +255,14 @@ phaseRouter.post("/:id/sync", async (req, res) => {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
-    const { guildId } = req.body;
-    const discordClient = req.app.locals.discordClient;
-
-    if (!guildId) return res.status(400).json({ error: "Missing guildId" });
-
-    await LifecycleService.syncPhaseChannels(phaseId, guildId, discordClient);
+    // SEC-25 : le serveur visé est celui lié à l'organisation authentifiée, jamais un guildId du corps.
+    const org = await resolveOrganization(authGuildId);
+    if (!org?.discordEnabled || !org.discordGuildId) {
+      return res.status(409).json({ error: "L'intégration Discord n'est pas active pour cette organisation.", code: "DISCORD_NOT_ACTIVE" });
+    }
+    await LifecycleService.syncPhaseChannels(phaseId, org.discordGuildId, req.app.locals.discordClient);
     res.status(200).json({ message: 'Salons Discord générés avec succès' });
-  } catch (error: any) {
-    console.error(error);
-    res.status(500).json({ error: error.message });
+  } catch (error: unknown) {
+    sendServerError(res, error, "PhaseRouter.sync");
   }
 });

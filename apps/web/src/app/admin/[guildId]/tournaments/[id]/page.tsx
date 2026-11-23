@@ -35,6 +35,8 @@ export default async function TournamentDashboard({ params }: { params: Promise<
   const phases = phasesRes.data;
   const participantsCount = teamsRes.count ?? 0;
 
+  const discordEnabled = profile?.discord_enabled !== false;
+
   const nextStep = tournamentNextStep(
     {
       status: tournament.status,
@@ -42,8 +44,14 @@ export default async function TournamentDashboard({ params }: { params: Promise<
       checkin_start_at: tournament.checkin_start_at ?? null,
       checkin_end_at: tournament.checkin_end_at ?? null,
       discord_registration_channel_id: tournament.discord_registration_channel_id ?? null,
+      checkin_mode: (tournament as { checkin_mode?: "ENABLED" | "DISABLED" | null }).checkin_mode ?? "ENABLED",
     },
-    { phasesCount: phases?.length ?? 0, teamsCount: participantsCount, serverSetupComplete: isServerSetupComplete(profile) },
+    {
+      phasesCount: phases?.length ?? 0,
+      teamsCount: participantsCount,
+      serverSetupComplete: isServerSetupComplete(profile),
+      discordEnabled,
+    },
   );
 
   // États Configuration pour Carte 4
@@ -74,7 +82,8 @@ export default async function TournamentDashboard({ params }: { params: Promise<
       <NextStepCard guildId={guildId} tournamentId={tournamentId} step={nextStep} locale={locale} />
 
       {/* Tournament Lifecycle Manager */}
-      <TournamentLifecycleManager 
+      <TournamentLifecycleManager
+        integrationDegraded={profile?.discord_status === "DEGRADED"}
         tournamentId={tournamentId} 
         guildId={guildId} 
         status={tournament.status} 
@@ -105,6 +114,7 @@ export default async function TournamentDashboard({ params }: { params: Promise<
               isRegistrationOpen={!!tournament.is_registration_open}
               hasRegistrationChannel={!!tournament.discord_registration_channel_id}
               hasStartedOrCheckin={hasStartedOrCheckin}
+              discordEnabled={discordEnabled}
             />
           </div>
         </div>
@@ -189,19 +199,32 @@ export default async function TournamentDashboard({ params }: { params: Promise<
               <h2 className="text-lg font-semibold text-white flex-1">{t(locale, "admin.vitalSettings")}</h2>
             </div>
             <p className="text-slate-400 text-sm mb-6 leading-relaxed">
-              {t(locale, "admin.vitalSettingsDesc")}
+              {discordEnabled ? t(locale, "admin.vitalSettingsDesc") : t(locale, "admin.vitalSettingsDescWeb")}
             </p>
             
-            <ul className="space-y-3 mb-6">
-              <li className="flex justify-between items-center text-sm p-3 rounded-lg bg-slate-950 border border-slate-800/50">
-                <span className="text-slate-400">{t(locale, "admin.channelsLinked")}</span>
-                {hasDiscordChannels ? <span className="text-emerald-400 font-medium">{t(locale, "admin.linked")}</span> : <span className="text-orange-400 font-medium">{t(locale, "admin.missing")}</span>}
-              </li>
-              <li className="flex justify-between items-center text-sm p-3 rounded-lg bg-slate-950 border border-slate-800/50">
-                <span className="text-slate-400">{t(locale, "admin.rolesLinked")}</span>
-                {hasDiscordRoles ? <span className="text-emerald-400 font-medium">{t(locale, "admin.active")}</span> : <span className="text-orange-400 font-medium">{t(locale, "admin.missing")}</span>}
-              </li>
-            </ul>
+            {discordEnabled ? (
+              <ul className="space-y-3 mb-6">
+                <li className="flex justify-between items-center text-sm p-3 rounded-lg bg-slate-950 border border-slate-800/50">
+                  <span className="text-slate-400">{t(locale, "admin.channelsLinked")}</span>
+                  {hasDiscordChannels ? <span className="text-emerald-400 font-medium">{t(locale, "admin.linked")}</span> : <span className="text-orange-400 font-medium">{t(locale, "admin.missing")}</span>}
+                </li>
+                <li className="flex justify-between items-center text-sm p-3 rounded-lg bg-slate-950 border border-slate-800/50">
+                  <span className="text-slate-400">{t(locale, "admin.rolesLinked")}</span>
+                  {hasDiscordRoles ? <span className="text-emerald-400 font-medium">{t(locale, "admin.active")}</span> : <span className="text-orange-400 font-medium">{t(locale, "admin.missing")}</span>}
+                </li>
+              </ul>
+            ) : (
+              <div className="bg-slate-950 rounded-lg p-4 border border-slate-800/50 mb-6 text-sm text-slate-300 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">{t(locale, "admin.structure")}</span>
+                  <span className="font-semibold text-white">{phases?.length ?? 0}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">{t(locale, "admin.registeredTeams")}</span>
+                  <span className="font-semibold text-white">{participantsCount}</span>
+                </div>
+              </div>
+            )}
           </div>
           
           <Link href={`/admin/${guildId}/tournaments/${tournamentId}/settings`} className="block w-full">

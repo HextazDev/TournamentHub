@@ -10,7 +10,7 @@ import { callRoute } from "./helpers/route";
 const configured = {
   NODE_ENV: "production", DISCORD_TOKEN: "test-discord-token",
   DISCORD_CLIENT_ID: "123456789012345678", SUPABASE_URL: "https://example.supabase.co",
-  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key", BOT_API_SECRET: "a".repeat(48),
+  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key", BOT_API_SECRET: "a".repeat(48), INTEGRATION_ENCRYPTION_KEY: "c".repeat(64),
 };
 
 describe("deployment configuration", () => {
