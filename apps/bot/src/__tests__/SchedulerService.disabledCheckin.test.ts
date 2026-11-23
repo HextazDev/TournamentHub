@@ -46,7 +46,7 @@ describe("SchedulerService — checkin_mode === DISABLED (CHK-05)", () => {
     const scheduleSpy = vi.spyOn(schedule, "scheduleJob");
     const tournament = {
       id: "t-disabled-1",
-      guild_id: "g-1",
+      organization_id: "org-1",
       checkin_mode: "DISABLED" as const,
       checkin_start_at: "2030-01-01T10:00:00Z",
       checkin_end_at: "2030-01-01T11:00:00Z",
@@ -67,7 +67,7 @@ describe("SchedulerService — checkin_mode === DISABLED (CHK-05)", () => {
     const scheduleSpy = vi.spyOn(schedule, "scheduleJob").mockReturnValue({} as any);
     const tournament = {
       id: "t-enabled-1",
-      guild_id: "g-1",
+      organization_id: "org-1",
       checkin_mode: "ENABLED" as const,
       checkin_start_at: "2030-01-01T10:00:00Z",
       checkin_end_at: "2030-01-01T11:00:00Z",

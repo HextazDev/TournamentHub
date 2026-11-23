@@ -3,8 +3,17 @@ import { Router, type Request } from "express";
 import { supabase } from "../lib/supabase";
 import { LifecycleService } from "../services/LifecycleService";
 import { SchedulerService } from "../services/SchedulerService";
-import { getAuthenticatedGuildId, resolveOrganization, verifyTournamentGuild } from "../utils/tenant";
-import { canPerform, LaunchTournamentSchema, LocaleSchema, CheckinModeSchema, type IntegrationWarning } from "@hub/shared";
+import { getAuthenticatedGuildId, resolveOrganization, verifyTournamentOrganization } from "../utils/tenant";
+import {
+  canPerform,
+  LaunchTournamentSchema,
+  LocaleSchema,
+  mergeTournamentDiscordConfig,
+  readTournamentDiscordConfig,
+  UpdateTournamentSettingsSchema,
+  type IntegrationWarning,
+  type TournamentDiscordConfig,
+} from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireServerLevel, requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { refreshGuildAccess } from "../services/AccessRefreshService";
@@ -47,16 +56,16 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       guildId,
     } = req.body;
 
-    const effectiveGuildId = guild_id || guildId || organization_id || organizationId;
-    const authGuildId = getAuthenticatedGuildId(req);
+    const effectiveTenantId = organization_id || organizationId || guild_id || guildId;
+    const authTenantId = getAuthenticatedGuildId(req);
 
-    if (!authGuildId || (effectiveGuildId && effectiveGuildId !== authGuildId)) {
-      return res.status(403).json({ error: "Accès refusé : vous ne pouvez créer un tournoi que sur votre propre serveur." });
+    if (!authTenantId || (effectiveTenantId && effectiveTenantId !== authTenantId)) {
+      return res.status(403).json({ error: "Accès refusé : vous ne pouvez créer un tournoi que sur votre propre organisation." });
     }
 
-    const targetGuildId = effectiveGuildId || authGuildId;
-    if (!targetGuildId || !name) {
-      return res.status(400).json({ error: "guild_id and name are required" });
+    const targetTenantId = effectiveTenantId || authTenantId;
+    if (!targetTenantId || !name) {
+      return res.status(400).json({ error: "organization_id and name are required" });
     }
 
     const requestedLanguage = OptionalLocaleSchema.safeParse(req.body.language);
@@ -64,11 +73,35 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       return res.status(400).json({ error: "language must be 'fr' or 'en'" });
     }
 
-    const org = await resolveOrganization(targetGuildId);
-    const discordCfg = org?.discordConfig ?? {};
+    const org = await resolveOrganization(targetTenantId);
+    if (!org) {
+      return res.status(404).json({ error: "Organization not found" });
+    }
+    // AUD-DAT-03 : n'hériter des salons/rôles Discord par défaut que si l'intégration DISCORD est active.
+    const discordCfg = org.discordEnabled ? org.discordConfig : {};
+    const initialDiscordConfig = mergeTournamentDiscordConfig(
+      {},
+      {
+        registration_channel_id:
+          discord_registration_channel_id ||
+          (typeof discordCfg.registration_channel_id === "string" ? discordCfg.registration_channel_id : null),
+        announcement_channel_id:
+          discord_announcement_channel_id ||
+          (typeof discordCfg.announcement_channel_id === "string" ? discordCfg.announcement_channel_id : null),
+        checkin_channel_id:
+          discord_checkin_channel_id ||
+          (typeof discordCfg.checkin_channel_id === "string" ? discordCfg.checkin_channel_id : null),
+        captain_role_id:
+          discord_captain_role_id ||
+          (typeof discordCfg.captain_role_id === "string" ? discordCfg.captain_role_id : null),
+        to_role_id:
+          discord_to_role_id ||
+          (typeof discordCfg.to_role_id === "string" ? discordCfg.to_role_id : null),
+      },
+    );
+
     const insertPayload: Record<string, unknown> = {
-      guild_id: org ? org.discordGuildId : targetGuildId,
-      ...(org ? { organization_id: org.id } : {}),
+      organization_id: org.id,
       name,
       description: description || null,
       game_type: req.body.game_type || "GENERIC",
@@ -76,27 +109,8 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
       start_at: start_at || null,
       checkin_start_at: checkin_start_at || null,
       checkin_end_at: checkin_end_at || null,
-      discord_registration_channel_id:
-        discord_registration_channel_id ||
-        (typeof discordCfg.registration_channel_id === "string" ? discordCfg.registration_channel_id : null) ||
-        null,
-      discord_announcement_channel_id:
-        discord_announcement_channel_id ||
-        (typeof discordCfg.announcement_channel_id === "string" ? discordCfg.announcement_channel_id : null) ||
-        null,
-      discord_checkin_channel_id:
-        discord_checkin_channel_id ||
-        (typeof discordCfg.checkin_channel_id === "string" ? discordCfg.checkin_channel_id : null) ||
-        null,
-      discord_captain_role_id:
-        discord_captain_role_id ||
-        (typeof discordCfg.captain_role_id === "string" ? discordCfg.captain_role_id : null) ||
-        null,
-      discord_to_role_id:
-        discord_to_role_id ||
-        (typeof discordCfg.to_role_id === "string" ? discordCfg.to_role_id : null) ||
-        null,
-      language: requestedLanguage.data ?? org?.language ?? "fr",
+      discord_config: initialDiscordConfig,
+      language: requestedLanguage.data ?? org.language ?? "fr",
     };
 
     const { data: created, error } = await supabase
@@ -108,7 +122,9 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
     if (error) throw error;
 
     // SEC-05 / DISC-08 : un rôle TO de tournoi ouvre l'accès au panel ; cache invalidé, annuaire resynchronisé.
-    if (created?.discord_to_role_id) refreshGuildAccess(req.app.locals.discordClient, targetGuildId);
+    if (readTournamentDiscordConfig(created?.discord_config).to_role_id) {
+      refreshGuildAccess(req.app.locals.discordClient, org.id);
+    }
     res.status(201).json(created);
   } catch (error: unknown) {
     sendServerError(res, error, "TournamentRouter.create");
@@ -119,9 +135,17 @@ tournamentRouter.post("/", requireServerLevel, async (req, res) => {
 tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
-    const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
-      return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
+    const authTenantId = getAuthenticatedGuildId(req);
+    if (!authTenantId || !(await verifyTournamentOrganization(tournamentId, authTenantId))) {
+      return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre organisation." });
+    }
+
+    const parsed = UpdateTournamentSettingsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      const field = issue?.path.join(".");
+      const message = issue?.message ?? "Invalid settings payload";
+      return res.status(400).json({ error: field ? `${field}: ${message}` : message });
     }
 
     const {
@@ -129,7 +153,7 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       discord_registration_channel_id, discord_announcement_channel_id,
       discord_checkin_channel_id, discord_captain_role_id, discord_to_role_id,
       language,
-    } = req.body;
+    } = parsed.data;
 
     // Fetch the current tournament state to check if we transition from DRAFT to REGISTRATION
     const { data: currentTournament, error: fetchErr } = await supabase
@@ -142,54 +166,46 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       return res.status(404).json({ error: "Tournament not found" });
     }
 
-    let resolvedCheckinMode = currentTournament.checkin_mode ?? "ENABLED";
-    if (checkin_mode !== undefined) {
-      const parsedMode = CheckinModeSchema.safeParse(checkin_mode);
-      if (!parsedMode.success) {
-        return res.status(400).json({ error: "checkin_mode must be 'ENABLED' or 'DISABLED'" });
-      }
-      resolvedCheckinMode = parsedMode.data;
-    }
-
-    const requestedLanguage = OptionalLocaleSchema.safeParse(language);
-    if (!requestedLanguage.success) {
-      return res.status(400).json({ error: "language must be 'fr' or 'en'" });
-    }
+    const currentDiscordCfg = readTournamentDiscordConfig(currentTournament.discord_config);
+    const resolvedCheckinMode = checkin_mode ?? currentTournament.checkin_mode ?? "ENABLED";
 
     // SEC-22 : les rôles du tournoi décident qui le gère ; un TO de tournoi ne peut pas les changer.
     const access = req.adminCheck?.access;
     const canManageRoles = !!access && canPerform(access, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (
       !canManageRoles &&
-      (roleChanged(discord_to_role_id, currentTournament.discord_to_role_id) ||
-        roleChanged(discord_captain_role_id, currentTournament.discord_captain_role_id))
+      (roleChanged(discord_to_role_id, currentDiscordCfg.to_role_id) ||
+        roleChanged(discord_captain_role_id, currentDiscordCfg.captain_role_id))
     ) {
       return res.status(403).json({ error: "Tournament roles are reserved to server managers", code: "TOURNAMENT_ROLES_RESERVED" });
     }
 
     // SEC-21 (#88) : un salon spécifié ou modifié doit être accessible au membre demandeur et au bot.
     const discordId = req.adminCheck?.discordId ?? (req.headers["x-discord-user-id"] as string | undefined);
-    const channelChanged = (requested: unknown, current: string | null) =>
-      requested !== undefined && (requested || null) !== current && typeof requested === "string" && requested.trim().length > 0;
-
     const modifiedChannels: string[] = [];
-    if (channelChanged(discord_registration_channel_id, currentTournament.discord_registration_channel_id)) {
+    if (typeof discord_registration_channel_id === "string" && discord_registration_channel_id !== currentDiscordCfg.registration_channel_id) {
       modifiedChannels.push(discord_registration_channel_id);
     }
-    if (channelChanged(discord_announcement_channel_id, currentTournament.discord_announcement_channel_id)) {
+    if (typeof discord_announcement_channel_id === "string" && discord_announcement_channel_id !== currentDiscordCfg.announcement_channel_id) {
       modifiedChannels.push(discord_announcement_channel_id);
     }
-    if (channelChanged(discord_checkin_channel_id, currentTournament.discord_checkin_channel_id)) {
+    if (
+      resolvedCheckinMode !== "DISABLED" &&
+      typeof discord_checkin_channel_id === "string" &&
+      discord_checkin_channel_id !== currentDiscordCfg.checkin_channel_id
+    ) {
       modifiedChannels.push(discord_checkin_channel_id);
     }
 
     if (modifiedChannels.length > 0) {
-      if (!discordId || !req.app.locals.discordClient) {
+      const org = await resolveOrganization(currentTournament.organization_id ?? authTenantId);
+      const targetDiscordGuildId = org?.discordEnabled ? org.discordGuildId : null;
+      if (!discordId || !req.app.locals.discordClient || !targetDiscordGuildId) {
         return res.status(403).json({ error: "Access denied: missing Discord client or user", code: "CHANNEL_NOT_ACCESSIBLE" });
       }
       const channelCheck = await ChannelAccessService.validateChannelAccess({
         client: req.app.locals.discordClient,
-        guildId: authGuildId,
+        guildId: targetDiscordGuildId,
         discordId,
         channelIds: modifiedChannels,
       });
@@ -198,28 +214,56 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
       }
     }
 
+    const nextStartAt = start_at !== undefined ? start_at : (currentTournament.start_at ?? null);
+    const nextCheckinStartAt =
+      resolvedCheckinMode === "DISABLED"
+        ? null
+        : (checkin_start_at !== undefined ? checkin_start_at : (currentTournament.checkin_start_at ?? null));
+    const nextCheckinEndAt =
+      resolvedCheckinMode === "DISABLED"
+        ? null
+        : (checkin_end_at !== undefined ? checkin_end_at : (currentTournament.checkin_end_at ?? null));
+
     let newStatus = currentTournament.status;
 
     // Transition automatically from DRAFT to REGISTRATION if valid checkin dates are provided or checkin is disabled (#15 / #87 / LIFE-01)
     if (currentTournament.status === "DRAFT") {
-      if (resolvedCheckinMode === "DISABLED" || (checkin_start_at && checkin_end_at)) {
+      if (resolvedCheckinMode === "DISABLED" || (nextCheckinStartAt && nextCheckinEndAt)) {
         newStatus = "REGISTRATION";
       }
     }
 
-    const payload: any = {
+    // AUD-DAT-01 : seuls les champs explicitement fournis modifient `discord_config` (un PUT partiel préserve les autres clés).
+    const discordPatch: Partial<TournamentDiscordConfig> = {};
+    if (discord_registration_channel_id !== undefined) {
+      discordPatch.registration_channel_id = discord_registration_channel_id;
+    }
+    if (discord_announcement_channel_id !== undefined) {
+      discordPatch.announcement_channel_id = discord_announcement_channel_id;
+    }
+    if (resolvedCheckinMode === "DISABLED") {
+      discordPatch.checkin_channel_id = null;
+    } else if (discord_checkin_channel_id !== undefined) {
+      discordPatch.checkin_channel_id = discord_checkin_channel_id;
+    }
+    if (canManageRoles) {
+      if (discord_captain_role_id !== undefined) {
+        discordPatch.captain_role_id = discord_captain_role_id;
+      }
+      if (discord_to_role_id !== undefined) {
+        discordPatch.to_role_id = discord_to_role_id;
+      }
+    }
+    const nextDiscordConfig = mergeTournamentDiscordConfig(currentTournament.discord_config, discordPatch);
+
+    const payload: Record<string, unknown> = {
       status: newStatus,
       checkin_mode: resolvedCheckinMode,
-      start_at: start_at || null,
-      checkin_start_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_start_at || null),
-      checkin_end_at: resolvedCheckinMode === "DISABLED" ? null : (checkin_end_at || null),
-      discord_registration_channel_id: discord_registration_channel_id || null,
-      discord_announcement_channel_id: discord_announcement_channel_id || null,
-      discord_checkin_channel_id: resolvedCheckinMode === "DISABLED" ? null : (discord_checkin_channel_id || null),
-      // Sans droit sur les rôles, les valeurs enregistrées sont conservées (champ absent ou inchangé).
-      discord_captain_role_id: canManageRoles ? discord_captain_role_id || null : currentTournament.discord_captain_role_id,
-      discord_to_role_id: canManageRoles ? discord_to_role_id || null : currentTournament.discord_to_role_id,
-      language: requestedLanguage.data ?? currentTournament.language,
+      start_at: nextStartAt,
+      checkin_start_at: nextCheckinStartAt,
+      checkin_end_at: nextCheckinEndAt,
+      discord_config: nextDiscordConfig,
+      language: language ?? currentTournament.language,
       updated_at: new Date().toISOString(),
     };
 
@@ -243,9 +287,10 @@ tournamentRouter.put("/:id/settings", tournamentScope, async (req, res) => {
     }
 
     // SEC-05 / DISC-08 : nouveau rôle TO de tournoi : cache invalidé tout de suite,
-    // annuaire guild_admins resynchronisé en arrière-plan (la réponse n'attend pas le chargement des membres).
-    if (data.discord_to_role_id !== currentTournament.discord_to_role_id) {
-      refreshGuildAccess(req.app.locals.discordClient, currentTournament.guild_id);
+    // annuaire resynchronisé en arrière-plan (la réponse n'attend pas le chargement des membres).
+    const nextToRoleId = readTournamentDiscordConfig(data.discord_config).to_role_id;
+    if (nextToRoleId !== currentDiscordCfg.to_role_id) {
+      refreshGuildAccess(req.app.locals.discordClient, currentTournament.organization_id);
     }
 
     res.json(data);
@@ -259,7 +304,7 @@ tournamentRouter.patch("/:id/visibility", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -290,7 +335,7 @@ tournamentRouter.post("/:id/launch", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -313,7 +358,7 @@ tournamentRouter.post("/:id/close", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -330,7 +375,7 @@ tournamentRouter.post("/:id/invite-link", tournamentScope, async (req, res) => {
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -354,7 +399,7 @@ tournamentRouter.delete("/:id/invite-link", tournamentScope, async (req, res) =>
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
     const { error } = await supabase.from("tournament_invite_tokens").delete().eq("tournament_id", tournamentId);
@@ -370,7 +415,7 @@ tournamentRouter.post("/:id/integrations/sync", tournamentScope, async (req, res
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -402,7 +447,7 @@ tournamentRouter.post("/:id/registrations", tournamentScope, async (req, res) =>
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -454,7 +499,7 @@ tournamentRouter.post("/:id/checkin/stop", tournamentScope, async (req, res) => 
   try {
     const tournamentId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 

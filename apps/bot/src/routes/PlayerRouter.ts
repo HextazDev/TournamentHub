@@ -413,11 +413,11 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
     // SEC-02: Contrôle obligatoire que le tournoi est ACTIVE
     const { data: tourney, error: tourneyErr } = await supabase
       .from("tournaments")
-      .select("status, organization_id, guild_id")
+      .select("status, organization_id")
       .eq("id", phase.tournament_id)
       .maybeSingle();
     if (tourneyErr) throw tourneyErr;
-    const tObj = tourney as { status?: string; organization_id?: string | null; guild_id?: string | null } | null;
+    const tObj = tourney as { status?: string; organization_id?: string | null } | null;
     if (!tObj || tObj.status !== "ACTIVE") {
       return res.status(400).json({ error: "Le tournoi n'est pas actif.", code: "TOURNAMENT_NOT_ACTIVE" });
     }
@@ -433,7 +433,7 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
     const callerTeam = matchTeams.find((t) => t.captain_discord_id === callerId);
 
     let isStaff = false;
-    const tenantKey = tObj.organization_id ?? tObj.guild_id;
+    const tenantKey = tObj.organization_id;
     if (tenantKey) {
       const client = (req.app?.locals?.discordClient as DiscordClientLike | undefined) ?? FALLBACK_DISCORD_CLIENT;
       const decision = await resolveMemberAccess(client, tenantKey, callerId);

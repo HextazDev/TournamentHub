@@ -11,7 +11,7 @@ vi.mock("../services/IntegrationBus", () => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
-  verifyTournamentGuild: () => Promise.resolve(true),
+  verifyTournamentOrganization: () => Promise.resolve(true),
   resolveOrganization: () => Promise.resolve({ id: "org-1" }),
 }));
 

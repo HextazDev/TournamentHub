@@ -1,5 +1,5 @@
 import { PermissionFlagsBits } from "discord.js";
-import type { GuildDirectoryReason } from "@hub/shared";
+import { readTournamentDiscordConfig, type GuildDirectoryReason } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { resolveAdminReason } from "../utils/adminAccess";
@@ -68,24 +68,35 @@ export interface TournamentToRole {
 }
 
 /**
- * Rôles TO propres aux tournois du serveur (tournaments.discord_to_role_id), hors tournois archivés (SEC-23).
+ * Rôles TO propres aux tournois de l'organisation (`tournaments.discord_config.to_role_id`), hors tournois archivés (SEC-23).
  * Un tournoi COMPLETED reste géré : son TO peut encore corriger les résultats.
  */
-export async function readTournamentToRoles(guildId: string): Promise<{ ok: true; roles: TournamentToRole[] } | { ok: false }> {
-  const { data, error } = await supabase
-    .from("tournaments")
-    .select("id, discord_to_role_id")
-    .eq("guild_id", guildId)
-    .neq("status", "ARCHIVED")
-    .not("discord_to_role_id", "is", null);
-  if (error) {
-    logger.error(`[GuildRegistry] Lecture des rôles TO de tournoi impossible pour ${guildId}:`, error);
+export async function readTournamentToRoles(guildIdOrOrg: string): Promise<{ ok: true; roles: TournamentToRole[] } | { ok: false }> {
+  let org;
+  try {
+    org = await resolveOrganization(guildIdOrOrg);
+  } catch (error) {
+    logger.error(`[GuildRegistry] Résolution de l'organisation impossible pour ${guildIdOrOrg}:`, error);
     return { ok: false };
   }
-  const rows = (data ?? []) as { id: string; discord_to_role_id: string | null }[];
+  if (!org) return { ok: true, roles: [] };
+
+  const { data, error } = await supabase
+    .from("tournaments")
+    .select("id, discord_config")
+    .eq("organization_id", org.id)
+    .neq("status", "ARCHIVED");
+  if (error) {
+    logger.error(`[GuildRegistry] Lecture des rôles TO de tournoi impossible pour ${guildIdOrOrg}:`, error);
+    return { ok: false };
+  }
+  const rows = (data ?? []) as { id: string; discord_config?: unknown }[];
   return {
     ok: true,
-    roles: rows.flatMap((row) => (row.discord_to_role_id ? [{ tournamentId: row.id, roleId: row.discord_to_role_id }] : [])),
+    roles: rows.flatMap((row) => {
+      const roleId = readTournamentDiscordConfig(row.discord_config).to_role_id;
+      return roleId ? [{ tournamentId: row.id, roleId }] : [];
+    }),
   };
 }
 

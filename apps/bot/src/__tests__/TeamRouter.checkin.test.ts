@@ -2,14 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({ from: vi.fn() }));
 const presence = vi.hoisted(() => ({ applyPresence: vi.fn(), removePresence: vi.fn() }));
-const tenant = vi.hoisted(() => ({ verifyTeamGuild: vi.fn() }));
+const tenant = vi.hoisted(() => ({ verifyTeamOrganization: vi.fn() }));
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("../services/CaptainPresenceService", () => presence);
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
-  verifyTeamGuild: tenant.verifyTeamGuild,
-  verifyTournamentGuild: vi.fn(),
+  verifyTeamOrganization: tenant.verifyTeamOrganization,
+  verifyTournamentOrganization: vi.fn(),
 }));
 
 import { teamRouter } from "../routes/TeamRouter";
@@ -34,7 +34,7 @@ const patch = (is_checked_in: unknown) => callRoute(teamRouter, {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  tenant.verifyTeamGuild.mockResolvedValue(true);
+  tenant.verifyTeamOrganization.mockResolvedValue(true);
   presence.applyPresence.mockResolvedValue({ status: "done", nickname: "applied", role: "applied" });
   presence.removePresence.mockResolvedValue({ status: "done", nickname: "applied", role: "applied" });
 });
@@ -71,7 +71,7 @@ describe("PATCH /api/teams/:id/checkin", () => {
   });
 
   it("SEC: refuses a team from another guild before any write or Discord call", async () => {
-    tenant.verifyTeamGuild.mockResolvedValue(false);
+    tenant.verifyTeamOrganization.mockResolvedValue(false);
     const out = await patch(true);
     expect(out.status).toBe(403);
     expect(db.from).not.toHaveBeenCalled();

@@ -6,7 +6,7 @@ import { LifecycleService } from "./LifecycleService";
 import { tBot, getGuildLanguage, getPhaseLanguage, type BotLocale } from "../i18n";
 import { logger } from "../utils/logger";
 import { isFinishedMatchStatus } from "@hub/shared";
-import { resolveOrganization } from "../utils/tenant";
+import { resolveActiveDiscordGuild, resolveOrganization } from "../utils/tenant";
 
 type MatchValidationUpdate = { status: "COMPLETED" } | { status: "CONTESTED" };
 
@@ -344,9 +344,10 @@ export class ScoreService {
 
               // Sync phase channel permissions
               if (client && phase.tournament_id) {
-                const { data: tournament } = await supabase.from("tournaments").select("guild_id").eq("id", phase.tournament_id).single();
-                if (tournament?.guild_id) {
-                  await LifecycleService.syncPhaseChannels(match.phase_id, tournament.guild_id, client).catch(console.error);
+                const { data: tournament } = await supabase.from("tournaments").select("organization_id").eq("id", phase.tournament_id).single();
+                const activeGuildId = await resolveActiveDiscordGuild(tournament?.organization_id);
+                if (activeGuildId) {
+                  await LifecycleService.syncPhaseChannels(match.phase_id, activeGuildId, client).catch(console.error);
                 }
               }
 

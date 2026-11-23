@@ -1,7 +1,9 @@
 import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, Interaction } from 'discord.js';
+import { mergeTournamentDiscordConfig, readTournamentDiscordConfig } from '@hub/shared';
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage, isBotLocale } from '../i18n';
 import { logger } from '../utils/logger';
+import { resolveOrganization } from '../utils/tenant';
 import { applyPresence } from './CaptainPresenceService';
 
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
@@ -43,14 +45,14 @@ export class RegistrationService {
         .single();
 
       if (error || !tournament) throw new Error("Tournoi introuvable dans la base de données.");
-      if (!tournament.discord_registration_channel_id) return false;
+      const discordCfg = readTournamentDiscordConfig(tournament.discord_config);
+      if (!discordCfg.registration_channel_id) return false;
 
-      const channel = await client.channels.fetch(tournament.discord_registration_channel_id).catch(() => null) as TextChannel | null;
-      if (!channel) throw new Error(`Impossible de trouver le salon Discord avec l'ID ${tournament.discord_registration_channel_id}. Vérifiez que le bot y a accès.`);
-      if (channel.guildId !== guildId) throw new Error(`Le salon ${tournament.discord_registration_channel_id} n'appartient pas au serveur lié.`);
+      const channel = await client.channels.fetch(discordCfg.registration_channel_id).catch(() => null) as TextChannel | null;
+      if (!channel) throw new Error(`Impossible de trouver le salon Discord avec l'ID ${discordCfg.registration_channel_id}. Vérifiez que le bot y a accès.`);
+      if (channel.guildId !== guildId) throw new Error(`Le salon ${discordCfg.registration_channel_id} n'appartient pas au serveur lié.`);
 
-      const discordConfig = (tournament.discord_config ?? {}) as Record<string, unknown>;
-      const previousMessageId = typeof discordConfig.registration_message_id === "string" ? discordConfig.registration_message_id : null;
+      const previousMessageId = discordCfg.registration_message_id;
       if (previousMessageId && await channel.messages.fetch(previousMessageId).catch(() => null)) return false;
 
       const lang = await getGuildLanguage(guildId, tournament.id);
@@ -89,7 +91,7 @@ export class RegistrationService {
       const message = await channel.send({ embeds: [embed], components: [row] });
       const { error: saveError } = await supabase
         .from('tournaments')
-        .update({ discord_config: { ...discordConfig, registration_message_id: message.id } })
+        .update({ discord_config: mergeTournamentDiscordConfig(tournament.discord_config, { registration_message_id: message.id }) })
         .eq('id', tournamentId);
       if (saveError) throw saveError;
       return true;
@@ -133,7 +135,8 @@ export class RegistrationService {
         .eq('id', tournamentId)
         .single();
 
-      if (!tournament || tournament.guild_id !== interaction.guildId) {
+      const org = interaction.guildId ? await resolveOrganization(interaction.guildId) : null;
+      if (!tournament || !org || !org.discordEnabled || tournament.organization_id !== org.id) {
         return interaction.reply({ content: tBot(targetLang, 'registration.toggleUnauthorized'), ephemeral: true });
       }
 
@@ -424,8 +427,9 @@ export class RegistrationService {
       }
 
       // Announce in registration channel
-      if (tournament && tournament.discord_registration_channel_id) {
-        const annChannel = await interaction.client.channels.fetch(tournament.discord_registration_channel_id);
+      const regChannelId = tournament ? readTournamentDiscordConfig(tournament.discord_config).registration_channel_id : null;
+      if (regChannelId) {
+        const annChannel = await interaction.client.channels.fetch(regChannelId);
         if (annChannel && annChannel.isTextBased()) {
           const rosterStr = cachedData.players.map((p: any) => `• ${p.name}`).join('\n');
           const subsStr = subs.length > 0

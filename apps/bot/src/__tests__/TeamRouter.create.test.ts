@@ -4,7 +4,7 @@ type DbResult = { data: unknown; error: { code?: string; message: string } | nul
 
 const db = vi.hoisted(() => ({ from: vi.fn() }));
 const presence = vi.hoisted(() => ({ applyPresence: vi.fn(), removePresence: vi.fn() }));
-const tenant = vi.hoisted(() => ({ verifyTournamentGuild: vi.fn() }));
+const tenant = vi.hoisted(() => ({ verifyTournamentOrganization: vi.fn() }));
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("../services/CaptainPresenceService", async (importOriginal) => ({
@@ -15,8 +15,8 @@ vi.mock("../services/CaptainPresenceService", async (importOriginal) => ({
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
   getTournamentScope: (req: { tournamentScope?: { tournamentId: string } }) => req.tournamentScope?.tournamentId ?? null,
-  verifyTeamGuild: vi.fn(),
-  verifyTournamentGuild: tenant.verifyTournamentGuild,
+  verifyTeamOrganization: vi.fn(),
+  verifyTournamentOrganization: tenant.verifyTournamentOrganization,
 }));
 
 import { MAX_FAKE_TEAMS } from "@hub/shared";
@@ -90,7 +90,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   inserted.teams = [];
   inserted.members = [];
-  tenant.verifyTournamentGuild.mockResolvedValue(true);
+  tenant.verifyTournamentOrganization.mockResolvedValue(true);
   presence.applyPresence.mockResolvedValue({ status: "done", nickname: "applied", role: "applied" });
   tables = {
     tournament: { data: { status: "REGISTRATION", checkin_start_at: PAST }, error: null },
@@ -115,7 +115,7 @@ describe("POST /api/teams — REG-09 validation", () => {
   });
 
   it("SEC: tournoi d'un autre serveur ➜ 403 sans écriture ni Discord", async () => {
-    tenant.verifyTournamentGuild.mockResolvedValue(false);
+    tenant.verifyTournamentOrganization.mockResolvedValue(false);
     const out = await post(body());
     expect(out.status).toBe(403);
     expect(db.from).not.toHaveBeenCalled();
@@ -272,7 +272,7 @@ describe("POST /api/teams/generate-fake — PH-02/REG-07 validation du corps", (
   ])("REG-07: %s ➜ 400 sans vérification de tenant ni écriture", async (_label, payload) => {
     const out = await generate(payload);
     expect(out.status).toBe(400);
-    expect(tenant.verifyTournamentGuild).not.toHaveBeenCalled();
+    expect(tenant.verifyTournamentOrganization).not.toHaveBeenCalled();
     expect(fakeInserts).toEqual([]);
   });
 
@@ -281,11 +281,11 @@ describe("POST /api/teams/generate-fake — PH-02/REG-07 validation du corps", (
     expect(out.status).toBe(201);
     expect(fakeInserts).toHaveLength(1);
     expect(fakeInserts[0]).toHaveLength(MAX_FAKE_TEAMS);
-    expect(tenant.verifyTournamentGuild).toHaveBeenCalledWith(TOURNAMENT_ID, "111");
+    expect(tenant.verifyTournamentOrganization).toHaveBeenCalledWith(TOURNAMENT_ID, "111");
   });
 
   it("SEC-01: tournoi d'un autre serveur ➜ 403 sans écriture", async () => {
-    tenant.verifyTournamentGuild.mockResolvedValue(false);
+    tenant.verifyTournamentOrganization.mockResolvedValue(false);
     const out = await generate({ tournament_id: TOURNAMENT_ID, count: 2 });
     expect(out.status).toBe(403);
     expect(fakeInserts).toEqual([]);

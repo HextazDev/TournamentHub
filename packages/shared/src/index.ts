@@ -112,11 +112,77 @@ export interface OrganizationInvite {
   created_at: string;
 }
 
+export interface TournamentDiscordConfig {
+  category_id?: string | null;
+  announcement_channel_id?: string | null;
+  registration_channel_id?: string | null;
+  checkin_channel_id?: string | null;
+  captain_role_id?: string | null;
+  to_role_id?: string | null;
+  registration_message_id?: string | null;
+}
+
+export interface NormalizedTournamentDiscordConfig {
+  category_id: string | null;
+  announcement_channel_id: string | null;
+  registration_channel_id: string | null;
+  checkin_channel_id: string | null;
+  captain_role_id: string | null;
+  to_role_id: string | null;
+  registration_message_id: string | null;
+}
+
+const TOURNAMENT_DISCORD_CONFIG_KEYS = [
+  "category_id",
+  "announcement_channel_id",
+  "registration_channel_id",
+  "checkin_channel_id",
+  "captain_role_id",
+  "to_role_id",
+  "registration_message_id",
+] as const;
+
+function readOptionalNonEmptyString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+/** Lecture typée et défensive de `tournaments.discord_config` (RFC 0001 / #101). */
+export function readTournamentDiscordConfig(discordConfig: unknown): NormalizedTournamentDiscordConfig {
+  const record = isPlainObject(discordConfig) ? discordConfig : {};
+  return {
+    category_id: readOptionalNonEmptyString(record, "category_id"),
+    announcement_channel_id: readOptionalNonEmptyString(record, "announcement_channel_id"),
+    registration_channel_id: readOptionalNonEmptyString(record, "registration_channel_id"),
+    checkin_channel_id: readOptionalNonEmptyString(record, "checkin_channel_id"),
+    captain_role_id: readOptionalNonEmptyString(record, "captain_role_id"),
+    to_role_id: readOptionalNonEmptyString(record, "to_role_id"),
+    registration_message_id: readOptionalNonEmptyString(record, "registration_message_id"),
+  };
+}
+
+/** Fusionne un patch partiel dans `tournaments.discord_config` en préservant les autres clés et en retirant les clés vidées. */
+export function mergeTournamentDiscordConfig(
+  current: unknown,
+  patch: Partial<TournamentDiscordConfig>,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = isPlainObject(current) ? { ...current } : {};
+  for (const key of TOURNAMENT_DISCORD_CONFIG_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const raw = patch[key];
+    if (typeof raw === "string" && raw.trim().length > 0) {
+      next[key] = raw;
+    } else {
+      delete next[key];
+    }
+  }
+  return next;
+}
+
 // Common Domain Interfaces
 export interface Tournament {
   id: string;
-  organization_id?: string;
-  guild_id: string;
+  organization_id: string;
   name: string;
   description?: string | null;
   is_public: boolean;
@@ -128,16 +194,10 @@ export interface Tournament {
   start_date?: string | null;
   is_registration_open?: boolean | null;
   checkin_message_id?: string | null;
-  discord_category_id?: string | null;
   tie_breaker_method?: string | null;
   checkin_start_at?: string | null;
   checkin_end_at?: string | null;
-  discord_announcement_channel_id?: string | null;
-  discord_registration_channel_id?: string | null;
-  discord_checkin_channel_id?: string | null;
-  discord_captain_role_id?: string | null;
-  discord_to_role_id?: string | null;
-  discord_config?: Record<string, unknown>;
+  discord_config?: TournamentDiscordConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -193,6 +253,8 @@ export const DiscordInviteUrlSchema = z
   .regex(/^https:\/\/(discord\.gg|discord\.com\/invite)\/[A-Za-z0-9-]+$/, "Invitation Discord invalide");
 
 export interface ServerSettings {
+  organization_id?: string;
+  slug?: string;
   guild_id: string;
   guild_name: string | null;
   guild_icon: string | null;
@@ -206,27 +268,6 @@ export interface ServerSettings {
   registration_channel_id: string | null;
   updated_at: string;
 }
-
-const OptionalDiscordId = z
-  .union([z.string().regex(/^\d{1,25}$/, "Identifiant Discord invalide"), z.literal(""), z.null()])
-  .optional()
-  .transform((v) => (v ? v : null));
-
-// Corps de PUT /api/server-settings. Les champs absents ne sont pas modifiés (sauf les rôles et salons, envoyés en bloc par le formulaire).
-export const ServerSettingsUpdateSchema = z.object({
-  guild_id: z.string().regex(/^\d{1,25}$/, "guild_id invalide"),
-  to_role_id: OptionalDiscordId,
-  captain_role_id: OptionalDiscordId,
-  checkin_channel_id: OptionalDiscordId,
-  announcement_channel_id: OptionalDiscordId,
-  registration_channel_id: OptionalDiscordId,
-  language: LocaleSchema.optional(),
-  invite_url: z
-    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
-    .optional()
-    .transform((v) => (v === undefined ? undefined : v || null)),
-});
-export type ServerSettingsUpdate = z.infer<typeof ServerSettingsUpdateSchema>;
 
 // Motif d'accès au back-office d'un serveur (colonne guild_admins.reason).
 export const GuildAdminReasonSchema = z.enum(["SERVER_OWNER", "ADMINISTRATOR", "MANAGE_GUILD", "TO_ROLE"]);
@@ -531,7 +572,6 @@ export const AcceptInviteSchema = z.object({ token: z.string().trim().min(32).ma
 // Common Zod Schemas
 export const CreateTournamentSchema = z.object({
   name: z.string().min(2, "Le nom du tournoi doit comporter au moins 2 caractères"),
-  guild_id: z.string().min(1, "guild_id obligatoire").optional(),
   organization_id: z.string().min(1).optional(),
   description: z.string().optional().nullable(),
   game_type: z.string().default("GENERIC"),
@@ -541,6 +581,25 @@ export const CreateTournamentSchema = z.object({
   checkin_start_at: z.string().optional().nullable(),
   checkin_end_at: z.string().optional().nullable(),
 });
+
+const NullableDateInput = z
+  .union([z.string(), z.null()])
+  .transform((value) => (typeof value === "string" && value.trim().length > 0 ? value : null));
+
+/** Corps validé à la frontière de PUT /api/tournaments/:id/settings (AUD-DAT-01) : seuls les champs fournis sont modifiés. */
+export const UpdateTournamentSettingsSchema = z.object({
+  checkin_mode: CheckinModeSchema.optional(),
+  start_at: NullableDateInput.optional(),
+  checkin_start_at: NullableDateInput.optional(),
+  checkin_end_at: NullableDateInput.optional(),
+  discord_registration_channel_id: NullableSnowflake.optional(),
+  discord_announcement_channel_id: NullableSnowflake.optional(),
+  discord_checkin_channel_id: NullableSnowflake.optional(),
+  discord_captain_role_id: NullableSnowflake.optional(),
+  discord_to_role_id: NullableSnowflake.optional(),
+  language: LocaleSchema.optional(),
+});
+export type UpdateTournamentSettingsInput = z.infer<typeof UpdateTournamentSettingsSchema>;
 
 /** Code ami Nintendo Switch : même format que l'inscription Discord (RegistrationService), normalisé en majuscules. */
 export const FriendCodeSchema = z

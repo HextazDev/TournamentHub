@@ -28,12 +28,12 @@ const ORG_2 = "00000000-0000-0000-0000-000000000022";
 const GUILD_1 = "111111111111111111";
 const GUILD_NEW = "222222222222222222";
 
-/** Faux client Discord : `caller` possède les droits demandés sur GUILD_NEW, le bot n'est présent que là. */
-function discordClient(caller: { id: string; manage: boolean } | null) {
+/** Faux client Discord : `caller` possède les droits demandés sur le serveur attendu (GUILD_NEW par défaut). */
+function discordClient(caller: { id: string; manage: boolean } | null, allowedGuildId = GUILD_NEW) {
   return {
     guilds: {
       fetch: (guildId: string) =>
-        guildId !== GUILD_NEW || !caller
+        guildId !== allowedGuildId || !caller
           ? Promise.reject(new Error("Unknown Guild"))
           : Promise.resolve({
               id: guildId,
@@ -320,12 +320,11 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     expect(db.current?.writesTo("organization_integrations")).toEqual([]);
   });
 
-  it("accepte un administrateur vérifié et rattache les tournois existants", async () => {
-    db.current!.tables.tournaments!.push({ id: "t-2", organization_id: ORG_2, guild_id: null });
+  it("accepte un administrateur vérifié et rattache le serveur Discord à l'organisation", async () => {
+    db.current!.tables.tournaments!.push({ id: "t-2", organization_id: ORG_2, discord_config: {} });
     const out = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
     expect(out.status).toBe(200);
     expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_2)).toMatchObject({ external_id: GUILD_NEW, enabled: true });
-    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-2")?.guild_id).toBe(GUILD_NEW);
   });
 
   it("LIFE-02: refuse d'activer Discord sans serveur lié", async () => {
@@ -360,7 +359,7 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     db.current!.tables.organization_integrations!.push({
       id: "int-shell", organization_id: shellId, provider: "DISCORD", external_id: GUILD_NEW, enabled: true, status: "CONNECTED", config: {},
     });
-    db.current!.tables.tournaments!.push({ id: "t-x", organization_id: shellId, guild_id: GUILD_NEW });
+    db.current!.tables.tournaments!.push({ id: "t-x", organization_id: shellId, discord_config: {} });
     const out = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
     expect(out.status).toBe(409);
     expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
@@ -407,30 +406,61 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     }
   });
 
-  it("DAT-04: changer de serveur Discord lié réinitialise les anciens salons/rôles Discord des tournois", async () => {
+  it("DAT-04 / SEC-45: changer de serveur Discord lié réinitialise discord_config des tournois et purge config de l'intégration", async () => {
+    const existingInt = db.current!.tables.organization_integrations!.find((i) => i.organization_id === ORG_1);
+    if (existingInt) {
+      existingInt.config = {
+        to_role_id: "666666666666666666",
+        captain_role_id: "555555555555555555",
+        registration_channel_id: "222222222222222222",
+        announcement_channel_id: "333333333333333333",
+        checkin_channel_id: "444444444444444444",
+        guild_name: "Ancien Serveur",
+      };
+    }
     db.current!.tables.tournaments!.push({
       id: "t-switch",
       organization_id: ORG_1,
-      guild_id: GUILD_1,
-      discord_category_id: "111",
-      discord_registration_channel_id: "222",
-      discord_announcement_channel_id: "333",
-      discord_checkin_channel_id: "444",
-      discord_captain_role_id: "555",
-      discord_to_role_id: "666",
+      discord_config: {
+        category_id: "111",
+        registration_channel_id: "222",
+        announcement_channel_id: "333",
+        checkin_channel_id: "444",
+        captain_role_id: "555",
+        to_role_id: "666",
+      },
     });
 
     const out = await link("u-owner", discordClient({ id: "u-owner", manage: true }), { enabled: true, external_id: GUILD_NEW }, ORG_1);
     expect(out.status).toBe(200);
     expect(db.current?.tables.tournaments?.find((t) => t.id === "t-switch")).toMatchObject({
-      guild_id: GUILD_NEW,
-      discord_category_id: null,
-      discord_registration_channel_id: null,
-      discord_announcement_channel_id: null,
-      discord_checkin_channel_id: null,
-      discord_captain_role_id: null,
-      discord_to_role_id: null,
+      discord_config: {},
     });
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_1)?.config).toEqual({});
+  });
+
+  it("#101: couper puis réactiver Discord sur le même serveur préserve discord_config (salons et rôles des tournois)", async () => {
+    const originalConfig = {
+      category_id: "111",
+      registration_channel_id: "222",
+      announcement_channel_id: "333",
+      checkin_channel_id: "444",
+      captain_role_id: "555",
+      to_role_id: "666",
+    };
+    db.current!.tables.tournaments!.push({
+      id: "t-toggle",
+      organization_id: ORG_1,
+      discord_config: { ...originalConfig },
+    });
+
+    const disabled = await link("u-owner", discordClient({ id: "u-owner", manage: true }, GUILD_1), { enabled: false }, ORG_1);
+    expect(disabled.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-toggle")?.discord_config).toEqual(originalConfig);
+
+    const reenabled = await link("u-owner", discordClient({ id: "u-owner", manage: true }, GUILD_1), { enabled: true }, ORG_1);
+    expect(reenabled.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-toggle")?.discord_config).toEqual(originalConfig);
   });
 
   it("CLN-08 / ARC-04: met à jour key_version selon INTEGRATION_ENCRYPTION_KEY_VERSION et conserve has_secret:true sans renvoyer de secret", async () => {
@@ -521,7 +551,7 @@ describe("SEC-08 / SEC-07 / ACC-01: intégrations", () => {
 
 describe("SEC-04: lecture de l'organisation", () => {
   it("un staff de tournoi ne lit ni les membres ni les intégrations", async () => {
-    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_to_role_id: null });
+    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_config: {} });
     db.current!.tables.tournament_staff!.push({ tournament_id: "t-1", user_id: "u-caster", role: "CASTER" });
     const out = await callRoute(organizationRouter, {
       method: "GET",
