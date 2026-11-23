@@ -692,4 +692,54 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
       expect(res.status).toBe(201);
     });
   });
+
+  it("DISC-18 (#102): validation d'un score Web avec Discord actif émet onMatchCompleted et transmet expectedGuildId à progressTeams", async () => {
+    db.current!.tables.tournaments![0]!.status = "ACTIVE";
+    db.current!.tables.matches![0]!.status = "WAITING_VALIDATION";
+    db.current!.tables.matches![0]!.team1_score = 2;
+    db.current!.tables.matches![0]!.team2_score = 0;
+    db.current!.tables.matches![0]!.reported_by_team_id = TEAM_1;
+    db.current!.tables.organization_integrations = [
+      { id: "int-d", organization_id: ORG_ID, provider: "DISCORD", external_id: "111111111111111111", enabled: true, status: "CONNECTED", config: {} },
+    ];
+
+    const onMatchCompleted = vi.fn(async () => undefined);
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin({ provider: "DISCORD", onMatchCompleted });
+
+    const fakeClient = { channels: { fetch: vi.fn() } };
+
+    try {
+      const res = await callRoute(playerRouter, {
+        method: "POST",
+        path: `/matches/${MATCH_1}/report-score`,
+        headers: { "x-discord-user-id": "cap-2" },
+        body: { team1_score: 2, team2_score: 0 },
+        locals: { discordClient: fakeClient },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ integrationWarnings: [] });
+      expect(onMatchCompleted).toHaveBeenCalledWith(
+        expect.objectContaining({
+          organizationId: ORG_ID,
+          matchId: MATCH_1,
+          guildId: "111111111111111111",
+          data: expect.objectContaining({ source: "WEB_CAPTAIN", status: "COMPLETED", team1_score: 2, team2_score: 0 }),
+        }),
+      );
+      expect(progressTeams).toHaveBeenCalledWith(
+        expect.objectContaining({ id: MATCH_1 }),
+        undefined,
+        TEAM_1,
+        TEAM_2,
+        fakeClient,
+        { expectedGuildId: "111111111111111111" },
+      );
+    } finally {
+      IntegrationBus.clearPlugins();
+    }
+  });
 });
+

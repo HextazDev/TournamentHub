@@ -179,11 +179,29 @@ EXCEPTION WHEN insufficient_privilege THEN NULL;
 END $$;
 
 RESET ROLE;
--- I18N-05 / contrainte d'invitation.
+-- I18N-05 / SEC-08 (#102) : lien de contact public https:// autorisé (Discord ou autre), schémas dangereux refusés.
 DO $$
 BEGIN
-  UPDATE organizations SET invite_url = 'https://evil.example/x' WHERE slug = 'org-public';
-  RAISE EXCEPTION 'invite_url hors Discord acceptée';
+  UPDATE organizations SET invite_url = 'https://community.example.org/contact?ref=hub' WHERE slug = 'org-public';
+  UPDATE organizations SET invite_url = 'https://discord.gg/valid-invite-123' WHERE slug = 'org-public';
+  UPDATE organizations SET invite_url = NULL WHERE slug = 'org-public';
+END $$;
+DO $$
+BEGIN
+  UPDATE organizations SET invite_url = 'http://example.org/insecure' WHERE slug = 'org-public';
+  RAISE EXCEPTION 'SEC-08: invite_url http:// acceptée';
+EXCEPTION WHEN check_violation THEN NULL;
+END $$;
+DO $$
+BEGIN
+  UPDATE organizations SET invite_url = 'javascript:alert(1)' WHERE slug = 'org-public';
+  RAISE EXCEPTION 'SEC-08: invite_url javascript: acceptée';
+EXCEPTION WHEN check_violation THEN NULL;
+END $$;
+DO $$
+BEGIN
+  UPDATE organizations SET invite_url = 'https://user:pass@example.org/contact' WHERE slug = 'org-public';
+  RAISE EXCEPTION 'SEC-08: invite_url avec credentials acceptée';
 EXCEPTION WHEN check_violation THEN NULL;
 END $$;
 DO $$

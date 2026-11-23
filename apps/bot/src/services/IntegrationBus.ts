@@ -15,21 +15,22 @@ export interface IntegrationEventContext {
   data?: Record<string, unknown>;
 }
 
-export type IntegrationEventName =
-  | "onTournamentCreated"
-  | "onRegistrationOpened"
-  | "onTeamRegistered"
-  | "onCheckinOpened"
-  | "onCheckinCompleted"
-  | "onCheckinClosed"
-  | "onTournamentLaunched"
-  | "onPhaseSynced"
-  | "onMatchCompleted"
-  | "onTournamentCompleted";
+export const INTEGRATION_EVENT_NAMES = [
+  "onRegistrationOpened",
+  "onTeamRegistered",
+  "onCheckinOpened",
+  "onCheckinCompleted",
+  "onCheckinClosed",
+  "onTournamentLaunched",
+  "onPhaseSynced",
+  "onMatchCompleted",
+  "onTournamentCompleted",
+] as const;
+
+export type IntegrationEventName = (typeof INTEGRATION_EVENT_NAMES)[number];
 
 export interface IntegrationPlugin {
   readonly provider: IntegrationProvider;
-  onTournamentCreated?(ctx: IntegrationEventContext): Promise<void>;
   onRegistrationOpened?(ctx: IntegrationEventContext): Promise<void>;
   onTeamRegistered?(ctx: IntegrationEventContext): Promise<void>;
   onCheckinOpened?(ctx: IntegrationEventContext): Promise<void>;

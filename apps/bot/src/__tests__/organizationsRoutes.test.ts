@@ -953,3 +953,62 @@ describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd so
   });
 });
 
+describe("SEC-08 (#102): lien de contact public https sur une organisation", () => {
+  const as = (userId: string) => ({ "x-discord-user-id": userId });
+
+  it("accepte un lien de contact https générique et une invitation Discord (création et mise à jour)", async () => {
+    const created = await callRoute(organizationRouter, {
+      method: "POST",
+      path: "/",
+      headers: as("u-owner"),
+      body: {
+        name: "Web Only Org",
+        slug: "web-only-org",
+        invite_url: "https://example.org/contact?ref=hub",
+      },
+    });
+    expect(created.status).toBe(201);
+
+    const updatedGeneric = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: "https://community.example.org/tournaments" },
+    });
+    expect(updatedGeneric.status).toBe(200);
+    expect(db.current?.tables.organizations?.find((o) => o.id === ORG_1)?.invite_url).toBe(
+      "https://community.example.org/tournaments",
+    );
+
+    const updatedDiscord = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: "https://discord.gg/splatoon-fr" },
+    });
+    expect(updatedDiscord.status).toBe(200);
+    expect(db.current?.tables.organizations?.find((o) => o.id === ORG_1)?.invite_url).toBe(
+      "https://discord.gg/splatoon-fr",
+    );
+  });
+
+  it.each([
+    ["HTTP non chiffré", "http://example.org/contact"],
+    ["schéma javascript", "javascript:alert(1)"],
+    ["schéma data", "data:text/html,<script>alert(1)</script>"],
+    ["credentials dans l'URL", "https://user:pass@example.org/contact"],
+    ["hôte sans TLD", "https://localhost/contact"],
+    ["espaces dans l'URL", "https://example.org/mon lien"],
+    ["URL trop longue", `https://example.org/${"a".repeat(520)}`],
+  ])("rejette un lien invalide (%s) en 400 sans écriture", async (_label, invalidUrl) => {
+    const res = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: invalidUrl },
+    });
+    expect(res.status).toBe(400);
+    expect(db.current?.writesTo("organizations", "update")).toEqual([]);
+  });
+});
+

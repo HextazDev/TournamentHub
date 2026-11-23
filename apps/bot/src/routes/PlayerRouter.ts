@@ -1,11 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
-import { canPerform, MAX_FAKE_TEAMS, WebRegisterTeamSchema, WebReportScoreSchema } from "@hub/shared";
+import { canPerform, MAX_FAKE_TEAMS, WebRegisterTeamSchema, WebReportScoreSchema, type IntegrationWarning } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { sendServerError } from "../utils/serverError";
 import { IntegrationBus } from "../services/IntegrationBus";
 import { LeaderboardService } from "../services/LeaderboardService";
-import { ScoreService } from "../services/ScoreService";
+import { ScoreService, type MatchCompletionSource } from "../services/ScoreService";
 import { resolveMemberAccess, type DiscordClientLike } from "../services/MemberAccessService";
 import { isCheckinWindowOpen } from "../utils/manualTeamCheckin";
 import { resolveActiveDiscordGuild } from "../utils/tenant";
@@ -70,14 +70,15 @@ async function canJoinPrivateTournament(
   return Boolean(guild && (await guild.members.fetch(callerId).catch(() => null)));
 }
 
-/** Effets communs d'un match terminé : classement de poule puis progression, depuis le score retenu. */
+/** Effets communs d'un match terminé : classement de poule, annonce Discord fail-safe puis progression. */
 async function completeMatch(
   req: Request,
   organizationId: string | null | undefined,
   match: MatchRecord,
   team1Score: number,
   team2Score: number,
-): Promise<void> {
+  source: MatchCompletionSource,
+): Promise<IntegrationWarning[]> {
   const team1 = typeof match.team1_id === "string" ? match.team1_id : null;
   const team2 = typeof match.team2_id === "string" ? match.team2_id : null;
   const team1Won = team1Score > team2Score;
@@ -86,14 +87,39 @@ async function completeMatch(
   if (typeof match.group_id === "string") {
     await LeaderboardService.calculateGroupStandings(match.group_id);
   }
+
+  // SEC-26 : la progression reste 100 % en base quand l'intégration Discord est coupée.
+  const activeGuildId = await resolveActiveDiscordGuild(organizationId);
+  const discordClient = activeGuildId ? req.app?.locals?.discordClient : undefined;
+
+  const integrationWarnings =
+    typeof organizationId === "string" && typeof match.id === "string"
+      ? await IntegrationBus.emit("onMatchCompleted", {
+          organizationId,
+          ...(typeof match.phase_id === "string" ? { phaseId: match.phase_id } : {}),
+          matchId: match.id,
+          ...(activeGuildId ? { guildId: activeGuildId } : {}),
+          ...(discordClient ? { discordClient } : {}),
+          data: {
+            source,
+            status: "COMPLETED",
+            team1_score: team1Score,
+            team2_score: team2Score,
+            match,
+          },
+        })
+      : [];
+
   await ScoreService.progressTeams(
     match,
     undefined,
     isDraw ? null : team1Won ? team1 : team2,
     isDraw ? null : team1Won ? team2 : team1,
-    // SEC-26 : la progression reste 100 % en base quand l'intégration Discord est coupée.
-    (await resolveActiveDiscordGuild(organizationId)) ? req.app?.locals?.discordClient : undefined,
+    discordClient,
+    { expectedGuildId: activeGuildId },
   );
+
+  return integrationWarnings;
 }
 
 // POST /api/player/tournaments/:tournamentId/register — Inscription autonome d'une équipe sur le Web (INT-02)
@@ -234,16 +260,17 @@ playerRouter.post("/tournaments/:tournamentId/register", async (req, res) => {
       throw membersErr;
     }
 
-    if (typeof tRow.organization_id === "string") {
-      await IntegrationBus.emit("onTeamRegistered", {
-        organizationId: tRow.organization_id,
-        tournamentId,
-        teamId,
-        discordClient: req.app?.locals?.discordClient,
-      });
-    }
+    const integrationWarnings =
+      typeof tRow.organization_id === "string"
+        ? await IntegrationBus.emit("onTeamRegistered", {
+            organizationId: tRow.organization_id,
+            tournamentId,
+            teamId,
+            discordClient: req.app?.locals?.discordClient,
+          })
+        : [];
 
-    return res.status(201).json({ ...newTeam, team_members: memberRows });
+    return res.status(201).json({ ...newTeam, team_members: memberRows, integrationWarnings });
   } catch (error: unknown) {
     return sendServerError(res, error, "PlayerRouter.registerTeam");
   }
@@ -355,16 +382,17 @@ playerRouter.post("/tournaments/:tournamentId/checkin", async (req, res) => {
       .eq("id", teamRow.id);
     if (updateErr) throw updateErr;
 
-    if (typeof tRow.organization_id === "string") {
-      await IntegrationBus.emit("onCheckinCompleted", {
-        organizationId: tRow.organization_id,
-        tournamentId,
-        teamId: teamRow.id,
-        discordClient: req.app?.locals?.discordClient,
-      });
-    }
+    const integrationWarnings =
+      typeof tRow.organization_id === "string"
+        ? await IntegrationBus.emit("onCheckinCompleted", {
+            organizationId: tRow.organization_id,
+            tournamentId,
+            teamId: teamRow.id,
+            discordClient: req.app?.locals?.discordClient,
+          })
+        : [];
 
-    return res.status(200).json({ ...teamRow, is_checked_in: true });
+    return res.status(200).json({ ...teamRow, is_checked_in: true, integrationWarnings });
   } catch (error: unknown) {
     return sendServerError(res, error, "PlayerRouter.checkin");
   }
@@ -482,8 +510,15 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
         return res.status(400).json({ error: "Ce match est déjà terminé.", code: "MATCH_FINISHED" });
       }
 
-      await completeMatch(req, tObj.organization_id, { ...match, team1_score, team2_score, status: "COMPLETED" }, team1_score, team2_score);
-      return res.status(200).json({ message: "Score validé par le staff", match: updated[0] });
+      const integrationWarnings = await completeMatch(
+        req,
+        tObj.organization_id,
+        { ...match, team1_score, team2_score, status: "COMPLETED" },
+        team1_score,
+        team2_score,
+        "WEB_STAFF",
+      );
+      return res.status(200).json({ message: "Score validé par le staff", match: updated[0], integrationWarnings });
     }
 
     if (!callerTeam) {
@@ -551,8 +586,8 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
       }
 
       const completedMatch = { ...match, status: "COMPLETED" };
-      await completeMatch(req, tObj.organization_id, completedMatch, team1_score, team2_score);
-      return res.status(200).json({ message: "Score validé avec succès", match: completedMatch });
+      const integrationWarnings = await completeMatch(req, tObj.organization_id, completedMatch, team1_score, team2_score, "WEB_CAPTAIN");
+      return res.status(200).json({ message: "Score validé avec succès", match: completedMatch, integrationWarnings });
     }
 
     // 4. Match contesté : seul le staff peut encore trancher (branche 1).
