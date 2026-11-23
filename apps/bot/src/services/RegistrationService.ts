@@ -1,5 +1,5 @@
 import { Client, TextChannel, ActionRowBuilder, ButtonBuilder, ButtonStyle, ModalBuilder, TextInputBuilder, TextInputStyle, Interaction } from 'discord.js';
-import { mergeTournamentDiscordConfig, readTournamentDiscordConfig } from '@hub/shared';
+import { isSyntheticDiscordId, mergeTournamentDiscordConfig, readTournamentDiscordConfig } from '@hub/shared';
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage, isBotLocale } from '../i18n';
 import { logger } from '../utils/logger';
@@ -99,6 +99,71 @@ export class RegistrationService {
     } catch (e: unknown) {
       console.error("[RegistrationService] Error sending embed:", e);
       throw e;
+    }
+  }
+
+  /**
+   * Annonce Discord d'une équipe inscrite depuis le Web (INT-04 / #102).
+   * Vérifie que le salon d'inscription appartient au serveur lié avant d'y publier.
+   * Si le check-in est désactivé (`checkin_mode === 'DISABLED'`), applique aussi la présence Discord.
+   */
+  static async announceTeamRegistration(
+    tournamentId: string,
+    teamId: string,
+    client: Client,
+    guildId: string,
+  ): Promise<void> {
+    const [{ data: tournament, error: tErr }, { data: team, error: teamErr }, { data: members, error: memErr }] =
+      await Promise.all([
+        supabase.from("tournaments").select("id, checkin_mode, discord_config").eq("id", tournamentId).maybeSingle(),
+        supabase.from("teams").select("id, tournament_id, name, captain_discord_id, is_checked_in").eq("id", teamId).maybeSingle(),
+        supabase.from("team_members").select("ingame_name, is_captain").eq("team_id", teamId),
+      ]);
+    if (tErr) throw tErr;
+    if (teamErr) throw teamErr;
+    if (memErr) throw memErr;
+    if (!tournament || !team) return;
+
+    const regChannelId = readTournamentDiscordConfig(tournament.discord_config).registration_channel_id;
+    if (regChannelId) {
+      const channel = (await client.channels.fetch(regChannelId)) as TextChannel | null;
+      if (!channel || !channel.isTextBased()) {
+        throw new Error(`Impossible de trouver le salon Discord ${regChannelId}.`);
+      }
+      if ("guildId" in channel && channel.guildId !== guildId) {
+        throw new Error(`Le salon ${regChannelId} n'appartient pas au serveur lié.`);
+      }
+
+      const lang = await getGuildLanguage(guildId, tournamentId);
+      const rosterMembers = (members ?? []) as { ingame_name?: string | null; is_captain?: boolean }[];
+      const rosterStr = rosterMembers
+        .map((m) => `• ${m.ingame_name || tBot(lang, "score.unknownTeam")}`)
+        .join("\n") || `• ${team.name}`;
+
+      const embed = {
+        title: tBot(lang, "registration.newRegistrationAnnouncementTitle", { teamName: team.name }),
+        description: tBot(lang, "registration.newRegistrationAnnouncementDesc", {
+          teamName: team.name,
+          roster: rosterStr,
+          subs: "",
+        }),
+        color: 0x57f287,
+        timestamp: new Date().toISOString(),
+      };
+      await channel.send({ embeds: [embed] });
+    }
+
+    if (
+      tournament.checkin_mode === "DISABLED" &&
+      typeof team.captain_discord_id === "string" &&
+      !isSyntheticDiscordId(team.captain_discord_id)
+    ) {
+      await applyPresence(client, {
+        id: team.id,
+        tournament_id: team.tournament_id,
+        name: team.name,
+        captain_discord_id: team.captain_discord_id,
+      });
     }
   }
 

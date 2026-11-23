@@ -1,12 +1,13 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
-import { ScoreService } from "../services/ScoreService";
+import { ScoreService, type MatchCompletionSource } from "../services/ScoreService";
 import { LeaderboardService } from "../services/LeaderboardService";
-import { TextChannel } from "discord.js";
+import { IntegrationBus } from "../services/IntegrationBus";
 import { getAuthenticatedGuildId, resolveOrganization, verifyMatchOrganization } from "../utils/tenant";
 import { ForceScoreSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
+import { logger } from "../utils/logger";
 
 export const matchRouter = Router();
 
@@ -56,18 +57,6 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
     // SEC-26 : aucun effet Discord (salon, annonce) quand l'intégration de l'organisation est coupée.
     const org = await resolveOrganization(authGuildId);
     const discordClient = org?.discordEnabled ? req.app.locals.discordClient : undefined;
-    let channel: TextChannel | undefined;
-
-    if (discordClient && updatedMatch.discord_channel_id) {
-      try {
-        const fetchedChannel = await discordClient.channels.fetch(updatedMatch.discord_channel_id);
-        if (fetchedChannel && fetchedChannel.isTextBased()) {
-          channel = fetchedChannel as TextChannel;
-        }
-      } catch (err) {
-        console.warn(`Could not fetch channel ${updatedMatch.discord_channel_id} for match ${matchId}`);
-      }
-    }
 
     let winnerId: string | null = null;
     let loserId: string | null = null;
@@ -84,6 +73,32 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
     if (updatedMatch.group_id) {
       await LeaderboardService.calculateGroupStandings(updatedMatch.group_id);
     }
+
+    // DISC-18 (#102) : annoncer d'abord le score arbitré dans le salon de phase/groupe via IntegrationBus (fail-safe).
+    if (org) {
+      await IntegrationBus.emit("onMatchCompleted", {
+        organizationId: org.id,
+        ...(typeof updatedMatch.phase_id === "string" ? { phaseId: updatedMatch.phase_id } : {}),
+        matchId,
+        ...(org.discordGuildId ? { guildId: org.discordGuildId } : {}),
+        ...(discordClient ? { discordClient } : {}),
+        data: {
+          source: "TO_FORCE" satisfies MatchCompletionSource,
+          status,
+          team1_score,
+          team2_score,
+        },
+      });
+    }
+
+    const channel = discordClient
+      ? await ScoreService.resolveMatchChannel(updatedMatch, discordClient, {
+          ...(org?.discordGuildId ? { expectedGuildId: org.discordGuildId } : {}),
+        }).catch((err: unknown) => {
+          logger.warn(`[MatchRouter] Impossible de résoudre le salon Discord pour le match ${matchId}:`, err);
+          return undefined;
+        })
+      : undefined;
 
     await ScoreService.progressTeams(updatedMatch, channel, winnerId, loserId, discordClient);
 

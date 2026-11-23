@@ -165,4 +165,52 @@ describe("PUT /:id/force-score — forfait déclaré par un TO (#77)", () => {
     ]);
     expect(fake.tables.matches?.find((m) => m.id === "match-2")).toMatchObject({ team1_id: "A", team2_id: "C" });
   });
+
+  it("DISC-18 (#102): score forcé en élimination annonce le résultat ET le match suivant dans phases.discord_channel_id", async () => {
+    const fake = seedEliminationPhase();
+    fake.tables.phases![0]!.discord_channel_id = "ch-phase-e";
+    fake.tables.phases![0]!.tournament_id = "tour-1";
+    fake.tables.tournaments = [{ id: "tour-1", organization_id: "org-1", language: "fr" }];
+    fake.tables.organization_integrations = [
+      { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true, status: "CONNECTED", config: {} },
+    ];
+    fake.tables.teams = [
+      { id: "A", name: "Alpha", captain_discord_id: "111111111111111111", tournament_id: "tour-1" },
+      { id: "B", name: "Bravo", captain_discord_id: "222222222222222222", tournament_id: "tour-1" },
+      { id: "C", name: "Charlie", captain_discord_id: "333333333333333333", tournament_id: "tour-1" },
+    ];
+
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    const { discordIntegrationPlugin } = await import("../services/integrations/DiscordIntegrationPlugin");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
+    const phaseChannel = {
+      id: "ch-phase-e",
+      guildId: "guild-1",
+      isTextBased: () => true,
+      send: vi.fn().mockResolvedValue({ id: "msg-1" }),
+    };
+    const discordClient = { channels: { fetch: vi.fn(async (id: string) => (id === "ch-phase-e" ? phaseChannel : null)) } };
+
+    const res = await callRoute(matchRouter, {
+      method: "PUT",
+      path: "/match-1/force-score",
+      body: { team1_score: 2, team2_score: 1, status: "COMPLETED", guildId: "guild-1" },
+      adminCheck,
+      locals: { discordClient },
+    });
+
+    expect(res.status).toBe(200);
+    expect(phaseChannel.send).toHaveBeenCalledTimes(2);
+    // 1er message : embed du score arbitré
+    const firstArg = phaseChannel.send.mock.calls[0]?.[0] as { embeds?: { data?: { description?: string } }[] };
+    expect(firstArg?.embeds?.[0]?.data?.description).toContain("Alpha");
+    expect(firstArg?.embeds?.[0]?.data?.description).toContain("Bravo");
+    // 2e message : annonce du match suivant (Alpha vs Charlie)
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("NOUVEAU MATCH DE BRACKET");
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("Alpha");
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("Charlie");
+  });
 });
+

@@ -5,10 +5,11 @@ import { supabase } from "../lib/supabase";
 import { sendServerError } from "../utils/serverError";
 import { IntegrationBus } from "../services/IntegrationBus";
 import { LeaderboardService } from "../services/LeaderboardService";
-import { ScoreService } from "../services/ScoreService";
+import { ScoreService, type MatchCompletionSource } from "../services/ScoreService";
 import { resolveMemberAccess, type DiscordClientLike } from "../services/MemberAccessService";
 import { isCheckinWindowOpen } from "../utils/manualTeamCheckin";
 import { resolveActiveDiscordGuild } from "../utils/tenant";
+import { logger } from "../utils/logger";
 
 const UNIQUE_VIOLATION = "23505";
 
@@ -70,13 +71,14 @@ async function canJoinPrivateTournament(
   return Boolean(guild && (await guild.members.fetch(callerId).catch(() => null)));
 }
 
-/** Effets communs d'un match terminé : classement de poule puis progression, depuis le score retenu. */
+/** Effets communs d'un match terminé : classement de poule, annonce Discord fail-safe puis progression. */
 async function completeMatch(
   req: Request,
   organizationId: string | null | undefined,
   match: MatchRecord,
   team1Score: number,
   team2Score: number,
+  source: MatchCompletionSource,
 ): Promise<void> {
   const team1 = typeof match.team1_id === "string" ? match.team1_id : null;
   const team2 = typeof match.team2_id === "string" ? match.team2_id : null;
@@ -86,13 +88,42 @@ async function completeMatch(
   if (typeof match.group_id === "string") {
     await LeaderboardService.calculateGroupStandings(match.group_id);
   }
+
+  // SEC-26 : la progression reste 100 % en base quand l'intégration Discord est coupée.
+  const activeGuildId = await resolveActiveDiscordGuild(organizationId);
+  const discordClient = activeGuildId ? req.app?.locals?.discordClient : undefined;
+
+  if (typeof organizationId === "string" && typeof match.id === "string") {
+    await IntegrationBus.emit("onMatchCompleted", {
+      organizationId,
+      ...(typeof match.phase_id === "string" ? { phaseId: match.phase_id } : {}),
+      matchId: match.id,
+      ...(activeGuildId ? { guildId: activeGuildId } : {}),
+      ...(discordClient ? { discordClient } : {}),
+      data: {
+        source,
+        status: "COMPLETED",
+        team1_score: team1Score,
+        team2_score: team2Score,
+      },
+    });
+  }
+
+  const channel = discordClient
+    ? await ScoreService.resolveMatchChannel(match, discordClient, {
+        ...(activeGuildId ? { expectedGuildId: activeGuildId } : {}),
+      }).catch((err: unknown) => {
+        logger.warn(`[PlayerRouter] Impossible de résoudre le salon Discord pour le match ${String(match.id)}:`, err);
+        return undefined;
+      })
+    : undefined;
+
   await ScoreService.progressTeams(
     match,
-    undefined,
+    channel,
     isDraw ? null : team1Won ? team1 : team2,
     isDraw ? null : team1Won ? team2 : team1,
-    // SEC-26 : la progression reste 100 % en base quand l'intégration Discord est coupée.
-    (await resolveActiveDiscordGuild(organizationId)) ? req.app?.locals?.discordClient : undefined,
+    discordClient,
   );
 }
 
@@ -482,7 +513,7 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
         return res.status(400).json({ error: "Ce match est déjà terminé.", code: "MATCH_FINISHED" });
       }
 
-      await completeMatch(req, tObj.organization_id, { ...match, team1_score, team2_score, status: "COMPLETED" }, team1_score, team2_score);
+      await completeMatch(req, tObj.organization_id, { ...match, team1_score, team2_score, status: "COMPLETED" }, team1_score, team2_score, "WEB_STAFF");
       return res.status(200).json({ message: "Score validé par le staff", match: updated[0] });
     }
 
@@ -551,7 +582,7 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
       }
 
       const completedMatch = { ...match, status: "COMPLETED" };
-      await completeMatch(req, tObj.organization_id, completedMatch, team1_score, team2_score);
+      await completeMatch(req, tObj.organization_id, completedMatch, team1_score, team2_score, "WEB_CAPTAIN");
       return res.status(200).json({ message: "Score validé avec succès", match: completedMatch });
     }
 

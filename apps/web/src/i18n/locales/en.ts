@@ -111,6 +111,7 @@ export const en: typeof fr = {
     organizedBy: "Organized by {name}",
     unknownServer: "Organization",
     joinDiscord: "Join the Discord",
+    contactOrg: "Contact organization",
     privateBadge: "Private",
     loadError: "Could not load tournaments.",
     retry: "Retry",
@@ -435,7 +436,7 @@ export const en: typeof fr = {
     inviteLabel: "Discord invite link",
     inviteDesc: "Shown on public tournament pages (\"Join the Discord\" button). Use a permanent invite.",
     invitePlaceholder: "https://discord.gg/xxxx",
-    inviteInvalid: "Invalid Discord invite link (expected https://discord.gg/…).",
+    contactInvalid: "Invalid contact link (expected https:// URL).",
   },
   adminTournaments: {
     title: "🏆 Tournament Management",

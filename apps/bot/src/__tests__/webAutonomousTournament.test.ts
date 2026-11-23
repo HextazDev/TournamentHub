@@ -4,6 +4,7 @@ import { FakeSupabase } from "./helpers/fakeSupabase";
 const db = vi.hoisted(() => ({ current: null as FakeSupabase | null }));
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
 const progressTeams = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
+const resolveMatchChannel = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined as unknown));
 
 vi.mock("../lib/supabase", () => ({
   supabase: {
@@ -15,7 +16,7 @@ vi.mock("../lib/supabase", () => ({
 }));
 vi.mock("../utils/logger", () => ({ logger: log }));
 vi.mock("../services/ScoreService", () => ({
-  ScoreService: { progressTeams },
+  ScoreService: { progressTeams, resolveMatchChannel },
 }));
 vi.mock("../services/LeaderboardService", () => ({
   LeaderboardService: { calculateGroupStandings: vi.fn(async () => undefined) },
@@ -692,4 +693,55 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
       expect(res.status).toBe(201);
     });
   });
+
+  it("DISC-18 (#102): validation d'un score Web avec Discord actif émet onMatchCompleted et transmet le salon de phase à progressTeams", async () => {
+    db.current!.tables.tournaments![0]!.status = "ACTIVE";
+    db.current!.tables.matches![0]!.status = "WAITING_VALIDATION";
+    db.current!.tables.matches![0]!.team1_score = 2;
+    db.current!.tables.matches![0]!.team2_score = 0;
+    db.current!.tables.matches![0]!.reported_by_team_id = TEAM_1;
+    db.current!.tables.organization_integrations = [
+      { id: "int-d", organization_id: ORG_ID, provider: "DISCORD", external_id: "111111111111111111", enabled: true, status: "CONNECTED", config: {} },
+    ];
+
+    const onMatchCompleted = vi.fn(async () => undefined);
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin({ provider: "DISCORD", onMatchCompleted });
+
+    const fakeChannel = { id: "ch-phase", guildId: "111111111111111111" };
+    resolveMatchChannel.mockResolvedValueOnce(fakeChannel);
+    const fakeClient = { channels: { fetch: vi.fn() } };
+
+    const res = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/matches/${MATCH_1}/report-score`,
+      headers: { "x-discord-user-id": "cap-2" },
+      body: { team1_score: 2, team2_score: 0 },
+      locals: { discordClient: fakeClient },
+    });
+
+    expect(res.status).toBe(200);
+    expect(onMatchCompleted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        organizationId: ORG_ID,
+        matchId: MATCH_1,
+        guildId: "111111111111111111",
+        data: expect.objectContaining({ source: "WEB_CAPTAIN", status: "COMPLETED", team1_score: 2, team2_score: 0 }),
+      }),
+    );
+    expect(resolveMatchChannel).toHaveBeenCalledWith(
+      expect.objectContaining({ id: MATCH_1 }),
+      fakeClient,
+      { expectedGuildId: "111111111111111111" },
+    );
+    expect(progressTeams).toHaveBeenCalledWith(
+      expect.objectContaining({ id: MATCH_1 }),
+      fakeChannel,
+      TEAM_1,
+      TEAM_2,
+      fakeClient,
+    );
+  });
 });
+

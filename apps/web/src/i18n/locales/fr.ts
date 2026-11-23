@@ -109,6 +109,7 @@ export const fr = {
     organizedBy: "Organisé par {name}",
     unknownServer: "Organisation",
     joinDiscord: "Rejoindre le Discord",
+    contactOrg: "Contacter l'organisation",
     privateBadge: "Privé",
     loadError: "Impossible de charger les tournois.",
     retry: "Réessayer",
@@ -433,7 +434,7 @@ export const fr = {
     inviteLabel: "Lien d'invitation Discord",
     inviteDesc: "Affiché sur les pages publiques des tournois (bouton « Rejoindre le Discord »). Utilisez une invitation permanente.",
     invitePlaceholder: "https://discord.gg/xxxx",
-    inviteInvalid: "Lien d'invitation Discord invalide (https://discord.gg/… attendu).",
+    contactInvalid: "Lien de contact invalide (URL https:// attendue).",
   },
   adminTournaments: {
     title: "🏆 Gestion des Tournois",

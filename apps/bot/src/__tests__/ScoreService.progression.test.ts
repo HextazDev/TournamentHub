@@ -330,5 +330,50 @@ describe("ScoreService — Cas limites de scores & progression (SCR-01 à SCR-04
         expect.stringContaining("Alpha"),
       );
     });
+
+    it("DISC-18 (#102): sans channel explicite, résout phases.discord_channel_id pour annoncer le match suivant et une égalité", async () => {
+      const fake = seedDatabase("COMPLETED", { team1_score: 2, team2_score: 0 });
+      fake.tables.phases![0]!.discord_channel_id = "ch-bracket-1";
+      const finalMatch = fake.tables.matches!.find((m) => m.id === "match-final")!;
+      finalMatch.team1_id = "team-b";
+
+      const resolvedChannel = {
+        id: "ch-bracket-1",
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+      const client = {
+        channels: { fetch: vi.fn().mockResolvedValue(resolvedChannel) },
+      };
+
+      const match = fake.tables.matches![0]!;
+      await ScoreService.progressTeams(match, undefined, "team-a", "team-b", client);
+
+      expect(client.channels.fetch).toHaveBeenCalledWith("ch-bracket-1");
+      expect(resolvedChannel.send).toHaveBeenCalledWith(expect.stringContaining("NOUVEAU MATCH DE BRACKET"));
+
+      // Égalité sans channel explicite ➜ résout le salon de phase et poste l'alerte SCR-06
+      resolvedChannel.send.mockClear();
+      await ScoreService.progressTeams(match, undefined, null, null, client);
+      expect(resolvedChannel.send).toHaveBeenCalledWith(expect.stringContaining("MATCH NUL"));
+    });
+
+    it("DISC-18: une panne lors de l'envoi Discord dans progressTeams ne bloque jamais la progression en base", async () => {
+      const fake = seedDatabase("COMPLETED", { team1_score: 2, team2_score: 0 });
+      const finalMatch = fake.tables.matches!.find((m) => m.id === "match-final")!;
+      finalMatch.team1_id = "team-b";
+
+      const failingChannel = {
+        guildId: "guild-1",
+        send: vi.fn().mockRejectedValue(new Error("Discord 503")),
+      };
+
+      await expect(
+        ScoreService.progressTeams(fake.tables.matches![0]!, failingChannel as never, "team-a", "team-b"),
+      ).resolves.toBeUndefined();
+      expect(finalMatch.team2_id).toBe("team-a");
+    });
   });
 });
+

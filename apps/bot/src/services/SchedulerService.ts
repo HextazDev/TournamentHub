@@ -11,6 +11,7 @@ import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage } from "../i18n";
 import { logger } from "../utils/logger";
 import { resolveActiveDiscordGuild } from "../utils/tenant";
+import { IntegrationBus } from "./IntegrationBus";
 import { readTournamentDiscordConfig, type Tournament } from "@hub/shared";
 
 export type SchedulableTournament = Pick<Tournament, "id"> &
@@ -218,75 +219,91 @@ export class SchedulerService {
     try {
       logger.info(`[Scheduler] Executing Check-in Open for tournament ${tournamentId}`);
 
-      // Always fetch fresh tournament data
       const { data: tournament } = await supabase
         .from("tournaments")
-        .select("*")
+        .select("id, organization_id")
         .eq("id", tournamentId)
         .single();
 
-      if (!tournament) return;
-      // CHK-01 : la fenêtre de check-in vit en base ; sans intégration active, rien n'est publié sur Discord.
-      const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
-      if (!guildId) return;
+      if (!tournament?.organization_id) return;
 
-      // Double-check: if message already exists, skip
-      if (tournament.checkin_message_id) {
-        logger.info(`[Scheduler] Check-in message already exists for ${tournamentId}, skipping.`);
-        return;
-      }
-
-      const discordCfg = readTournamentDiscordConfig(tournament.discord_config);
-      const checkinChannelId = discordCfg.checkin_channel_id;
-      const captainRoleId = discordCfg.captain_role_id;
-
-      if (!checkinChannelId) {
-        logger.warn(`[Scheduler] Missing discord_config.checkin_channel_id for tournament ${tournamentId}`);
-        return;
-      }
-
-      const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;
-      if (!channel || !("send" in channel)) return;
-
-      const lang = await getGuildLanguage(guildId, tournamentId);
-      const mentionsMessage = captainRoleId
-        ? tBot(lang, "checkin.openMention", { role: `<@&${captainRoleId}>` })
-        : tBot(lang, "checkin.openNoMention");
-
-      const checkinEmbed = new EmbedBuilder()
-        .setTitle(tBot(lang, "checkin.openTitle"))
-        .setDescription(
-          tBot(lang, "checkin.openDescription", {
-            name: tournament.name,
-            closesAt: `<t:${Math.floor(new Date(tournament.checkin_end_at).getTime() / 1000)}:R>`,
-          }),
-        )
-        .setColor(0x00ff00);
-
-      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId("btn_checkin")
-          .setLabel(tBot(lang, "checkin.validateButton"))
-          .setStyle(ButtonStyle.Success)
-          .setEmoji("✅"),
-      );
-
-      const msg = await channel.send({
-        content: mentionsMessage,
-        embeds: [checkinEmbed],
-        components: [row],
+      await IntegrationBus.emit("onCheckinOpened", {
+        organizationId: tournament.organization_id,
+        tournamentId,
+        ...(this.client ? { discordClient: this.client } : {}),
       });
-
-      // Save message ID immediately
-      await supabase
-        .from("tournaments")
-        .update({ checkin_message_id: msg.id })
-        .eq("id", tournamentId);
-
-      logger.info(`[Scheduler] Check-in Embed published and checkin_message_id saved for ${tournamentId}.`);
     } catch (e) {
       logger.error("[Scheduler] Failed opening checkin:", e);
     }
+  }
+
+  /** Effet Discord de l'ouverture du check-in, appelé par DiscordIntegrationPlugin.onCheckinOpened (CHK-01). */
+  public static async publishDiscordCheckinOpen(tournamentId: string, guildId: string, client: Client): Promise<void> {
+    const { data: tournament } = await supabase
+      .from("tournaments")
+      .select("*")
+      .eq("id", tournamentId)
+      .single();
+
+    if (!tournament) return;
+
+    // Double-check: if message already exists, skip (idempotence CHK-01)
+    if (tournament.checkin_message_id) {
+      logger.info(`[Scheduler] Check-in message already exists for ${tournamentId}, skipping.`);
+      return;
+    }
+
+    const discordCfg = readTournamentDiscordConfig(tournament.discord_config);
+    const checkinChannelId = discordCfg.checkin_channel_id;
+    const captainRoleId = discordCfg.captain_role_id;
+
+    if (!checkinChannelId) {
+      logger.warn(`[Scheduler] Missing discord_config.checkin_channel_id for tournament ${tournamentId}`);
+      return;
+    }
+
+    const channel = (await client.channels.fetch(checkinChannelId)) as TextChannel | null;
+    if (!channel || !("send" in channel)) return;
+    if ("guildId" in channel && channel.guildId && channel.guildId !== guildId) {
+      throw new Error(`Le salon de check-in ${checkinChannelId} n'appartient pas au serveur lié.`);
+    }
+
+    const lang = await getGuildLanguage(guildId, tournamentId);
+    const mentionsMessage = captainRoleId
+      ? tBot(lang, "checkin.openMention", { role: `<@&${captainRoleId}>` })
+      : tBot(lang, "checkin.openNoMention");
+
+    const checkinEmbed = new EmbedBuilder()
+      .setTitle(tBot(lang, "checkin.openTitle"))
+      .setDescription(
+        tBot(lang, "checkin.openDescription", {
+          name: tournament.name,
+          closesAt: `<t:${Math.floor(new Date(tournament.checkin_end_at).getTime() / 1000)}:R>`,
+        }),
+      )
+      .setColor(0x00ff00);
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId("btn_checkin")
+        .setLabel(tBot(lang, "checkin.validateButton"))
+        .setStyle(ButtonStyle.Success)
+        .setEmoji("✅"),
+    );
+
+    const msg = await channel.send({
+      content: mentionsMessage,
+      embeds: [checkinEmbed],
+      components: [row],
+    });
+
+    // Save message ID immediately
+    await supabase
+      .from("tournaments")
+      .update({ checkin_message_id: msg.id })
+      .eq("id", tournamentId);
+
+    logger.info(`[Scheduler] Check-in Embed published and checkin_message_id saved for ${tournamentId}.`);
   }
 
   private static async handleReminders(tournamentId: string, minutesLeft: number) {
@@ -330,36 +347,54 @@ export class SchedulerService {
 
       const { data: latestTournament } = await supabase
         .from("tournaments")
-        .select("organization_id, checkin_message_id, discord_config")
+        .select("organization_id")
         .eq("id", tournamentId)
         .single();
 
-      if (!latestTournament?.checkin_message_id) return;
-      const guildId = await resolveActiveDiscordGuild(latestTournament.organization_id);
-      if (!guildId) return;
+      if (!latestTournament?.organization_id) return;
 
-      const checkinChannelId = readTournamentDiscordConfig(latestTournament.discord_config).checkin_channel_id;
-      if (!checkinChannelId) return;
-
-      const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;
-      if (!channel || !("messages" in channel)) return;
-
-      const msg = await channel.messages.fetch(latestTournament.checkin_message_id).catch(() => null);
-      if (msg) {
-        const lang = await getGuildLanguage(guildId, tournamentId);
-        const checkinEmbed = new EmbedBuilder()
-          .setTitle(tBot(lang, "checkin.closedTitle"))
-          .setDescription(tBot(lang, "checkin.closedDescription"))
-          .setColor(0xff0000);
-
-        await msg.edit({
-          content: tBot(lang, "checkin.closedContent"),
-          embeds: [checkinEmbed],
-          components: [],
-        });
-      }
+      await IntegrationBus.emit("onCheckinClosed", {
+        organizationId: latestTournament.organization_id,
+        tournamentId,
+        ...(this.client ? { discordClient: this.client } : {}),
+      });
     } catch (e) {
       logger.error("[Scheduler] Failed closing checkin:", e);
+    }
+  }
+
+  /** Effet Discord de la fermeture du check-in, appelé par DiscordIntegrationPlugin.onCheckinClosed (CHK-01). */
+  public static async publishDiscordCheckinClose(tournamentId: string, guildId: string, client: Client): Promise<void> {
+    const { data: latestTournament } = await supabase
+      .from("tournaments")
+      .select("organization_id, checkin_message_id, discord_config")
+      .eq("id", tournamentId)
+      .single();
+
+    if (!latestTournament?.checkin_message_id) return;
+
+    const checkinChannelId = readTournamentDiscordConfig(latestTournament.discord_config).checkin_channel_id;
+    if (!checkinChannelId) return;
+
+    const channel = (await client.channels.fetch(checkinChannelId)) as TextChannel | null;
+    if (!channel || !("messages" in channel)) return;
+    if ("guildId" in channel && channel.guildId && channel.guildId !== guildId) {
+      throw new Error(`Le salon de check-in ${checkinChannelId} n'appartient pas au serveur lié.`);
+    }
+
+    const msg = await channel.messages.fetch(latestTournament.checkin_message_id).catch(() => null);
+    if (msg) {
+      const lang = await getGuildLanguage(guildId, tournamentId);
+      const checkinEmbed = new EmbedBuilder()
+        .setTitle(tBot(lang, "checkin.closedTitle"))
+        .setDescription(tBot(lang, "checkin.closedDescription"))
+        .setColor(0xff0000);
+
+      await msg.edit({
+        content: tBot(lang, "checkin.closedContent"),
+        embeds: [checkinEmbed],
+        components: [],
+      });
     }
   }
 }
