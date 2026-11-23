@@ -99,11 +99,11 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(createRes.status).toBe(201);
     expect(createRes.body).toMatchObject({
       organization_id: ORG_ID,
-      guild_id: null,
       name: "Web Cup #2",
       status: "DRAFT",
       language: "fr",
     });
+    expect(createRes.body).not.toHaveProperty("guild_id");
   });
 
   it("INT-02: ouvre les inscriptions, lance et clôture un tournoi d'une organisation Web sans salon ni bot Discord", async () => {

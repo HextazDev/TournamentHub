@@ -5,7 +5,7 @@ type DbResult = { data: unknown; error: DbError | null };
 
 const db = vi.hoisted(() => ({ from: vi.fn() }));
 const log = vi.hoisted(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }));
-const tenant = vi.hoisted(() => ({ verifyTeamGuild: vi.fn() }));
+const tenant = vi.hoisted(() => ({ verifyTeamOrganization: vi.fn() }));
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({ logger: log }));
 vi.mock("../services/CaptainPresenceService", () => ({
@@ -15,8 +15,8 @@ vi.mock("../services/CaptainPresenceService", () => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
-  verifyTeamGuild: tenant.verifyTeamGuild,
-  verifyTournamentGuild: vi.fn(),
+  verifyTeamOrganization: tenant.verifyTeamOrganization,
+  verifyTournamentOrganization: vi.fn(),
 }));
 
 import { TEAM_MEMBERS_MAX, TEAM_NAME_MAX_LENGTH } from "@hub/shared";
@@ -84,7 +84,7 @@ const put = (payload: unknown) => callRoute(teamRouter, { method: "PUT", path: `
 beforeEach(() => {
   vi.clearAllMocks();
   writes = { teamUpdates: [], memberDeletes: 0, memberInserts: [] };
-  tenant.verifyTeamGuild.mockResolvedValue(true);
+  tenant.verifyTeamOrganization.mockResolvedValue(true);
   teamResult = { data: { id: TEAM_ID, name: "Les Bolides", captain_discord_id: CAPTAIN }, error: null };
   deleteResult = { error: null };
   insertResult = { data: [{ id: "m-1", team_id: TEAM_ID }], error: null };
@@ -112,7 +112,7 @@ describe("PUT /api/teams/:id — REG-10 validation du corps", () => {
   });
 
   it("SEC: équipe d'un autre serveur ➜ 403 sans écriture (contrôle avant la validation)", async () => {
-    tenant.verifyTeamGuild.mockResolvedValue(false);
+    tenant.verifyTeamOrganization.mockResolvedValue(false);
     const out = await put({});
     expect(out.status).toBe(403);
     expect(db.from).not.toHaveBeenCalled();

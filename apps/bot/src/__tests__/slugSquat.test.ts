@@ -13,7 +13,7 @@ vi.mock("../lib/supabase", () => ({
 vi.mock("../utils/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 import { clearMemberAccessCache, resolveMemberAccess } from "../services/MemberAccessService";
-import { resolveOrganization, verifyTournamentGuild } from "../utils/tenant";
+import { resolveOrganization, verifyTournamentOrganization } from "../utils/tenant";
 import { OrganizationSlugSchema } from "@hub/shared";
 
 const VICTIM_GUILD = "123456789012345678";
@@ -71,8 +71,8 @@ describe("SEC-01: Protection contre le squat de slug et collision snowflake Disc
     const decision = await resolveMemberAccess(client as any, VICTIM_GUILD, "attacker");
     expect(decision.allowed).toBe(false);
 
-    // verifyTournamentGuild doit refuser l'accès au tournoi victime depuis le tenant attaquant
-    const attackerAccess = await verifyTournamentGuild("t-victim", ATTACKER_ORG);
+    // verifyTournamentOrganization doit refuser l'accès au tournoi victime depuis le tenant attaquant
+    const attackerAccess = await verifyTournamentOrganization("t-victim", ATTACKER_ORG);
     expect(attackerAccess).toBe(false);
   });
 });

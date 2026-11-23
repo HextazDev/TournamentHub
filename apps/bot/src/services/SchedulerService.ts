@@ -11,10 +11,10 @@ import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage } from "../i18n";
 import { logger } from "../utils/logger";
 import { resolveActiveDiscordGuild } from "../utils/tenant";
-import type { Tournament } from "@hub/shared";
+import { readTournamentDiscordConfig, type Tournament } from "@hub/shared";
 
 export type SchedulableTournament = Pick<Tournament, "id"> &
-  Partial<Pick<Tournament, "checkin_mode" | "checkin_start_at" | "checkin_end_at" | "guild_id" | "status">>;
+  Partial<Pick<Tournament, "checkin_mode" | "checkin_start_at" | "checkin_end_at" | "organization_id" | "status">>;
 
 export class SchedulerService {
   private static activeJobs: Map<string, schedule.Job> = new Map();
@@ -152,7 +152,7 @@ export class SchedulerService {
   private static async catchUpCheckin(tournamentId: string) {
     const { data: tournament } = await supabase
       .from("tournaments")
-      .select("id, organization_id, checkin_message_id, discord_checkin_channel_id")
+      .select("id, organization_id, checkin_message_id, discord_config")
       .eq("id", tournamentId)
       .single();
 
@@ -167,10 +167,11 @@ export class SchedulerService {
 
     // No message ID — but maybe the message was sent and the ID wasn't saved (crash before DB write).
     // Check if the bot already sent a recent message in the check-in channel.
-    if (tournament.discord_checkin_channel_id) {
-      const alreadySent = await this.botAlreadySentCheckinMessage(tournament.discord_checkin_channel_id, tournamentId);
+    const checkinChannelId = readTournamentDiscordConfig(tournament.discord_config).checkin_channel_id;
+    if (checkinChannelId) {
+      const alreadySent = await this.botAlreadySentCheckinMessage(checkinChannelId, tournamentId);
       if (alreadySent) {
-        logger.info(`[Scheduler] Catch-up: bot already sent a check-in message in channel ${tournament.discord_checkin_channel_id}. Updating DB and skipping.`);
+        logger.info(`[Scheduler] Catch-up: bot already sent a check-in message in channel ${checkinChannelId}. Updating DB and skipping.`);
         // Save the message ID so future restarts won't re-trigger
         await supabase
           .from("tournaments")
@@ -235,11 +236,12 @@ export class SchedulerService {
         return;
       }
 
-      const checkinChannelId = tournament.discord_checkin_channel_id;
-      const captainRoleId = tournament.discord_captain_role_id;
+      const discordCfg = readTournamentDiscordConfig(tournament.discord_config);
+      const checkinChannelId = discordCfg.checkin_channel_id;
+      const captainRoleId = discordCfg.captain_role_id;
 
       if (!checkinChannelId) {
-        logger.warn(`[Scheduler] Missing discord_checkin_channel_id for tournament ${tournamentId}`);
+        logger.warn(`[Scheduler] Missing discord_config.checkin_channel_id for tournament ${tournamentId}`);
         return;
       }
 
@@ -294,11 +296,12 @@ export class SchedulerService {
       // Fetch fresh tournament data
       const { data: tournament } = await supabase
         .from("tournaments")
-        .select("organization_id, discord_checkin_channel_id")
+        .select("organization_id, discord_config")
         .eq("id", tournamentId)
         .single();
 
-      if (!tournament?.discord_checkin_channel_id) return;
+      const checkinChannelId = readTournamentDiscordConfig(tournament?.discord_config).checkin_channel_id;
+      if (!tournament || !checkinChannelId) return;
       const guildId = await resolveActiveDiscordGuild(tournament.organization_id);
       if (!guildId) return;
 
@@ -310,7 +313,7 @@ export class SchedulerService {
 
       if (!teams || teams.length === 0) return;
 
-      const channel = (await this.client.channels.fetch(tournament.discord_checkin_channel_id)) as TextChannel;
+      const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;
       if (!channel || !("send" in channel)) return;
 
       const lang = await getGuildLanguage(guildId, tournamentId);
@@ -327,7 +330,7 @@ export class SchedulerService {
 
       const { data: latestTournament } = await supabase
         .from("tournaments")
-        .select("organization_id, checkin_message_id, discord_checkin_channel_id")
+        .select("organization_id, checkin_message_id, discord_config")
         .eq("id", tournamentId)
         .single();
 
@@ -335,7 +338,7 @@ export class SchedulerService {
       const guildId = await resolveActiveDiscordGuild(latestTournament.organization_id);
       if (!guildId) return;
 
-      const checkinChannelId = latestTournament.discord_checkin_channel_id;
+      const checkinChannelId = readTournamentDiscordConfig(latestTournament.discord_config).checkin_channel_id;
       if (!checkinChannelId) return;
 
       const channel = (await this.client.channels.fetch(checkinChannelId)) as TextChannel;

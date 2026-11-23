@@ -2,7 +2,12 @@ import { Client, Guild, ChannelType, CategoryChannel, PermissionFlagsBits, Overw
 import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage } from '../i18n';
 import { DomainError } from '../utils/serverError';
-import type { LaunchTournamentInput, Tournament } from '@hub/shared';
+import {
+  mergeTournamentDiscordConfig,
+  readTournamentDiscordConfig,
+  type LaunchTournamentInput,
+  type Tournament,
+} from '@hub/shared';
 
 function hasPerm(list: PermissionResolvable[] | undefined, bit: bigint): boolean {
   if (!list) return false;
@@ -146,8 +151,9 @@ export class LifecycleService {
     if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
 
     // DISC-10 : seule l'erreur Discord 10003 (Unknown Channel) signifie une catégorie absente ; toute autre panne remonte.
-    const existingCategory = tournament.discord_category_id
-      ? await guild.channels.fetch(tournament.discord_category_id).catch((fetchErr: unknown) => {
+    const tournamentDiscordCfg = readTournamentDiscordConfig(tournament.discord_config);
+    const existingCategory = tournamentDiscordCfg.category_id
+      ? await guild.channels.fetch(tournamentDiscordCfg.category_id).catch((fetchErr: unknown) => {
           if (isUnknownChannelError(fetchErr)) return null;
           throw fetchErr;
         })
@@ -172,23 +178,24 @@ export class LifecycleService {
   }
 
   private static async createLaunchChannels(
-    tournament: Pick<Tournament, 'id' | 'name' | 'discord_to_role_id' | 'discord_captain_role_id' | 'discord_announcement_channel_id'>,
+    tournament: Pick<Tournament, 'id' | 'name' | 'discord_config'>,
     guild: Guild,
     guildId: string,
   ): Promise<void> {
+    const discordCfg = readTournamentDiscordConfig(tournament.discord_config);
     const lang = await getGuildLanguage(guildId, tournament.id);
     const permissions: OverwriteData[] = [
       { id: guild.roles.everyone.id, deny: [PermissionFlagsBits.ViewChannel] },
     ];
-    if (tournament.discord_to_role_id) {
+    if (discordCfg.to_role_id) {
       permissions.push({
-        id: tournament.discord_to_role_id,
+        id: discordCfg.to_role_id,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
       });
     }
-    if (tournament.discord_captain_role_id) {
+    if (discordCfg.captain_role_id) {
       permissions.push({
-        id: tournament.discord_captain_role_id,
+        id: discordCfg.captain_role_id,
         allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory],
         deny: [PermissionFlagsBits.SendMessages],
       });
@@ -202,7 +209,9 @@ export class LifecycleService {
 
     const { error: categoryError } = await supabase
       .from('tournaments')
-      .update({ discord_category_id: category.id })
+      .update({
+        discord_config: mergeTournamentDiscordConfig(tournament.discord_config, { category_id: category.id }),
+      })
       .eq('id', tournament.id);
     if (categoryError) throw categoryError;
 
@@ -212,7 +221,7 @@ export class LifecycleService {
       parent: category.id,
     });
     await infoChannel.send({
-      ...(tournament.discord_captain_role_id ? { content: `<@&${tournament.discord_captain_role_id}>` } : {}),
+      ...(discordCfg.captain_role_id ? { content: `<@&${discordCfg.captain_role_id}>` } : {}),
       embeds: [{
         title: tBot(lang, 'lifecycle.tournamentLaunchedTitle'),
         description: tBot(lang, 'lifecycle.tournamentLaunchedDesc', { name: tournament.name }),
@@ -220,8 +229,8 @@ export class LifecycleService {
       }],
     });
 
-    if (tournament.discord_announcement_channel_id) {
-      const announcement = await guild.channels.fetch(tournament.discord_announcement_channel_id).catch(() => null);
+    if (discordCfg.announcement_channel_id) {
+      const announcement = await guild.channels.fetch(discordCfg.announcement_channel_id).catch(() => null);
       if (announcement?.isTextBased()) {
         await announcement.send(tBot(lang, 'lifecycle.tournamentActiveAnnounce', { name: tournament.name }));
       }
@@ -246,16 +255,17 @@ export class LifecycleService {
   static async deleteDiscordCategory(tournamentId: string, guildId: string, discordClient: Client): Promise<void> {
     const { data: tournament, error } = await supabase
       .from('tournaments')
-      .select('discord_category_id')
+      .select('discord_config')
       .eq('id', tournamentId)
       .single();
     if (error || !tournament) throw new Error('Tournament not found');
-    if (!tournament.discord_category_id) return;
+    const categoryId = readTournamentDiscordConfig(tournament.discord_config).category_id;
+    if (!categoryId) return;
 
     const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
     if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
 
-    const category = await guild.channels.fetch(tournament.discord_category_id).catch((fetchErr: unknown) => {
+    const category = await guild.channels.fetch(categoryId).catch((fetchErr: unknown) => {
       if (isUnknownChannelError(fetchErr)) return null;
       throw fetchErr;
     });
@@ -273,7 +283,7 @@ export class LifecycleService {
         .from('phases')
         .select(`
           *,
-          tournaments ( id, name, discord_category_id, discord_to_role_id ),
+          tournaments ( id, name, discord_config ),
           groups ( id, name, discord_channel_id )
         `)
         .eq('id', phaseId)
@@ -282,7 +292,8 @@ export class LifecycleService {
       if (phaseErr || !phase) throw new Error('Phase not found');
 
       const tournament = phase.tournaments;
-      if (!tournament.discord_category_id) {
+      const tournamentDiscordCfg = readTournamentDiscordConfig(tournament.discord_config);
+      if (!tournamentDiscordCfg.category_id) {
         throw new DomainError(409, 'Tournament does not have an active Discord Category. Please launch the tournament first.');
       }
 
@@ -307,9 +318,9 @@ export class LifecycleService {
             deny: [PermissionFlagsBits.ViewChannel],
           }
         ];
-        if (tournament.discord_to_role_id) {
+        if (tournamentDiscordCfg.to_role_id) {
           perms.push({
-            id: tournament.discord_to_role_id,
+            id: tournamentDiscordCfg.to_role_id,
             allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ManageChannels],
           });
         }
@@ -335,7 +346,7 @@ export class LifecycleService {
           const phaseChannel = await guild.channels.create({
             name: `${prefix}-${phase.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
             type: ChannelType.GuildText,
-            parent: tournament.discord_category_id,
+            parent: tournamentDiscordCfg.category_id,
             permissionOverwrites: perms,
           });
           channelId = phaseChannel.id;
@@ -385,7 +396,7 @@ export class LifecycleService {
             const groupChannel = await guild.channels.create({
               name: `groupe-${group.name.toLowerCase().replace(/[^a-z0-9]/g, '-')}`,
               type: ChannelType.GuildText,
-              parent: tournament.discord_category_id,
+              parent: tournamentDiscordCfg.category_id,
               permissionOverwrites: perms,
             });
             channelId = groupChannel.id;

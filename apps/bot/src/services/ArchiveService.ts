@@ -1,4 +1,5 @@
 import { Client, TextChannel } from "discord.js";
+import { readTournamentDiscordConfig, type TournamentDiscordConfig } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { resolveOrganization } from "../utils/tenant";
@@ -23,8 +24,7 @@ async function processInBatches<T>(
 
 export interface ArchivedTournamentInfo {
   id: string;
-  discord_captain_role_id?: string | null;
-  discord_checkin_channel_id?: string | null;
+  discord_config?: TournamentDiscordConfig | null;
 }
 
 export class ArchiveService {
@@ -38,37 +38,40 @@ export class ArchiveService {
     }
 
     try {
-      const guild = await client.guilds.fetch(guildId).catch(() => null);
-      if (!guild) {
-        logger.error(`[ArchiveService] Guild ${guildId} not found.`);
+      const org = await resolveOrganization(guildId);
+      if (!org || !org.discordEnabled || !org.discordGuildId) {
+        logger.warn(`[ArchiveService] Active Discord integration not found for ${guildId}.`);
         return;
       }
 
-      // 1. Fetch non-archived tournaments for this guild to protect active resources
+      const guild = await client.guilds.fetch(org.discordGuildId).catch(() => null);
+      if (!guild) {
+        logger.error(`[ArchiveService] Guild ${org.discordGuildId} not found.`);
+        return;
+      }
+
+      // 1. Fetch non-archived tournaments for this organization to protect active resources
       const { data: nonArchived, error: nonArchivedErr } = await supabase
         .from("tournaments")
-        .select("id, discord_captain_role_id, discord_checkin_channel_id")
-        .eq("guild_id", guildId)
+        .select("id, discord_config")
+        .eq("organization_id", org.id)
         .neq("status", "ARCHIVED");
 
       if (nonArchivedErr) {
-        logger.error(`[ArchiveService] Failed to fetch non-archived tournaments for ${guildId}:`, nonArchivedErr);
+        logger.error(`[ArchiveService] Failed to fetch non-archived tournaments for ${org.id}:`, nonArchivedErr);
         return;
       }
 
       const activeTournaments = (nonArchived ?? []) as {
         id: string;
-        discord_captain_role_id: string | null;
-        discord_checkin_channel_id: string | null;
+        discord_config?: TournamentDiscordConfig | null;
       }[];
       const activeTournamentIds = activeTournaments.map((t) => t.id);
 
-      // Fetch organization Discord settings for fallback role/channel
-      const org = await resolveOrganization(guildId);
       const serverCaptainRoleId =
-        typeof org?.discordConfig?.captain_role_id === "string" ? org.discordConfig.captain_role_id : null;
+        typeof org.discordConfig?.captain_role_id === "string" ? org.discordConfig.captain_role_id : null;
       const serverCheckinChannelId =
-        typeof org?.discordConfig?.checkin_channel_id === "string" ? org.discordConfig.checkin_channel_id : null;
+        typeof org.discordConfig?.checkin_channel_id === "string" ? org.discordConfig.checkin_channel_id : null;
 
       // Collect active captains (who must keep their role)
       const activeCaptainDiscordIds = new Set<string>();
@@ -79,7 +82,7 @@ export class ArchiveService {
           .in("tournament_id", activeTournamentIds);
 
         if (teamsErr) {
-          logger.error(`[ArchiveService] Failed to fetch active teams for guild ${guildId}:`, teamsErr);
+          logger.error(`[ArchiveService] Failed to fetch active teams for organization ${org.id}:`, teamsErr);
           return;
         }
 
@@ -95,7 +98,7 @@ export class ArchiveService {
       // Collect captain roles to clean from archived tournaments
       const captainRolesToClean = new Set<string>();
       for (const t of archivedTournaments) {
-        const roleId = t.discord_captain_role_id || serverCaptainRoleId;
+        const roleId = readTournamentDiscordConfig(t.discord_config).captain_role_id || serverCaptainRoleId;
         if (roleId) {
           captainRolesToClean.add(roleId);
         }
@@ -127,14 +130,14 @@ export class ArchiveService {
       // Collect active checkin channels (must NOT be locked)
       const activeCheckinChannels = new Set<string>();
       for (const t of activeTournaments) {
-        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
+        const chanId = readTournamentDiscordConfig(t.discord_config).checkin_channel_id || serverCheckinChannelId;
         if (chanId) activeCheckinChannels.add(chanId);
       }
 
       // Collect archived checkin channels that can be locked
       const checkinChannelsToLock = new Set<string>();
       for (const t of archivedTournaments) {
-        const chanId = t.discord_checkin_channel_id || serverCheckinChannelId;
+        const chanId = readTournamentDiscordConfig(t.discord_config).checkin_channel_id || serverCheckinChannelId;
         if (chanId && !activeCheckinChannels.has(chanId)) {
           checkinChannelsToLock.add(chanId);
         }

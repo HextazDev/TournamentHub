@@ -2,7 +2,7 @@
 
 ## Fonctionnement
 
-Au check-in, le capitaine reçoit le rôle Capitaine du tournoi (`tournaments.discord_captain_role_id`) et son pseudo devient le nom de son équipe (32 caractères max). Au check-out, le pseudo d'équipe et le rôle sont retirés.
+Au check-in, le capitaine reçoit le rôle Capitaine du tournoi (`tournaments.discord_config.captain_role_id`) et son pseudo devient le nom de son équipe (32 caractères max). Au check-out, le pseudo d'équipe et le rôle sont retirés.
 
 Tout passe par `CaptainPresenceService` (`apps/bot/src/services/CaptainPresenceService.ts`), appelé :
 

@@ -24,15 +24,17 @@ export async function DELETE(
   }
 
   const profile = await getServerProfile(guildId);
-
-  // SEC-01 / SEC-40 : filtre strict par organization_id résolu (aucune interpolation dans .or()).
-  let delQuery = supabaseAdmin.from("tournaments").delete().eq("id", id);
-  if (profile?.organization_id) {
-    delQuery = delQuery.eq("organization_id", profile.organization_id);
-  } else {
-    delQuery = delQuery.eq("guild_id", guildId);
+  if (!profile?.organization_id) {
+    return NextResponse.json({ error: "Tournoi introuvable" }, { status: 404 });
   }
-  const { data, error } = await delQuery.select("id");
+
+  // SEC-01 / SEC-40 : filtre strict par organization_id résolu (aucun fallback guild_id).
+  const { data, error } = await supabaseAdmin
+    .from("tournaments")
+    .delete()
+    .eq("id", id)
+    .eq("organization_id", profile.organization_id)
+    .select("id");
 
   if (error) {
     console.error("[DELETE tournament]", error);

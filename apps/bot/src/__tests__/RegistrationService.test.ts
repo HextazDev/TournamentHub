@@ -10,12 +10,64 @@ vi.mock("../lib/supabase", () => ({
 
 import { supabase } from "../lib/supabase";
 
+function mockRegistrationTables(options: {
+  tournament: { id: string; organization_id: string; name: string; description: string } | null;
+  guildOrg?: { guildId: string; orgId: string; enabled?: boolean } | null;
+}) {
+  (supabase.from as ReturnType<typeof vi.fn>).mockImplementation((table: string) => {
+    if (table === "tournaments") {
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        single: vi.fn().mockResolvedValue(
+          options.tournament ? { data: options.tournament, error: null } : { data: null, error: new Error("Not found") },
+        ),
+      };
+    }
+    if (table === "organization_integrations") {
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: options.guildOrg
+            ? {
+                organization_id: options.guildOrg.orgId,
+                external_id: options.guildOrg.guildId,
+                enabled: options.guildOrg.enabled ?? true,
+                config: {},
+              }
+            : null,
+          error: null,
+        }),
+      };
+    }
+    if (table === "organizations") {
+      return {
+        select: vi.fn().mockReturnThis(),
+        eq: vi.fn().mockReturnThis(),
+        maybeSingle: vi.fn().mockResolvedValue({
+          data: options.guildOrg
+            ? { id: options.guildOrg.orgId, slug: "org-slug", name: "Org", language: "fr" }
+            : null,
+          error: null,
+        }),
+      };
+    }
+    return {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn().mockResolvedValue({ data: null, error: null }),
+      maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
+    };
+  });
+}
+
 describe("RegistrationService - Anti-IDOR Security (SEC-01)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("should deny access if tournament.guild_id does not match interaction.guildId", async () => {
+  it("should deny access if tournament.organization_id does not match interaction guild's organization", async () => {
     const mockReply = vi.fn();
     const mockInteraction = {
       isButton: () => true,
@@ -25,22 +77,14 @@ describe("RegistrationService - Anti-IDOR Security (SEC-01)", () => {
       reply: mockReply,
     };
 
-    const mockSelect = vi.fn().mockReturnThis();
-    const mockEq = vi.fn().mockReturnThis();
-    const mockSingle = vi.fn().mockResolvedValue({
-      data: {
+    mockRegistrationTables({
+      tournament: {
         id: "tourney123",
-        guild_id: "guild-victim",
+        organization_id: "org-victim",
         name: "Victim Tournament",
         description: "Private description",
       },
-      error: null,
-    });
-
-    (supabase.from as any).mockReturnValue({
-      select: mockSelect,
-      eq: mockEq,
-      single: mockSingle,
+      guildOrg: { guildId: "guild-attacker", orgId: "org-attacker", enabled: true },
     });
 
     await RegistrationService.handleInteraction(mockInteraction as any);
@@ -52,7 +96,36 @@ describe("RegistrationService - Anti-IDOR Security (SEC-01)", () => {
     });
   });
 
-  it("should allow access and return embed if tournament.guild_id matches interaction.guildId", async () => {
+  it("should deny access if Discord integration is disabled for the organization (SEC-26)", async () => {
+    const mockReply = vi.fn();
+    const mockInteraction = {
+      isButton: () => true,
+      isModalSubmit: () => false,
+      customId: "btn_toggle_lang_tourney123_fr",
+      guildId: "guild-legit",
+      reply: mockReply,
+    };
+
+    mockRegistrationTables({
+      tournament: {
+        id: "tourney123",
+        organization_id: "org-legit",
+        name: "Legit Tournament",
+        description: "Public description",
+      },
+      guildOrg: { guildId: "guild-legit", orgId: "org-legit", enabled: false },
+    });
+
+    await RegistrationService.handleInteraction(mockInteraction as any);
+
+    expect(mockReply).toHaveBeenCalledTimes(1);
+    expect(mockReply).toHaveBeenCalledWith({
+      content: "❌ Tournoi introuvable ou accès non autorisé.",
+      ephemeral: true,
+    });
+  });
+
+  it("should allow access and return embed if tournament.organization_id matches interaction guild's organization", async () => {
     const mockReply = vi.fn();
     const mockInteraction = {
       isButton: () => true,
@@ -62,22 +135,14 @@ describe("RegistrationService - Anti-IDOR Security (SEC-01)", () => {
       reply: mockReply,
     };
 
-    const mockSelect = vi.fn().mockReturnThis();
-    const mockEq = vi.fn().mockReturnThis();
-    const mockSingle = vi.fn().mockResolvedValue({
-      data: {
+    mockRegistrationTables({
+      tournament: {
         id: "tourney123",
-        guild_id: "guild-legit",
+        organization_id: "org-legit",
         name: "Legit Tournament",
         description: "Public description",
       },
-      error: null,
-    });
-
-    (supabase.from as any).mockReturnValue({
-      select: mockSelect,
-      eq: mockEq,
-      single: mockSingle,
+      guildOrg: { guildId: "guild-legit", orgId: "org-legit", enabled: true },
     });
 
     await RegistrationService.handleInteraction(mockInteraction as any);
@@ -101,17 +166,9 @@ describe("RegistrationService - Anti-IDOR Security (SEC-01)", () => {
       reply: mockReply,
     };
 
-    const mockSelect = vi.fn().mockReturnThis();
-    const mockEq = vi.fn().mockReturnThis();
-    const mockSingle = vi.fn().mockResolvedValue({
-      data: null,
-      error: new Error("Not found"),
-    });
-
-    (supabase.from as any).mockReturnValue({
-      select: mockSelect,
-      eq: mockEq,
-      single: mockSingle,
+    mockRegistrationTables({
+      tournament: null,
+      guildOrg: { guildId: "guild-any", orgId: "org-any", enabled: true },
     });
 
     await RegistrationService.handleInteraction(mockInteraction as any);

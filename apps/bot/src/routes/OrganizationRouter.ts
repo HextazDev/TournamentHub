@@ -18,7 +18,7 @@ import {
 import { supabase } from "../lib/supabase";
 import { encryptSecretPayload, getActiveEncryptionKeyVersion } from "../utils/crypto";
 import { DomainError, sendServerError } from "../utils/serverError";
-import { clearOrganizationCache, resolveOrganization, verifyTournamentGuild, type ResolvedOrganization } from "../utils/tenant";
+import { clearOrganizationCache, resolveOrganization, verifyTournamentOrganization, type ResolvedOrganization } from "../utils/tenant";
 import {
   checkGuildManageRights,
   invalidateGuildAccess,
@@ -26,6 +26,7 @@ import {
   type DiscordClientLike,
 } from "../services/MemberAccessService";
 import { refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
+import { ChannelAccessService } from "../services/ChannelAccessService";
 import { discordIntegrationPlugin } from "../services/integrations/DiscordIntegrationPlugin";
 import { logger } from "../utils/logger";
 
@@ -37,7 +38,7 @@ const LAST_OWNER = "HT002";
 const INVALID_INVITE = "HT003";
 const INVALID_TRANSFER = "HT004";
 
-const NATIVE_MANAGER_ROLES: ReadonlySet<string> = new Set(["ORG_OWNER", "OWNER", "ORG_ADMIN", "ADMIN"]);
+const NATIVE_MANAGER_ROLES: ReadonlySet<string> = new Set(["ORG_OWNER", "ORG_ADMIN"]);
 
 /**
  * Identité de l'appelant. CLN-05 : la confiance en `x-discord-user-id` ne tient QUE parce que
@@ -440,7 +441,7 @@ organizationRouter.post("/:orgId/invites", async (req, res) => {
       return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
     const { role, tournament_id, expires_in_hours } = parsed.data;
-    if (tournament_id && !(await verifyTournamentGuild(tournament_id, auth.org.id))) {
+    if (tournament_id && !(await verifyTournamentOrganization(tournament_id, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
 
@@ -507,7 +508,7 @@ organizationRouter.get("/:orgId/tournaments/:tournamentId/staff", async (req, re
     const { tournamentId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
     const { data, error } = await supabase.from("tournament_staff").select("*").eq("tournament_id", tournamentId);
@@ -524,7 +525,7 @@ organizationRouter.put("/:orgId/tournaments/:tournamentId/staff", async (req, re
     const { tournamentId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
 
@@ -569,7 +570,7 @@ organizationRouter.delete("/:orgId/tournaments/:tournamentId/staff/:userId", asy
     const { tournamentId, userId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
     const { error } = await supabase
@@ -721,6 +722,48 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       if (enabled && externalId && (!wasActive || externalId !== previousExternalId)) {
         shellOrgIdToReclaim = await resolveLinkableDiscordGuild(req, auth.org, externalId, auth.callerId);
       }
+
+      // SEC-21 (#88) : portage depuis ServerSettingsRouter — tout salon configuré/modifié doit être accessible au TO et au bot.
+      if (parsed.data.provider === "DISCORD" && parsed.data.config) {
+        const currentCfg = existingRow?.config ?? {};
+        const channelChanged = (requested: unknown, current: unknown) =>
+          requested !== undefined &&
+          (requested || null) !== (typeof current === "string" ? current : null) &&
+          typeof requested === "string" &&
+          requested.trim().length > 0;
+
+        const modifiedChannels: string[] = [];
+        if (channelChanged(parsed.data.config.registration_channel_id, currentCfg.registration_channel_id)) {
+          modifiedChannels.push(parsed.data.config.registration_channel_id!);
+        }
+        if (channelChanged(parsed.data.config.announcement_channel_id, currentCfg.announcement_channel_id)) {
+          modifiedChannels.push(parsed.data.config.announcement_channel_id!);
+        }
+        if (channelChanged(parsed.data.config.checkin_channel_id, currentCfg.checkin_channel_id)) {
+          modifiedChannels.push(parsed.data.config.checkin_channel_id!);
+        }
+
+        if (modifiedChannels.length > 0) {
+          if (!externalId || !req.app?.locals?.discordClient) {
+            return res.status(403).json({
+              error: "Access denied: missing Discord client or guild",
+              code: "CHANNEL_NOT_ACCESSIBLE",
+            });
+          }
+          const channelCheck = await ChannelAccessService.validateChannelAccess({
+            client: req.app.locals.discordClient,
+            guildId: externalId,
+            discordId: auth.callerId,
+            channelIds: modifiedChannels,
+          });
+          if (!channelCheck.ok) {
+            return res.status(403).json({
+              error: channelCheck.error,
+              code: channelCheck.code ?? "CHANNEL_NOT_ACCESSIBLE",
+            });
+          }
+        }
+      }
     } else if (externalId && externalId !== previousExternalId) {
       const { data: conflict, error: conflictError } = await supabase
         .from("organization_integrations")
@@ -773,23 +816,12 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     }
     if (writeError) throw writeError;
 
-    // Les tournois suivent le serveur lié ; en cas de changement/retrait d'un serveur déjà lié, purger ses anciens IDs Discord (DAT-04).
-    if (provider === "DISCORD" && externalId !== previousExternalId) {
-      const tournamentPatch =
-        previousExternalId !== null
-          ? {
-              guild_id: externalId,
-              discord_category_id: null,
-              discord_registration_channel_id: null,
-              discord_announcement_channel_id: null,
-              discord_checkin_channel_id: null,
-              discord_captain_role_id: null,
-              discord_to_role_id: null,
-            }
-          : { guild_id: externalId };
+    // SEC-45 : en cas de changement ou déliaison d'un serveur déjà lié, purger les identifiants Discord des tournois.
+    // Une simple désactivation (même external_id) préserve `discord_config` pour retrouver salons et rôles à la réactivation (#101).
+    if (provider === "DISCORD" && previousExternalId !== null && externalId !== previousExternalId) {
       const { error: tournamentsError } = await supabase
         .from("tournaments")
-        .update(tournamentPatch)
+        .update({ discord_config: {} })
         .eq("organization_id", auth.org.id);
       if (tournamentsError) throw tournamentsError;
     }

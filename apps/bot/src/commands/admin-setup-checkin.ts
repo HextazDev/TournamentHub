@@ -22,11 +22,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const lang = await getGuildLanguage(interaction.guildId);
 
   // 1. Fetch current organization settings to verify TO rights
-  let toRoleId: string | null = null;
-  if (interaction.guildId) {
-    const org = await resolveOrganization(interaction.guildId);
-    toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
-  }
+  const org = interaction.guildId ? await resolveOrganization(interaction.guildId) : null;
+  const toRoleId =
+    org?.discordEnabled && typeof org.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
 
   // 2. Control permissions (Admins or TOs only)
   const isSetupAdmin = interaction.memberPermissions?.has(
@@ -40,7 +38,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     hasToRole = (interaction.member as any).roles.cache.has(toRoleId);
   }
 
-  if (!isSetupAdmin && !hasToRole) {
+  if (!org?.discordEnabled || (!isSetupAdmin && !hasToRole)) {
     return interaction.reply({
       content: tBot(lang, "checkin.noPermission"),
       ephemeral: true,
@@ -71,19 +69,21 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     });
 
     // 4.5 Mettre à jour la base de données avec le message_id
-    const { data: latestTournament } = await supabase
-      .from("tournaments")
-      .select("id")
-      .eq("guild_id", interaction.guildId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .single();
-
-    if (latestTournament) {
-      await supabase
+    if (org?.discordEnabled) {
+      const { data: latestTournament } = await supabase
         .from("tournaments")
-        .update({ checkin_message_id: msg.id })
-        .eq("id", latestTournament.id);
+        .select("id")
+        .eq("organization_id", org.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .single();
+
+      if (latestTournament) {
+        await supabase
+          .from("tournaments")
+          .update({ checkin_message_id: msg.id })
+          .eq("id", latestTournament.id);
+      }
     }
 
     // 5. Reply to the TO

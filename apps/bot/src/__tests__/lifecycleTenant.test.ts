@@ -8,7 +8,7 @@ const schedule = vi.hoisted(() => vi.fn());
 const org = vi.hoisted(() => vi.fn());
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/tenant", () => ({
-  verifyTournamentGuild: verify,
+  verifyTournamentOrganization: verify,
   getAuthenticatedGuildId: (req: Request) => req.adminCheck?.guildId ?? null,
   getTournamentScope: (req: Request) => req.tournamentScope?.tournamentId ?? null,
   resolveOrganization: org,

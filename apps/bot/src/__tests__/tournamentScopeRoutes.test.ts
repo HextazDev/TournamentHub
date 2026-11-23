@@ -19,10 +19,10 @@ vi.mock("../utils/logger", () => ({ logger: log }));
 // L'appartenance au serveur (SEC-01) est couverte ailleurs : ici, tout appartient au même serveur.
 vi.mock("../utils/tenant", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/tenant")>()),
-  verifyTournamentGuild: async () => true,
-  verifyPhaseGuild: async () => true,
-  verifyTeamGuild: async () => true,
-  verifyMatchGuild: async () => true,
+  verifyTournamentOrganization: async () => true,
+  verifyPhaseOrganization: async () => true,
+  verifyTeamOrganization: async () => true,
+  verifyMatchOrganization: async () => true,
   resolveOrganization: async () => ({ id: "org-a", slug: "org-a", name: "A", language: "fr", discordEnabled: true, discordGuildId: "111", discordConfig: {} }),
 }));
 vi.mock("../services/MemberAccessService", async (importOriginal) => ({
@@ -52,6 +52,7 @@ import { matchRouter } from "../routes/MatchRouter";
 import { teamRouter } from "../routes/TeamRouter";
 import { callRoute } from "./helpers/route";
 
+const ORG_A = "org-a";
 const GUILD = "111";
 const T_A = "tournament-a";
 const T_B = "tournament-b";
@@ -63,20 +64,22 @@ const serverTo: AdminCheck = { discordId: "to", guildId: GUILD, access: { level:
 
 const tournamentRow = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
-  guild_id: GUILD,
+  organization_id: ORG_A,
   name: id,
   status: "ACTIVE",
   language: "fr",
   is_public: false,
   is_registration_open: false,
-  discord_to_role_id: ROLE_A,
-  discord_captain_role_id: CAPTAIN_A,
+  discord_config: {
+    to_role_id: ROLE_A,
+    captain_role_id: CAPTAIN_A,
+  },
   checkin_start_at: null,
   checkin_end_at: null,
   ...extra,
 });
 
-function seed(tournaments = [tournamentRow(T_A), tournamentRow(T_B, { discord_to_role_id: "444444444444444444" })]) {
+function seed(tournaments = [tournamentRow(T_A), tournamentRow(T_B, { discord_config: { to_role_id: "444444444444444444", captain_role_id: CAPTAIN_A } })]) {
   db.current = new FakeSupabase({
     tournaments,
     phases: [
@@ -92,7 +95,6 @@ function seed(tournaments = [tournamentRow(T_A), tournamentRow(T_B, { discord_to
       { id: "team-b", tournament_id: T_B, name: "B", captain_discord_id: "2", is_checked_in: false },
     ],
     team_members: [],
-    server_settings: [{ guild_id: GUILD }],
   });
 }
 
@@ -237,14 +239,19 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     const absent = await settings(toOfA, { language: "fr" });
     expect(absent.status).toBe(200);
     const row = db.current?.tables.tournaments?.find((t) => t.id === T_A);
-    expect(row).toMatchObject({ discord_to_role_id: ROLE_A, discord_captain_role_id: CAPTAIN_A, language: "fr" });
+    expect(row).toMatchObject({
+      discord_config: expect.objectContaining({ to_role_id: ROLE_A, captain_role_id: CAPTAIN_A }),
+      language: "fr",
+    });
     expect(access.invalidateGuildAccess).not.toHaveBeenCalled();
   });
 
   it("SEC-05: le niveau SERVER modifie le rôle TO du tournoi et invalide le cache d'accès du serveur", async () => {
     const out = await settings(serverTo, { discord_to_role_id: "555555555555555555", discord_captain_role_id: CAPTAIN_A });
     expect(out.status).toBe(200);
-    expect(db.current?.tables.tournaments?.find((t) => t.id === T_A)?.discord_to_role_id).toBe("555555555555555555");
+    expect((db.current?.tables.tournaments?.find((t) => t.id === T_A)?.discord_config as Record<string, unknown>)?.to_role_id).toBe(
+      "555555555555555555",
+    );
     expect(access.invalidateGuildAccess).toHaveBeenCalledWith(GUILD);
   });
 
@@ -264,7 +271,7 @@ describe("SEC-22: rôles du tournoi réservés au niveau SERVER (PUT /tournament
     });
     expect(failing.status).toBe(200);
     await new Promise((resolve) => setImmediate(resolve));
-    expect(log.error).toHaveBeenCalledWith(expect.stringContaining(GUILD), boom);
+    expect(log.error).toHaveBeenCalledWith(expect.stringContaining(ORG_A), boom);
   });
 
   it("LIFE-01: ouvrir les inscriptions (DRAFT -> REGISTRATION) n'archive pas les autres tournois et n'appelle pas Discord cleanup", async () => {
@@ -328,8 +335,10 @@ describe("SEC-21: chaque route d'un montage ouvert aux TO de tournoi déclare sa
     for (const path of tournamentLevel) expect(guardOf.get(path), path).toBe("tournamentLevelGuard");
     for (const path of discordLists) expect(guardOf.get(path), path).toBe("discordListGuard");
 
-    const serverOnly = ["/api/tournaments/archive-and-init", "/api/discord/publish-phase", "/api/discord/auto-setup", "/api/server-settings"];
+    const serverOnly = ["/api/tournaments/archive-and-init", "/api/discord/publish-phase", "/api/discord/auto-setup"];
     for (const path of serverOnly) expect(["guildAdminGuard", "serverSettingsGuard"], path).toContain(guardOf.get(path));
+    // #101 : la route historique /api/server-settings est supprimée (remplacée par /api/organizations/:orgId/integrations/DISCORD).
+    expect(guardOf.has("/api/server-settings")).toBe(false);
 
     const opened = mounts.filter(([, guard]) => guard === "tournamentLevelGuard" || guard === "discordListGuard").map(([p]) => p);
     expect(opened.sort()).toEqual([...tournamentLevel, ...discordLists].sort());

@@ -302,7 +302,7 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
         data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } },
         error: null,
       },
-      "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
+      "tournaments.select": { data: [{ id: "t1", discord_config: { to_role_id: "t-role" } }], error: null },
     });
     const members = [member("owner"), member("u-t", { roles: ["t-role"] }), member("u-archived", { roles: ["old-role"] })];
     await expect(GuildRegistryService.syncGuildAdmins(guild(members))).resolves.toBe(true);
@@ -331,7 +331,7 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
   it("readAdminRoles renvoie le rôle TO du serveur et ceux des tournois", async () => {
     fakeSupabase({
       "organization_integrations.select": { data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } }, error: null },
-      "tournaments.select": { data: [{ id: "t1", discord_to_role_id: "t-role" }], error: null },
+      "tournaments.select": { data: [{ id: "t1", discord_config: { to_role_id: "t-role" } }], error: null },
     });
     await expect(readAdminRoles("g1")).resolves.toEqual({ ok: true, toRoleId: "to", tournamentRoles: [tRole] });
   });

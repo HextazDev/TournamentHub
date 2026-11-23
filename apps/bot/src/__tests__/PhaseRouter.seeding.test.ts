@@ -1,14 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({ from: vi.fn(), rpc: vi.fn() }));
-const tenant = vi.hoisted(() => ({ verifyPhaseGuild: vi.fn() }));
+const tenant = vi.hoisted(() => ({ verifyPhaseOrganization: vi.fn() }));
 const generators = vi.hoisted(() => ({ generateBracket: vi.fn() }));
 vi.mock("../lib/supabase", () => ({ supabase: db }));
 vi.mock("../utils/logger", () => ({ logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
-  verifyPhaseGuild: tenant.verifyPhaseGuild,
-  verifyTournamentGuild: vi.fn(),
+  verifyPhaseOrganization: tenant.verifyPhaseOrganization,
+  verifyTournamentOrganization: vi.fn(),
 }));
 vi.mock("../services/BracketGeneratorService", () => ({
   BracketGeneratorService: { generateBracket: generators.generateBracket },
@@ -120,7 +120,7 @@ beforeEach(() => {
   writes = [];
   teams = [TEAM_A, TEAM_B, TEAM_C].map((id) => ({ id, tournament_id: TOURNAMENT_ID }));
   teamsReadError = null;
-  tenant.verifyPhaseGuild.mockResolvedValue(true);
+  tenant.verifyPhaseOrganization.mockResolvedValue(true);
   generators.generateBracket.mockResolvedValue(undefined);
   wireDb();
 });
@@ -167,7 +167,7 @@ describe("PUT /api/phases/:id/seeding — SCR-09 match commencé", () => {
   });
 
   it("SEC-01: phase d'un autre serveur ➜ 403 avant toute lecture ou écriture", async () => {
-    tenant.verifyPhaseGuild.mockResolvedValue(false);
+    tenant.verifyPhaseOrganization.mockResolvedValue(false);
     const out = await putSeeding(webBody);
     expect(out.status).toBe(403);
     expect(db.from).not.toHaveBeenCalled();

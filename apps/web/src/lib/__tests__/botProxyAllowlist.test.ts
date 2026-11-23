@@ -11,7 +11,6 @@ describe("isBotProxyPathAllowed", () => {
       "discord/roles",
       "discord/channels",
       "discord/members",
-      "server-settings",
       "tournaments",
       "tournaments/0b1c/settings",
       "tournaments/0b1c/registrations",
@@ -37,6 +36,7 @@ describe("isBotProxyPathAllowed", () => {
 
   it("SEC-13: bloque les routes internes ou non protégées par requireGuildAdmin", () => {
     for (const path of [
+      "server-settings",
       "discord/permissions",
       "discord/auto-setup",
       "discord/sync-schedule",

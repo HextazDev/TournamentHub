@@ -17,7 +17,7 @@ vi.mock("../services/MemberAccessService", () => ({
 
 import { supabase } from "../lib/supabase";
 import { tournamentRouter } from "../routes/TournamentRouter";
-import { serverSettingsRouter } from "../routes/ServerSettingsRouter";
+import { organizationRouter } from "../routes/OrganizationRouter";
 import { callRoute } from "./helpers/route";
 import { ChannelAccessService } from "../services/ChannelAccessService";
 
@@ -41,14 +41,13 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       const orgId = "00000000-0000-0000-0000-000000000001";
       const tournament = {
         id: TOURNAMENT_ID,
-        guild_id: GUILD,
         organization_id: orgId,
         status: "DRAFT",
-        discord_registration_channel_id: existingChannels.registration ?? null,
-        discord_announcement_channel_id: existingChannels.announcement ?? null,
-        discord_checkin_channel_id: existingChannels.checkin ?? null,
-        discord_captain_role_id: null,
-        discord_to_role_id: null,
+        discord_config: {
+          ...(existingChannels.registration ? { registration_channel_id: existingChannels.registration } : {}),
+          ...(existingChannels.announcement ? { announcement_channel_id: existingChannels.announcement } : {}),
+          ...(existingChannels.checkin ? { checkin_channel_id: existingChannels.checkin } : {}),
+        },
         language: "fr",
       };
 
@@ -143,13 +142,14 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
     });
   });
 
-  describe("PUT /api/server-settings", () => {
-    function setupServerDb(existingChannels: {
+  describe("PUT /api/organizations/:orgId/integrations/DISCORD", () => {
+    const ORG_ID = "00000000-0000-0000-0000-000000000001";
+
+    function setupOrgDb(existingChannels: {
       registration?: string | null;
       announcement?: string | null;
       checkin?: string | null;
     } = {}) {
-      const orgId = "org-1";
       const discordConfig = {
         to_role_id: "111111111111111111",
         registration_channel_id: existingChannels.registration ?? null,
@@ -160,14 +160,16 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       vi.mocked(supabase.from).mockImplementation(((table: string) => {
         let rowData: any = {
           id: "int-1",
-          organization_id: orgId,
+          organization_id: ORG_ID,
           provider: "DISCORD",
           external_id: GUILD,
           enabled: true,
           config: discordConfig,
         };
         if (table === "organizations") {
-          rowData = { id: orgId, slug: "test-guild", name: "Test Guild", language: "fr", invite_url: null };
+          rowData = { id: ORG_ID, slug: "test-guild", name: "Test Guild", language: "fr", invite_url: null };
+        } else if (table === "organization_integration_secrets") {
+          rowData = null;
         }
         const b: any = {
           select: () => b,
@@ -181,20 +183,21 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       }) as any);
     }
 
-    it("refuse avec 403 CHANNEL_NOT_ACCESSIBLE si un salon serveur modifié est inaccessible", async () => {
-      setupServerDb({ checkin: "chan-old" });
+    it("refuse avec 403 CHANNEL_NOT_ACCESSIBLE si un salon d'organisation modifié est inaccessible", async () => {
+      setupOrgDb({ checkin: "111111111111111111" });
       const spy = vi.spyOn(ChannelAccessService, "validateChannelAccess").mockResolvedValueOnce({
         ok: false,
         code: "CHANNEL_NOT_ACCESSIBLE",
         error: "Le salon Discord (chan-private) n'est pas accessible.",
       });
 
-      const out = await callRoute(serverSettingsRouter, {
+      const out = await callRoute(organizationRouter, {
         method: "PUT",
-        path: "/",
+        path: `/${ORG_ID}/integrations/DISCORD`,
         body: {
-          guild_id: GUILD,
-          checkin_channel_id: "123456789012345678",
+          config: {
+            checkin_channel_id: "222222222222222222",
+          },
         },
         adminCheck: { discordId: "admin-user", guildId: GUILD, access: { level: "SERVER", reason: "ADMINISTRATOR" } },
         locals: { discordClient: fakeClient },
@@ -205,20 +208,21 @@ describe("SEC-21 (#88): Validation des salons Discord sur les routes de mutation
       expect(spy).toHaveBeenCalledWith(expect.objectContaining({
         guildId: GUILD,
         discordId: "admin-user",
-        channelIds: ["123456789012345678"],
+        channelIds: ["222222222222222222"],
       }));
     });
 
-    it("ne bloque pas si le salon serveur est inchangé", async () => {
-      setupServerDb({ checkin: "123456789012345678" });
+    it("ne bloque pas si le salon d'organisation est inchangé", async () => {
+      setupOrgDb({ checkin: "123456789012345678" });
       const spy = vi.spyOn(ChannelAccessService, "validateChannelAccess");
 
-      const out = await callRoute(serverSettingsRouter, {
+      const out = await callRoute(organizationRouter, {
         method: "PUT",
-        path: "/",
+        path: `/${ORG_ID}/integrations/DISCORD`,
         body: {
-          guild_id: GUILD,
-          checkin_channel_id: "123456789012345678",
+          config: {
+            checkin_channel_id: "123456789012345678",
+          },
         },
         adminCheck: { discordId: "admin-user", guildId: GUILD, access: { level: "SERVER", reason: "ADMINISTRATOR" } },
         locals: { discordClient: fakeClient },
