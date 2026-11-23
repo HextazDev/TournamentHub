@@ -5,7 +5,7 @@ import { botApiFetch } from '@/utils/api';
 import { Save, Loader2, RefreshCw, AlertTriangle } from "lucide-react";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
-import { DiscordInviteUrlSchema, isDiscordSnowflake } from "@hub/shared";
+import { PublicContactUrlSchema, isDiscordSnowflake } from "@hub/shared";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 
 /** Formulaire des paramètres du serveur : rendu uniquement si canPerform(..., "MANAGE_SERVER_SETTINGS") (SEC-16). */
@@ -164,8 +164,8 @@ export function ServerSettingsClient({
     e.preventDefault();
     if (loadFailed) return;
     setMessage({ type: "", text: "" });
-    if (settings.invite_url.trim() && !DiscordInviteUrlSchema.safeParse(settings.invite_url).success) {
-      setMessage({ type: "error", text: t("adminSettings.inviteInvalid") });
+    if (settings.invite_url.trim() && !PublicContactUrlSchema.safeParse(settings.invite_url).success) {
+      setMessage({ type: "error", text: t("adminSettings.contactInvalid") });
       return;
     }
     setSaving(true);

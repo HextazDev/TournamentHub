@@ -244,13 +244,31 @@ export interface Match {
   updated_at: string;
 }
 
-// Invitation Discord publique configurée par les TO (doublée par la contrainte SQL server_settings_invite_url_check).
+// Invitation Discord publique (conservée pour reconnaître les invitations Discord côté UI).
 export const DiscordSnowflakeSchema = z.string().regex(/^\d{17,20}$/, "Identifiant Discord invalide");
 
 export const DiscordInviteUrlSchema = z
   .string()
   .trim()
   .regex(/^https:\/\/(discord\.gg|discord\.com\/invite)\/[A-Za-z0-9-]+$/, "Invitation Discord invalide");
+
+const PUBLIC_CONTACT_URL_REGEX =
+  /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*\.[A-Za-z]{2,63}(?::[0-9]{1,5})?(?:[/?#][^\s]*)?$/;
+
+/** Lien de contact public d'une organisation (SEC-08 / #102, doublé par `organizations_invite_url_check`). */
+export const PublicContactUrlSchema = z
+  .string()
+  .trim()
+  .max(512, "Lien de contact trop long (512 caractères maximum)")
+  .regex(PUBLIC_CONTACT_URL_REGEX, "Lien de contact invalide (URL https:// attendue)")
+  .refine((value) => {
+    try {
+      const parsed = new URL(value);
+      return parsed.protocol === "https:" && !parsed.username && !parsed.password;
+    } catch {
+      return false;
+    }
+  }, "Lien de contact invalide (URL https:// attendue)");
 
 export interface ServerSettings {
   organization_id?: string;
@@ -460,7 +478,7 @@ export const CreateOrganizationSchema = z.object({
   language: LocaleSchema.optional().default("fr"),
   logo_url: z.string().url().optional().nullable(),
   invite_url: z
-    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
+    .union([PublicContactUrlSchema, z.literal(""), z.null()])
     .optional()
     .transform((v) => (v === undefined ? undefined : v || null)),
 });
@@ -472,7 +490,7 @@ export const UpdateOrganizationSchema = z.object({
   language: LocaleSchema.optional(),
   logo_url: z.string().url().optional().nullable(),
   invite_url: z
-    .union([DiscordInviteUrlSchema, z.literal(""), z.null()])
+    .union([PublicContactUrlSchema, z.literal(""), z.null()])
     .optional()
     .transform((v) => (v === undefined ? undefined : v || null)),
 });

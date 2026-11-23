@@ -362,6 +362,15 @@ const bootstrap = async () => {
                 ephemeral: true,
               });
             }
+            if (org) {
+              await IntegrationBus.emit("onCheckinCompleted", {
+                organizationId: org.id,
+                tournamentId: currentTournament.id,
+                teamId: team.id,
+                discordClient: client,
+                data: { source: "DISCORD" },
+              });
+            }
             return;
           } catch (err: any) {
             logger.error("Check-in interaction error", err);
