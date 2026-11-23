@@ -46,6 +46,12 @@ async function captainsPresentInGuild(guild: Guild, captainIds: readonly string[
   return present.filter((id): id is string => id !== null);
 }
 
+const DISCORD_UNKNOWN_CHANNEL = 10003;
+
+function isUnknownChannelError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === DISCORD_UNKNOWN_CHANNEL;
+}
+
 export class LifecycleService {
   /**
    * Transition métier du lancement (DISC-02) : la base est l'autorité, sans aucun appel Discord.
@@ -139,8 +145,12 @@ export class LifecycleService {
     const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
     if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
 
+    // DISC-10 : seule l'erreur Discord 10003 (Unknown Channel) signifie une catégorie absente ; toute autre panne remonte.
     const existingCategory = tournament.discord_category_id
-      ? await guild.channels.fetch(tournament.discord_category_id).catch(() => null)
+      ? await guild.channels.fetch(tournament.discord_category_id).catch((fetchErr: unknown) => {
+          if (isUnknownChannelError(fetchErr)) return null;
+          throw fetchErr;
+        })
       : null;
 
     if (!existingCategory) {
@@ -232,7 +242,7 @@ export class LifecycleService {
     }
   }
 
-  /** Supprime la catégorie Discord du tournoi et ses salons. Sans effet si elle n'existe plus (rejeu). */
+  /** Supprime la catégorie Discord du tournoi et ses salons. Sans effet si elle n'existe plus (10003, rejeu). */
   static async deleteDiscordCategory(tournamentId: string, guildId: string, discordClient: Client): Promise<void> {
     const { data: tournament, error } = await supabase
       .from('tournaments')
@@ -245,7 +255,10 @@ export class LifecycleService {
     const guild: Guild | undefined = discordClient.guilds.cache.get(guildId) || await discordClient.guilds.fetch(guildId).catch(() => undefined);
     if (!guild) throw new Error(`Guild ${guildId} not found by bot.`);
 
-    const category = await guild.channels.fetch(tournament.discord_category_id).catch(() => null);
+    const category = await guild.channels.fetch(tournament.discord_category_id).catch((fetchErr: unknown) => {
+      if (isUnknownChannelError(fetchErr)) return null;
+      throw fetchErr;
+    });
     if (category?.type !== ChannelType.GuildCategory) return;
 
     for (const child of (category as CategoryChannel).children.cache.values()) {

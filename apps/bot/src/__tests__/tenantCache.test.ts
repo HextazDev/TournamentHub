@@ -126,4 +126,49 @@ describe("PERF-01: cache de résolution d'organisation borné à la requête", (
     expect(readsAfterFirst).toBeGreaterThan(0);
     expect(from).toHaveBeenCalledTimes(readsAfterFirst * 2);
   });
+
+  it("CLN-07: une erreur DB sur organization_integrations lève au lieu de mettre en cache discordEnabled=false", async () => {
+    const id = "66666666-6666-6666-6666-666666666666";
+    const row = { id, slug: "my-org", name: "My Org", language: "fr", invite_url: null };
+    from.mockImplementation((table: string) =>
+      table === "organization_integrations"
+        ? chainable({ data: null, error: { code: "08006", message: "connection failure" } })
+        : chainable({ data: row, error: null }),
+    );
+
+    await runWithRequestTenantCache(async () => {
+      await expect(resolveOrganization(id)).rejects.toMatchObject({ message: "connection failure" });
+      // Si l'erreur disparaît sur l'appel suivant, la base est relue (rien n'a été mis en cache)
+      from.mockImplementation((table: string) =>
+        table === "organization_integrations"
+          ? chainable({ data: { organization_id: id, provider: "DISCORD", external_id: "123456789012345678", enabled: true, config: {} }, error: null })
+          : chainable({ data: row, error: null }),
+      );
+      const recovered = await resolveOrganization(id);
+      expect(recovered?.discordEnabled).toBe(true);
+    });
+  });
+
+  it("PERF-01: indexe le cache par tous les alias (id, slug, discordGuildId) au sein de la requête", async () => {
+    const id = "77777777-7777-7777-7777-777777777777";
+    const row = { id, slug: "alias-org", name: "Alias Org", language: "fr", invite_url: null };
+    const integration = { organization_id: id, provider: "DISCORD", external_id: "987654321098765432", enabled: true, config: {} };
+    from.mockImplementation((table: string) =>
+      table === "organization_integrations"
+        ? chainable({ data: integration, error: null })
+        : chainable({ data: row, error: null }),
+    );
+
+    await runWithRequestTenantCache(async () => {
+      const byId = await resolveOrganization(id);
+      const callsAfterFirst = from.mock.calls.length;
+      const bySlug = await resolveOrganization("alias-org");
+      const byGuild = await resolveOrganization("987654321098765432");
+
+      expect(byId?.id).toBe(id);
+      expect(bySlug?.id).toBe(id);
+      expect(byGuild?.id).toBe(id);
+      expect(from).toHaveBeenCalledTimes(callsAfterFirst);
+    });
+  });
 });

@@ -55,6 +55,7 @@ function fakeSupabase(responses: Record<string, Result> = {}) {
       delete: () => ((call.op = "delete"), builder),
       eq: (col: string, val: unknown) => (call.filters.push(["eq", col, val]), builder),
       neq: (col: string, val: unknown) => (call.filters.push(["neq", col, val]), builder),
+      lt: (col: string, val: unknown) => (call.filters.push(["lt", col, val]), builder),
       not: (col: string, _op: string, val: unknown) => (call.filters.push(["not", col, val]), builder),
       single: result,
       maybeSingle: result,
@@ -247,7 +248,7 @@ describe("GuildRegistryService.syncGuildAdmins", () => {
     expect(del?.filters).toEqual([
       ["eq", "organization_id", "org-1"],
       ["eq", "provider", "DISCORD"],
-      ["not", "user_id", '("owner","u-to","u-manage")'],
+      ["lt", "synced_at", expect.any(String)],
     ]);
   });
 
@@ -312,7 +313,7 @@ describe("annuaire integration_access_grants : rôle TO de tournoi (#67, DISC-08
     expect(calls.find((c) => c.table === "integration_access_grants" && c.op === "delete")?.filters).toEqual([
       ["eq", "organization_id", "org-1"],
       ["eq", "provider", "DISCORD"],
-      ["not", "user_id", '("owner","u-t")'],
+      ["lt", "synced_at", expect.any(String)],
     ]);
     // SEC-23 : seuls les tournois non archivés comptent.
     expect(calls.find((c) => c.table === "tournaments")?.filters).toContainEqual(["neq", "status", "ARCHIVED"]);
@@ -414,5 +415,37 @@ describe("ACC-01 / SEC-02: enregistrement d'un serveur et propriété native", (
     await GuildRegistryService.syncGuildAdmins(withMembers);
     expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "upsert")).toBe(false);
     expect(calls.some((c) => c.table === "integration_access_grants" && c.op === "delete")).toBe(true);
+  });
+
+  it("DISC-11: registerGuild reprend une organisation existante en 23505 sur le slug discord-<id>", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": { data: null, error: null },
+      "organizations.insert": { data: null, error: { code: "23505", message: "duplicate slug" } },
+      "organizations.select": { data: { id: "org-existing" }, error: null },
+      "organization_members.select": { data: [{ role: "ORG_OWNER" }], error: null },
+    });
+    await expect(GuildRegistryService.registerGuild(guildLike)).resolves.toBe(true);
+    const intInsert = calls.find((c) => c.table === "organization_integrations" && c.op === "insert");
+    expect(intInsert?.payload).toMatchObject({ organization_id: "org-existing", external_id: "g1", enabled: true });
+  });
+
+  it("SYNC-02: syncMemberAdmin purge les anciens grants périmés du même utilisateur après upsert", async () => {
+    const calls = fakeSupabase({
+      "organization_integrations.select": {
+        data: { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "g1", enabled: true, config: { to_role_id: "to" } },
+        error: null,
+      },
+      "tournaments.select": { data: [], error: null },
+    });
+    await expect(
+      GuildRegistryService.syncMemberAdmin(guild([]), member("u1", { roles: ["to"] }), { toRoleId: "to", tournamentRoles: [] }),
+    ).resolves.toBe(true);
+    const del = calls.find((c) => c.table === "integration_access_grants" && c.op === "delete");
+    expect(del?.filters).toEqual([
+      ["eq", "organization_id", "org-1"],
+      ["eq", "provider", "DISCORD"],
+      ["eq", "user_id", "u1"],
+      ["lt", "synced_at", expect.any(String)],
+    ]);
   });
 });

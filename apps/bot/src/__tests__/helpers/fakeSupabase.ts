@@ -199,7 +199,16 @@ class FakeQuery implements PromiseLike<QueryResult> {
       if ("values" in f) return f.values.includes(row[f.column]);
       if ("ilike" in f) {
         const value = row[f.column];
-        return typeof value === "string" && value.toLowerCase() === f.ilike.replace(/\\([%_\\])/g, "$1").toLowerCase();
+        if (typeof value !== "string") return false;
+        // PostgREST convertit tout `*` en `%` dans `ilike` (REG-10).
+        const regexPattern = f.ilike
+          .replace(/\*/g, "%")
+          .replace(/\\([%_\\])/g, (_, ch: string) => `\u0000${ch}`)
+          .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+          .replace(/%/g, ".*")
+          .replace(/_/g, ".")
+          .replace(/\u0000(.)/g, (_, ch: string) => ch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+        return new RegExp(`^${regexPattern}$`, "i").test(value);
       }
       if ("not" in f) return f.not === null ? row[f.column] != null : row[f.column] !== f.not;
       return row[f.column] === f.value;

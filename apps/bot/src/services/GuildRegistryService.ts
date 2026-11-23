@@ -172,6 +172,7 @@ export class GuildRegistryService {
       const slug = `discord-${guild.id}`;
       const language = guild.preferredLocale.toLowerCase().startsWith("en") ? "en" : "fr";
 
+      let orgId: string;
       const { data: orgData, error: orgInsertError } = await supabase
         .from("organizations")
         .insert({
@@ -184,12 +185,24 @@ export class GuildRegistryService {
         .select("id")
         .single();
 
-      if (orgInsertError) {
+      if (orgInsertError?.code === "23505") {
+        // DISC-11 : le slug `discord-<guildId>` existe déjà sans intégration liée — reprise propre.
+        const { data: existingOrg, error: existingOrgErr } = await supabase
+          .from("organizations")
+          .select("id")
+          .eq("slug", slug)
+          .maybeSingle();
+        if (existingOrgErr || !existingOrg || typeof (existingOrg as { id?: unknown }).id !== "string") {
+          logger.error(`[GuildRegistry] Reprise de l'organisation ${slug} échouée:`, existingOrgErr ?? orgInsertError);
+          return false;
+        }
+        orgId = (existingOrg as { id: string }).id;
+      } else if (orgInsertError) {
         logger.error(`[GuildRegistry] Enregistrement de l'organisation pour ${guild.id} échoué:`, orgInsertError);
         return false;
+      } else {
+        orgId = (orgData as { id: string }).id;
       }
-
-      const orgId = (orgData as { id: string }).id;
 
       const { error: intInsertError } = await supabase
         .from("organization_integrations")
@@ -341,20 +354,37 @@ export class GuildRegistryService {
       }
     }
 
-    const { error } = grant
-      ? await supabase
-          .from("integration_access_grants")
-          .upsert(grant, { onConflict: "organization_id,provider,user_id,scope_type,tournament_id" })
-      : await supabase
-          .from("integration_access_grants")
-          .delete()
-          .eq("organization_id", org.id)
-          .eq("provider", "DISCORD")
-          .eq("user_id", member.id);
-
-    if (error) {
-      logger.error(`[GuildRegistry] Synchronisation des droits de ${member.id} sur ${guild.id} échouée:`, error);
-      return false;
+    if (grant) {
+      const { error } = await supabase
+        .from("integration_access_grants")
+        .upsert(grant, { onConflict: "organization_id,provider,user_id,scope_type,tournament_id" });
+      if (error) {
+        logger.error(`[GuildRegistry] Synchronisation des droits de ${member.id} sur ${guild.id} échouée:`, error);
+        return false;
+      }
+      // SYNC-02 : purger les anciens grants périmés du même utilisateur (changement de portée ou de tournoi).
+      const { error: purgeMemberErr } = await supabase
+        .from("integration_access_grants")
+        .delete()
+        .eq("organization_id", org.id)
+        .eq("provider", "DISCORD")
+        .eq("user_id", member.id)
+        .lt("synced_at", now);
+      if (purgeMemberErr) {
+        logger.error(`[GuildRegistry] Purge des anciens droits de ${member.id} sur ${guild.id} échouée:`, purgeMemberErr);
+        return false;
+      }
+    } else {
+      const { error } = await supabase
+        .from("integration_access_grants")
+        .delete()
+        .eq("organization_id", org.id)
+        .eq("provider", "DISCORD")
+        .eq("user_id", member.id);
+      if (error) {
+        logger.error(`[GuildRegistry] Synchronisation des droits de ${member.id} sur ${guild.id} échouée:`, error);
+        return false;
+      }
     }
     logger.info(`[GuildRegistry] Droits de ${member.id} sur ${guild.id} : ${grant?.reason ?? "aucun"}.`);
     return true;
@@ -465,15 +495,15 @@ export class GuildRegistryService {
       }
     }
 
-    const keepUserIds = Array.from(new Set(records.map((r) => r.user_id)));
+    // SYNC-02 : purge à la fois les membres déchus ET les anciens grants périmés (changement de portée/tournoi)
+    // des membres toujours présents, sans interpolation de liste d'IDs.
     let purge = supabase
       .from("integration_access_grants")
       .delete()
       .eq("organization_id", org.id)
       .eq("provider", "DISCORD");
-    if (keepUserIds.length > 0) {
-      const keep = `(${keepUserIds.map((id) => `"${id}"`).join(",")})`;
-      purge = purge.not("user_id", "in", keep);
+    if (records.length > 0) {
+      purge = purge.lt("synced_at", now);
     }
     const { error: purgeError } = await purge;
     if (purgeError) {

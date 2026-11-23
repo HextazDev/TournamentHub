@@ -206,3 +206,35 @@ describe("CHK-01 : le planificateur respecte l'état de l'intégration", () => {
     expect(fetchChannel).not.toHaveBeenCalled();
   });
 });
+
+describe("DISC-10 : panne Discord vs catégorie absente (10003) dans LifecycleService", () => {
+  it("syncDiscordLaunch relance une panne réseau/503 au lieu de recréer une catégorie en doublon", async () => {
+    db.current!.tables.tournaments![0]!.discord_category_id = "cat-1";
+    const create = vi.fn();
+    const guild = {
+      id: GUILD,
+      channels: {
+        fetch: vi.fn().mockRejectedValue(Object.assign(new Error("Discord 503"), { status: 503 })),
+        create,
+      },
+      roles: { everyone: { id: "everyone" } },
+    };
+    const client = { guilds: { cache: new Map([[GUILD, guild]]), fetch: vi.fn().mockResolvedValue(guild) } } as never;
+
+    await expect(LifecycleService.syncDiscordLaunch(T1, GUILD, client)).rejects.toThrow("Discord 503");
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("deleteDiscordCategory relance une panne Discord mais tolère 10003 Unknown Channel (rejeu idempotent)", async () => {
+    db.current!.tables.tournaments![0]!.discord_category_id = "cat-1";
+    const fetchFail = vi.fn().mockRejectedValue(Object.assign(new Error("Gateway error"), { status: 502 }));
+    const guildFail = { id: GUILD, channels: { fetch: fetchFail } };
+    const clientFail = { guilds: { cache: new Map([[GUILD, guildFail]]), fetch: vi.fn().mockResolvedValue(guildFail) } } as never;
+    await expect(LifecycleService.deleteDiscordCategory(T1, GUILD, clientFail)).rejects.toThrow("Gateway error");
+
+    const fetchMissing = vi.fn().mockRejectedValue(Object.assign(new Error("Unknown Channel"), { code: 10003 }));
+    const guildMissing = { id: GUILD, channels: { fetch: fetchMissing } };
+    const clientMissing = { guilds: { cache: new Map([[GUILD, guildMissing]]), fetch: vi.fn().mockResolvedValue(guildMissing) } } as never;
+    await expect(LifecycleService.deleteDiscordCategory(T1, GUILD, clientMissing)).resolves.toBeUndefined();
+  });
+});

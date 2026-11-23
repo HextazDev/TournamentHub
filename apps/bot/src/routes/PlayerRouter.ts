@@ -137,23 +137,46 @@ playerRouter.post("/tournaments/:tournamentId/register", async (req, res) => {
       });
     }
 
-    // PERF-02 / DAT-01: contrôles par count() ciblés, sans charger toutes les équipes du tournoi.
-    const { count: teamCount } = await supabase
+    // PERF-02 / DAT-01 / REG-09: contrôles par count() ciblés avec propagation stricte des erreurs DB.
+    const { count: teamCount, error: countErr } = await supabase
       .from("teams")
       .select("id", { count: "exact", head: true })
       .eq("tournament_id", tournamentId);
+    if (countErr) throw countErr;
     if ((teamCount ?? 0) >= MAX_FAKE_TEAMS) {
       return res.status(400).json({ error: "La capacité maximale d'équipes pour ce tournoi est atteinte.", code: "TOURNAMENT_FULL" });
     }
 
-    const escapedName = parsed.data.name.replace(/[\\%_]/g, (c) => `\\${c}`);
-    const [captainCountRes, nameCountRes] = await Promise.all([
-      supabase.from("teams").select("id", { count: "exact", head: true })
-        .eq("tournament_id", tournamentId).eq("captain_discord_id", callerId),
-      supabase.from("teams").select("id", { count: "exact", head: true })
-        .eq("tournament_id", tournamentId).ilike("name", escapedName),
-    ]);
-    if ((captainCountRes.count ?? 0) > 0 || (nameCountRes.count ?? 0) > 0) {
+    const captainCountRes = await supabase
+      .from("teams")
+      .select("id", { count: "exact", head: true })
+      .eq("tournament_id", tournamentId)
+      .eq("captain_discord_id", callerId);
+    if (captainCountRes.error) throw captainCountRes.error;
+
+    // REG-10 : PostgREST traduit `*` en joker `%` dans `ilike`. Si le nom contient `*`, comparer en mémoire
+    // sur la seule colonne `name` au lieu de laisser `*` correspondre à toutes les équipes existantes.
+    let nameTaken = false;
+    if (parsed.data.name.includes("*")) {
+      const { data: existingNames, error: namesErr } = await supabase
+        .from("teams")
+        .select("name")
+        .eq("tournament_id", tournamentId);
+      if (namesErr) throw namesErr;
+      const needle = parsed.data.name.toLowerCase();
+      nameTaken = ((existingNames ?? []) as { name?: string }[]).some((row) => row.name?.toLowerCase() === needle);
+    } else {
+      const escapedName = parsed.data.name.replace(/[\\%_]/g, (c) => `\\${c}`);
+      const nameCountRes = await supabase
+        .from("teams")
+        .select("id", { count: "exact", head: true })
+        .eq("tournament_id", tournamentId)
+        .ilike("name", escapedName);
+      if (nameCountRes.error) throw nameCountRes.error;
+      nameTaken = (nameCountRes.count ?? 0) > 0;
+    }
+
+    if ((captainCountRes.count ?? 0) > 0 || nameTaken) {
       return res.status(409).json({
         error: "Vous êtes déjà inscrit comme capitaine ou ce nom d'équipe est déjà pris.",
         code: "ALREADY_REGISTERED",
@@ -248,12 +271,13 @@ playerRouter.delete("/tournaments/:tournamentId/register", async (req, res) => {
       return res.status(400).json({ error: "Impossible de se désinscrire une fois le tournoi lancé.", code: "TOURNAMENT_STARTED" });
     }
 
-    const { data: team } = await supabase
+    const { data: team, error: teamErr } = await supabase
       .from("teams")
       .select("id")
       .eq("tournament_id", tournamentId)
       .eq("captain_discord_id", callerId)
       .maybeSingle();
+    if (teamErr) throw teamErr;
     const teamRow = team as { id?: string } | null;
     if (!teamRow?.id) {
       return res.status(404).json({ error: "Aucune équipe inscrite trouvée pour ce capitaine.", code: "TEAM_NOT_FOUND" });
@@ -400,11 +424,12 @@ playerRouter.post("/matches/:matchId/report-score", async (req, res) => {
 
     // SEC-30 : vérifier que l'appelant est capitaine de team1 ou team2, ou staff autorisé (SCORE_MATCH)
     const teamIds = [match.team1_id, match.team2_id].filter((id): id is string => typeof id === "string");
-    const { data: teamsData } =
+    const teamsRes =
       teamIds.length > 0
         ? await supabase.from("teams").select("id, captain_discord_id").in("id", teamIds)
-        : { data: [] };
-    const matchTeams = (teamsData ?? []) as { id: string; captain_discord_id: string }[];
+        : { data: [], error: null };
+    if (teamsRes.error) throw teamsRes.error;
+    const matchTeams = (teamsRes.data ?? []) as { id: string; captain_discord_id: string }[];
     const callerTeam = matchTeams.find((t) => t.captain_discord_id === callerId);
 
     let isStaff = false;

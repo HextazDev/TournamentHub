@@ -44,7 +44,12 @@ export async function resolveOrganization(identifier: string): Promise<ResolvedO
   if (memo?.has(identifier)) return memo.get(identifier) ?? null;
 
   const org = await resolveOrganizationUncached(identifier);
-  if (org) memo?.set(identifier, org);
+  if (org && memo) {
+    memo.set(identifier, org);
+    memo.set(org.id, org);
+    memo.set(org.slug, org);
+    if (org.discordGuildId) memo.set(org.discordGuildId, org);
+  }
   return org;
 }
 
@@ -95,12 +100,14 @@ async function resolveOrganizationUncached(identifier: string): Promise<Resolved
     return null;
   }
 
-  const { data: discordInt } = await supabase
+  const { data: discordInt, error: discordIntError } = await supabase
     .from("organization_integrations")
     .select("*")
     .eq("organization_id", orgRow.id)
     .eq("provider", "DISCORD")
     .maybeSingle();
+  // CLN-07 : une erreur DB transitoire ne doit jamais être masquée en `discordEnabled: false` puis mise en cache.
+  if (discordIntError && discordIntError.code !== "PGRST116") throw discordIntError;
 
   const intRecord = discordInt as Record<string, unknown> | null;
   const hasDiscordInt = intRecord && typeof intRecord.organization_id === "string";

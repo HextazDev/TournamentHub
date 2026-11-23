@@ -212,6 +212,39 @@ describe("INT-02 / SEC-30 : Cycle de tournoi 100 % Web sans intégration Discord
     expect(dupName.body).toMatchObject({ code: "ALREADY_REGISTERED" });
   });
 
+  it("REG-09: une erreur DB sur les contrôles teams répond 500 au lieu de laisser passer l'inscription", async () => {
+    db.current!.tables.tournaments![0]!.is_registration_open = true;
+    db.current!.tableErrors.teams = { code: "08006", message: "db error" };
+
+    const res = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-err" },
+      body: { name: "Ghost Team", captain_ingame_name: "A", captain_friend_code: "SW-1234-5678-9012" },
+    });
+    expect(res.status).toBe(500);
+  });
+
+  it("REG-10: une équipe nommée '*' n'est pas rejetée comme doublon quand d'autres équipes existent", async () => {
+    db.current!.tables.tournaments![0]!.is_registration_open = true;
+
+    const star = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-star" },
+      body: { name: "*", captain_ingame_name: "Star", captain_friend_code: "SW-1234-5678-9012" },
+    });
+    expect(star.status).toBe(201);
+
+    const dupStar = await callRoute(playerRouter, {
+      method: "POST",
+      path: `/tournaments/${T_WEB}/register`,
+      headers: { "x-discord-user-id": "cap-star-2" },
+      body: { name: "*", captain_ingame_name: "Star2", captain_friend_code: "SW-1234-5678-9013" },
+    });
+    expect(dupStar.status).toBe(409);
+  });
+
   it("SEC-30 / ARC-01: respecte la fenêtre de check-in et refuse le check-in hors fenêtre ou désactivé", async () => {
     const future = new Date(Date.now() + 3600000).toISOString();
     const past = new Date(Date.now() - 3600000).toISOString();
