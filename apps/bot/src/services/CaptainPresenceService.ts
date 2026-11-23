@@ -1,7 +1,8 @@
 import type { Client, Guild, GuildMember, Role } from "discord.js";
-import type { Team } from "@hub/shared";
+import { readTournamentDiscordConfig, type Team } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
+import { resolveActiveDiscordGuild } from "../utils/tenant";
 
 /**
  * Présence d'un capitaine checké : pseudo = nom d'équipe + rôle Capitaine du tournoi.
@@ -69,20 +70,25 @@ interface ResolvedTarget {
 async function resolveTarget(client: Client, team: PresenceTeam): Promise<ResolvedTarget | PresenceSkipReason> {
   const { data: tourney, error } = await supabase
     .from("tournaments")
-    .select("guild_id, discord_captain_role_id")
+    .select("organization_id, discord_config")
     .eq("id", team.tournament_id)
     .single();
 
-  if (error || !tourney?.guild_id) {
+  if (error || !tourney?.organization_id) {
     logger.error(`[CaptainPresence] Tournament lookup failed`, { teamId: team.id, tournamentId: team.tournament_id, error });
     return "tournament_not_found";
   }
 
-  const ctx: PresenceContext = { guildId: tourney.guild_id, teamId: team.id };
+  const guildId = await resolveActiveDiscordGuild(tourney.organization_id);
+  if (!guildId) {
+    return "guild_unavailable";
+  }
+
+  const ctx: PresenceContext = { guildId, teamId: team.id };
 
   let guild: Guild;
   try {
-    guild = await client.guilds.fetch(tourney.guild_id);
+    guild = await client.guilds.fetch(guildId);
   } catch (fetchError) {
     warn("Discord guild unavailable", ctx, "guild_unavailable", fetchError);
     return "guild_unavailable";
@@ -96,7 +102,8 @@ async function resolveTarget(client: Client, team: PresenceTeam): Promise<Resolv
     return "member_unavailable";
   }
 
-  return { ctx, guild, member, roleId: tourney.discord_captain_role_id ?? null };
+  const discordCfg = readTournamentDiscordConfig(tourney.discord_config);
+  return { ctx, guild, member, roleId: discordCfg.captain_role_id };
 }
 
 /** Cache d'abord, puis Discord : un cache froid ne doit pas faire échouer l'attribution (DISC-10). */

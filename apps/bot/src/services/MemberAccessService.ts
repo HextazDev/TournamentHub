@@ -1,16 +1,17 @@
 import { PermissionFlagsBits } from "discord.js";
-import type {
-  AccessDeniedCode,
-  GuildAccess,
-  GuildAdminReason,
-  OrganizationRole,
-  TournamentStaffRole,
+import {
+  isDiscordSnowflake,
+  readTournamentDiscordConfig,
+  type AccessDeniedCode,
+  type GuildAccess,
+  type GuildAdminReason,
+  type OrganizationRole,
+  type TournamentStaffRole,
 } from "@hub/shared";
 import { supabase } from "../lib/supabase";
 import { logger } from "../utils/logger";
 import { resolveAdminReason } from "../utils/adminAccess";
 import { resolveOrganization, type ResolvedOrganization } from "../utils/tenant";
-import { readToRoleId, readTournamentToRoles } from "./GuildRegistryService";
 
 /** Sous-ensemble du client Discord utilisé (facilite les tests). */
 export interface DiscordClientLike {
@@ -85,9 +86,9 @@ export async function checkGuildManageRights(
 }
 
 function normalizeNativeRole(rawRole: unknown): OrganizationRole | null {
-  if (rawRole === "ORG_OWNER" || rawRole === "OWNER") return "ORG_OWNER";
-  if (rawRole === "ORG_ADMIN" || rawRole === "ADMIN") return "ORG_ADMIN";
-  if (rawRole === "ORG_TO" || rawRole === "ORGANIZER") return "ORG_TO";
+  if (rawRole === "ORG_OWNER") return "ORG_OWNER";
+  if (rawRole === "ORG_ADMIN") return "ORG_ADMIN";
+  if (rawRole === "ORG_TO") return "ORG_TO";
   return null;
 }
 
@@ -128,12 +129,12 @@ async function computeOrganizationAccess(
   // 2. Tournois non archivés de l'organisation (pour tournament_staff et rôles Discord par tournoi)
   const { data: orgTournaments, error: tourneyErr } = await supabase
     .from("tournaments")
-    .select("id, discord_to_role_id, status")
+    .select("id, discord_config, status")
     .eq("organization_id", org.id)
     .neq("status", "ARCHIVED");
 
   if (tourneyErr) return { allowed: false, code: "CHECK_FAILED" };
-  const activeTournaments = (orgTournaments ?? []) as { id: string; discord_to_role_id: string | null }[];
+  const activeTournaments = (orgTournaments ?? []) as { id: string; discord_config?: unknown }[];
   const activeIds = activeTournaments.map((t) => t.id);
 
   const tournamentRolesMap: Record<string, TournamentStaffRole> = {};
@@ -156,6 +157,8 @@ async function computeOrganizationAccess(
     }
   }
 
+  const hasNativeTournamentAccess = Object.keys(tournamentRolesMap).length > 0;
+
   // 3. SEC-26 : Source d'accès Discord évaluée UNIQUEMENT si l'intégration DISCORD est active (`enabled = true`)
   if (org.discordEnabled && org.discordGuildId) {
     const guild = await client.guilds.fetch(org.discordGuildId).catch(() => null);
@@ -177,14 +180,15 @@ async function computeOrganizationAccess(
         }
 
         for (const t of activeTournaments) {
-          if (t.discord_to_role_id && member.roles.cache.has(t.discord_to_role_id)) {
+          const toRoleId = readTournamentDiscordConfig(t.discord_config).to_role_id;
+          if (toRoleId && member.roles.cache.has(toRoleId)) {
             tournamentRolesMap[t.id] = "TOURNAMENT_TO";
           }
         }
-      } else if (Object.keys(tournamentRolesMap).length === 0) {
+      } else if (!hasNativeTournamentAccess) {
         return { allowed: false, code: "NOT_A_MEMBER" };
       }
-    } else if (Object.keys(tournamentRolesMap).length === 0) {
+    } else if (!hasNativeTournamentAccess) {
       return { allowed: false, code: "BOT_NOT_IN_GUILD" };
     }
   }
@@ -197,7 +201,7 @@ async function computeOrganizationAccess(
         level: "TOURNAMENT",
         tournamentIds: scopedTournamentIds,
         tournamentRoles: tournamentRolesMap,
-        source: "NATIVE",
+        source: hasNativeTournamentAccess ? "NATIVE" : "DISCORD",
       },
     };
   }
@@ -213,36 +217,10 @@ async function computeAccess(client: DiscordClientLike, guildIdOrOrg: string, di
     logger.error(`[MemberAccess] Erreur lors de la résolution de l'organisation pour ${guildIdOrOrg}:`, error);
     return { allowed: false, code: "CHECK_FAILED" };
   }
-  if (org) {
-    return computeOrganizationAccess(client, org, discordId);
+  if (!org) {
+    return { allowed: false, code: isDiscordSnowflake(guildIdOrOrg) ? "BOT_NOT_IN_GUILD" : "NO_RIGHTS" };
   }
-
-  const guild = await client.guilds.fetch(guildIdOrOrg).catch(() => null);
-  if (!guild) return { allowed: false, code: "BOT_NOT_IN_GUILD" };
-
-  const member = await guild.members.fetch(discordId).catch(() => null);
-  if (!member) return { allowed: false, code: "NOT_A_MEMBER" };
-
-  const settings = await readToRoleId(guildIdOrOrg);
-  if (!settings.ok) return { allowed: false, code: "CHECK_FAILED" };
-
-  const reason = resolveAdminReason({
-    isOwner: guild.ownerId === discordId,
-    hasAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
-    hasManageGuild: member.permissions.has(PermissionFlagsBits.ManageGuild),
-    hasToRole: !!settings.toRoleId && member.roles.cache.has(settings.toRoleId),
-  });
-  // Le niveau SERVER l'emporte : les rôles TO de tournoi ne sont lus que sans droit serveur.
-  if (reason) return { allowed: true, access: { level: "SERVER", reason } };
-
-  const tournamentRoles = await readTournamentToRoles(guildIdOrOrg);
-  if (!tournamentRoles.ok) return { allowed: false, code: "CHECK_FAILED" };
-  const tournamentIds = tournamentRoles.roles
-    .filter((role) => member.roles.cache.has(role.roleId))
-    .map((role) => role.tournamentId);
-  return tournamentIds.length > 0
-    ? { allowed: true, access: { level: "TOURNAMENT", tournamentIds } }
-    : { allowed: false, code: "NO_RIGHTS" };
+  return computeOrganizationAccess(client, org, discordId);
 }
 
 /**

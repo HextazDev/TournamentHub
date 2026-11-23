@@ -15,7 +15,7 @@ import {
   tournamentFrom,
 } from "./middleware/auth";
 import { invalidateGuildAccess, invalidateMemberAccess } from "./services/MemberAccessService";
-import { runWithRequestTenantCache } from "./utils/tenant";
+import { resolveOrganization, runWithRequestTenantCache } from "./utils/tenant";
 import { supabase } from "./lib/supabase";
 import { tBot, getGuildLanguage } from "./i18n";
 import { SchedulerService } from "./services/SchedulerService";
@@ -28,7 +28,6 @@ import { phaseRouter } from "./routes/PhaseRouter";
 import { matchRouter } from "./routes/MatchRouter";
 import { tournamentRouter } from "./routes/TournamentRouter";
 import { teamRouter } from "./routes/TeamRouter";
-import { serverSettingsRouter } from "./routes/ServerSettingsRouter";
 import { organizationRouter } from "./routes/OrganizationRouter";
 import { playerRouter } from "./routes/PlayerRouter";
 import { IntegrationBus } from "./services/IntegrationBus";
@@ -93,7 +92,7 @@ const discordListGuard = [
   tournamentLevelGuard,
   requireTournamentScope(tournamentFrom.query("tournamentId"), { optionalForServer: true }),
 ];
-// SEC-16 : l'auto-setup Discord reste hors de portée du rôle TO (comme /api/server-settings, gardé par son routeur).
+// SEC-16 : l'auto-setup Discord reste hors de portée du rôle TO (comme PUT /api/organizations/:orgId/integrations/DISCORD).
 const serverSettingsGuard = [guildAdminGuard, requireGuildAction("MANAGE_SERVER_SETTINGS")];
 
 // Health check (no auth required — skipped in middleware)
@@ -151,8 +150,6 @@ app.use('/api/phases', tournamentLevelGuard, phaseRouter);
 app.use('/api/matches', tournamentLevelGuard, matchRouter);
 app.use('/api/tournaments', tournamentLevelGuard, tournamentRouter);
 app.use('/api/teams', tournamentLevelGuard, teamRouter);
-// La garde MANAGE_SERVER_SETTINGS (SEC-16) est appliquée par le routeur lui-même.
-app.use('/api/server-settings', guildAdminGuard, serverSettingsRouter);
 // Routes RFC 0001 : organisations (création Web sans Discord + gestion) et actions joueurs Web (INT-02, SEC-30).
 app.use('/api/organizations', organizationRouter);
 app.use('/api/player', playerRouter);
@@ -284,14 +281,17 @@ const bootstrap = async () => {
           try {
             const guildId = interaction.guildId;
             const captainId = interaction.user.id;
+            const org = guildId ? await resolveOrganization(guildId) : null;
 
-            const { data: currentTournament } = await supabase
-              .from("tournaments")
-              .select("id")
-              .eq("guild_id", guildId)
-              .order("created_at", { ascending: false })
-              .limit(1)
-              .single();
+            const { data: currentTournament } = org?.discordEnabled
+              ? await supabase
+                  .from("tournaments")
+                  .select("id")
+                  .eq("organization_id", org.id)
+                  .order("created_at", { ascending: false })
+                  .limit(1)
+                  .single()
+              : { data: null };
 
             const lang = await getGuildLanguage(guildId, currentTournament?.id);
 

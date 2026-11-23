@@ -36,21 +36,58 @@ function req(partial: Partial<Request> & { headers?: Record<string, string> }): 
   return { path: "/api/x", body: {}, query: {}, headers: {}, ...partial } as unknown as Request;
 }
 
-function settings(toRoleId: string | null, error: { message: string } | null = null) {
-  vi.mocked(supabase.from).mockImplementation((() => {
-    // Aucun tournoi n'a de rôle TO ici : l'accès de niveau TOURNAMENT est couvert par tournamentAccess.test.ts.
-    const tournaments = { data: [], error: null };
+function settings(
+  toRoleId: string | null,
+  error: { message: string } | null = null,
+  options: { legacyMemberRole?: string | null; omitOrg?: boolean } = {},
+) {
+  vi.mocked(supabase.from).mockImplementation(((table: string) => {
+    const filters: Record<string, unknown> = {};
     const b = {
       select: () => b,
-      eq: () => b,
+      eq: (col: string, val: unknown) => {
+        filters[col] = val;
+        return b;
+      },
       neq: () => b,
+      in: () => b,
       not: () => b,
-      maybeSingle: () =>
-        Promise.resolve({
-          data: error ? null : { config: { to_role_id: toRoleId }, to_role_id: toRoleId },
-          error,
-        }),
-      then: (resolve: (v: unknown) => unknown) => Promise.resolve(tournaments).then(resolve),
+      maybeSingle: () => {
+        if (error) return Promise.resolve({ data: null, error });
+        if (options.omitOrg) return Promise.resolve({ data: null, error: null });
+        if (table === "organization_integrations") {
+          const guildKey = typeof filters.external_id === "string" ? filters.external_id : "g1";
+          const orgId = typeof filters.organization_id === "string" ? filters.organization_id : `org-${guildKey}`;
+          const externalId = typeof filters.external_id === "string" ? filters.external_id : orgId.replace(/^org-/, "");
+          return Promise.resolve({
+            data: {
+              id: `int-${externalId}`,
+              organization_id: orgId,
+              provider: "DISCORD",
+              external_id: externalId,
+              enabled: true,
+              config: { to_role_id: toRoleId },
+            },
+            error: null,
+          });
+        }
+        if (table === "organizations") {
+          const id = typeof filters.id === "string" ? filters.id : "org-g1";
+          const slug = typeof filters.slug === "string" ? filters.slug : id;
+          return Promise.resolve({
+            data: { id, slug, name: slug, language: "fr" },
+            error: null,
+          });
+        }
+        if (table === "organization_members") {
+          return Promise.resolve({
+            data: options.legacyMemberRole ? { role: options.legacyMemberRole } : null,
+            error: null,
+          });
+        }
+        return Promise.resolve({ data: null, error: null });
+      },
+      then: (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(resolve),
     };
     return b;
   }) as unknown as typeof supabase.from);
@@ -162,6 +199,33 @@ describe("requireGuildAdmin", () => {
     const second = await run(requireGuildAdmin(discord({ roles: ["to"] })), withUser());
     expect(second.next).toHaveBeenCalled();
   });
+
+  it("#101: sans organisation en base, aucun fallback Discord n'est tenté (404 BOT_NOT_IN_GUILD sur snowflake, 403 NO_RIGHTS sur slug)", async () => {
+    settings(null, null, { omitOrg: true });
+    const fetchGuild = vi.fn();
+    const spyClient = { guilds: { fetch: fetchGuild } };
+
+    const snowflakeOut = await run(requireGuildAdmin(spyClient), withUser("111111111111111111"));
+    expect(snowflakeOut.statusCode).toBe(404);
+    expect(snowflakeOut.body).toMatchObject({ code: "BOT_NOT_IN_GUILD" });
+
+    const slugOut = await run(requireGuildAdmin(spyClient), withUser("unknown-org"));
+    expect(slugOut.statusCode).toBe(403);
+    expect(slugOut.body).toMatchObject({ code: "NO_RIGHTS" });
+
+    expect(fetchGuild).not.toHaveBeenCalled();
+  });
+
+  it.each(["OWNER", "ADMIN", "ORGANIZER"] as const)(
+    "#101: l'ancien rôle %s dans organization_members n'accorde plus aucun accès",
+    async (legacyRole) => {
+      settings(null, null, { legacyMemberRole: legacyRole });
+      const out = await run(requireGuildAdmin(discord({ roles: [] })), withUser());
+      expect(out.statusCode).toBe(403);
+      expect(out.body).toMatchObject({ code: "NO_RIGHTS" });
+      expect(out.next).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("SEC-05: invalidation du cache de permissions", () => {

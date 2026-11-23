@@ -5,7 +5,7 @@ import { BracketGeneratorService } from "../services/BracketGeneratorService";
 import { RoundRobinGeneratorService } from "../services/RoundRobinGeneratorService";
 import { LifecycleService } from "../services/LifecycleService";
 import { IntegrationBus } from "../services/IntegrationBus";
-import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseGuild, verifyTournamentGuild, resolveOrganization } from "../utils/tenant";
+import { getAuthenticatedGuildId, getTournamentScope, verifyPhaseOrganization, verifyTournamentOrganization, resolveOrganization } from "../utils/tenant";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { DomainError, sendServerError } from "../utils/serverError";
 
@@ -21,7 +21,7 @@ phaseRouter.post("/", requireTournamentScope(tournamentFrom.body("tournament_id"
     // Le tournoi vient de la garde de portée, jamais directement du corps (SEC-21).
     const tournament_id = getTournamentScope(req);
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentOrganization(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -50,7 +50,7 @@ phaseRouter.get("/:tournamentId", requireTournamentScope(tournamentFrom.param("t
   try {
     const tournamentId = req.params.tournamentId;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTournamentGuild(tournamentId, authGuildId))) {
+    if (!authGuildId || !(await verifyTournamentOrganization(tournamentId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -72,7 +72,7 @@ phaseRouter.put("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyPhaseGuild(phaseId, authGuildId))) {
+    if (!authGuildId || !(await verifyPhaseOrganization(phaseId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
@@ -166,7 +166,7 @@ phaseRouter.get("/:id/seeding", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyPhaseGuild(phaseId, authGuildId))) {
+    if (!authGuildId || !(await verifyPhaseOrganization(phaseId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
@@ -183,7 +183,7 @@ phaseRouter.delete("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyPhaseGuild(phaseId, authGuildId))) {
+    if (!authGuildId || !(await verifyPhaseOrganization(phaseId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
@@ -207,7 +207,7 @@ phaseRouter.put("/:id", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyPhaseGuild(phaseId, authGuildId))) {
+    if (!authGuildId || !(await verifyPhaseOrganization(phaseId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 
@@ -251,7 +251,7 @@ phaseRouter.post("/:id/sync", phaseScope, async (req, res) => {
   try {
     const phaseId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyPhaseGuild(phaseId, authGuildId))) {
+    if (!authGuildId || !(await verifyPhaseOrganization(phaseId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette phase n'appartient pas à votre serveur." });
     }
 

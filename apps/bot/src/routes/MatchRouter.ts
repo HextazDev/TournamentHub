@@ -3,7 +3,7 @@ import { supabase } from "../lib/supabase";
 import { ScoreService } from "../services/ScoreService";
 import { LeaderboardService } from "../services/LeaderboardService";
 import { TextChannel } from "discord.js";
-import { getAuthenticatedGuildId, resolveOrganization, verifyMatchGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, resolveOrganization, verifyMatchOrganization } from "../utils/tenant";
 import { ForceScoreSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
@@ -14,7 +14,7 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
   try {
     const matchId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyMatchGuild(matchId, authGuildId))) {
+    if (!authGuildId || !(await verifyMatchOrganization(matchId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce match n'appartient pas à votre serveur." });
     }
 

@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
+import type { TournamentDiscordConfig } from "@hub/shared";
 import { supabase } from "../lib/supabase";
-import { getAuthenticatedGuildId, getTournamentScope, resolveOrganization, verifyTournamentGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, getTournamentScope, resolveOrganization, verifyTournamentOrganization } from "../utils/tenant";
 import { refreshGuildAccess } from "../services/AccessRefreshService";
 import { SchedulerService } from "../services/SchedulerService";
 import { ArchiveService } from "../services/ArchiveService";
@@ -11,9 +12,9 @@ export async function syncSchedule(req: Request, res: Response) {
   const tournamentId = getTournamentScope(req);
   const guildId = getAuthenticatedGuildId(req);
   if (!tournamentId) return res.status(400).json({ error: "tournament_id required" });
-  if (!guildId || !await verifyTournamentGuild(tournamentId, guildId)) return res.status(403).json({ error: "Access denied" });
+  if (!guildId || !await verifyTournamentOrganization(tournamentId, guildId)) return res.status(403).json({ error: "Access denied" });
   try {
-    // verifyTournamentGuild a déjà établi l'appartenance à l'organisation authentifiée (LIFE-01).
+    // verifyTournamentOrganization a déjà établi l'appartenance à l'organisation authentifiée (LIFE-01).
     const { data: tournament, error } = await supabase.from("tournaments").select("*")
       .eq("id", tournamentId).single();
     if (error || !tournament) return res.status(404).json({ error: "Tournament not found" });
@@ -31,7 +32,7 @@ export async function archiveAndInit(req: Request, res: Response) {
   if (typeof tournamentId !== "string" || !tournamentId || !guildId || req.body?.guildId !== guildId) {
     return res.status(400).json({ error: "guildId and newTournamentId required" });
   }
-  if (!await verifyTournamentGuild(tournamentId, guildId)) return res.status(403).json({ error: "Access denied" });
+  if (!await verifyTournamentOrganization(tournamentId, guildId)) return res.status(403).json({ error: "Access denied" });
   try {
     const org = await resolveOrganization(guildId);
     if (!org) return res.status(404).json({ error: "Organization not found" });
@@ -40,15 +41,14 @@ export async function archiveAndInit(req: Request, res: Response) {
     if (fetchError || !tournament) return res.status(404).json({ error: "Tournament not found" });
     const { data: archived, error: archiveError } = await supabase.from("tournaments").update({ status: "ARCHIVED" })
       .eq("organization_id", org.id).neq("id", tournamentId).neq("status", "ARCHIVED")
-      .select("id, discord_captain_role_id, discord_checkin_channel_id");
+      .select("id, discord_config");
     if (archiveError) throw archiveError;
     // SEC-23 / SEC-05 / DISC-08 : les rôles TO des tournois archivés ne donnent plus accès ni ne figurent dans le hub.
-    refreshGuildAccess(req.app.locals.discordClient, guildId);
+    refreshGuildAccess(req.app.locals.discordClient, org.id);
 
     const archivedTournaments = (archived ?? []) as {
       id: string;
-      discord_captain_role_id: string | null;
-      discord_checkin_channel_id: string | null;
+      discord_config?: TournamentDiscordConfig | null;
     }[];
 
     if (archivedTournaments.length > 0 && org.discordEnabled && org.discordGuildId) {

@@ -6,7 +6,7 @@ vi.mock("../utils/logger", () => ({ logger: { error: vi.fn(), warn: vi.fn(), inf
 
 import {
   resolveOrganization,
-  verifyTournamentGuild,
+  verifyTournamentOrganization,
   clearOrganizationCache,
   runWithRequestTenantCache,
 } from "../utils/tenant";
@@ -53,16 +53,16 @@ describe("PERF-01: cache de résolution d'organisation borné à la requête", (
     });
   });
 
-  it("réutilise la résolution entre les verifyTournamentGuild d'une même requête", async () => {
+  it("réutilise la résolution entre les verifyTournamentOrganization d'une même requête", async () => {
     const row = orgRow("22222222-2222-2222-2222-222222222222");
-    const tournament = { data: { guild_id: `guild-${row.id}`, organization_id: row.id }, error: null };
+    const tournament = { data: { organization_id: row.id }, error: null };
     const org = chainable({ data: row, error: null });
     from.mockImplementation((table: string) => (table === "tournaments" ? chainable(tournament) : org));
 
     await runWithRequestTenantCache(async () => {
-      await verifyTournamentGuild("t-1", `guild-${row.id}`);
+      await verifyTournamentOrganization("t-1", `guild-${row.id}`);
       const selectionsAfterFirst = (org.select as ReturnType<typeof vi.fn>).mock.calls.length;
-      await verifyTournamentGuild("t-2", `guild-${row.id}`);
+      await verifyTournamentOrganization("t-2", `guild-${row.id}`);
 
       expect(from).toHaveBeenCalledWith("organizations");
       expect(selectionsAfterFirst).toBeGreaterThan(0);

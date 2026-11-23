@@ -19,9 +19,9 @@ INSERT INTO organization_integrations (id, organization_id, provider, external_i
 INSERT INTO organization_integration_secrets (integration_id, encrypted_payload) VALUES
   ('00000000-0000-0000-0000-000000000311', 'v1:iv:tag:ciphertext');
 
-INSERT INTO tournaments (id, organization_id, guild_id, name, is_public) VALUES
-  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000011', 'g-public', 'Public', TRUE),
-  ('00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-000000000022', 'g-private', 'Private', FALSE);
+INSERT INTO tournaments (id, organization_id, name, is_public) VALUES
+  ('00000000-0000-0000-0000-0000000000a1', '00000000-0000-0000-0000-000000000011', 'Public', TRUE),
+  ('00000000-0000-0000-0000-0000000000b2', '00000000-0000-0000-0000-000000000022', 'Private', FALSE);
 
 INSERT INTO phases (id, tournament_id, name, phase_order, format) VALUES
   ('00000000-0000-0000-0000-0000000001a1', '00000000-0000-0000-0000-0000000000a1', 'P', 1, 'SINGLE_ELIM'),
@@ -415,6 +415,47 @@ BEGIN
      OR has_function_privilege('anon', 'transfer_organization_ownership(uuid,text,text,boolean)', 'EXECUTE') THEN
     RAISE EXCEPTION 'RPC d''organisation exécutable par anon';
   END IF;
+END $$;
+
+-- #101 : suppression de tournaments.guild_id, des colonnes discord_* et du trigger sync_tournament_organization.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'tournaments'
+      AND column_name IN (
+        'guild_id',
+        'discord_category_id',
+        'discord_announcement_channel_id',
+        'discord_registration_channel_id',
+        'discord_checkin_channel_id',
+        'discord_captain_role_id',
+        'discord_to_role_id'
+      )
+  ) THEN
+    RAISE EXCEPTION '#101: colonne héritée encore présente sur tournaments';
+  END IF;
+
+  IF to_regprocedure('public.sync_tournament_organization()') IS NOT NULL THEN
+    RAISE EXCEPTION '#101: fonction sync_tournament_organization encore présente';
+  END IF;
+END $$;
+
+-- #101 : les rôles historiques OWNER / ADMIN / ORGANIZER sont refusés sur organization_members.
+DO $$
+DECLARE
+  v_legacy TEXT;
+BEGIN
+  FOREACH v_legacy IN ARRAY ARRAY['OWNER', 'ADMIN', 'ORGANIZER'] LOOP
+    BEGIN
+      INSERT INTO organization_members (organization_id, user_id, role)
+      VALUES ('00000000-0000-0000-0000-000000000011', 'legacy-' || v_legacy, v_legacy);
+      RAISE EXCEPTION '#101: rôle historique % accepté sur organization_members', v_legacy;
+    EXCEPTION WHEN check_violation THEN
+      NULL;
+    END;
+  END LOOP;
 END $$;
 
 SELECT 'RLS OK' AS result;

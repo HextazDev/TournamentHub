@@ -32,9 +32,9 @@ export function clearOrganizationCache(): void {
 
 /**
  * Résout une organisation par son `id` UUID, son `slug` ou le `guild_id` Discord de son intégration.
- * Renvoie `null` si aucune ligne `organizations` ne correspond (ex: fixture de test purement `server_settings`).
+ * Renvoie `null` si aucune ligne `organizations` ne correspond.
  * PERF-01 : à l'intérieur d'une requête HTTP, les résolutions réussies sont mémoïsées pour amortir
- * les chaînes `verify*Guild` (une même requête API peut sinon déclencher 8-10 lectures Supabase de
+ * les chaînes `verify*Organization` (une même requête API peut sinon déclencher 8-10 lectures Supabase de
  * résolution de tenant). Les échecs (`null`) ne sont jamais mémoïsés : la base est relue à chaque tentative.
  * Hors requête HTTP (planificateur, scripts, tests), la base est toujours relue.
  */
@@ -188,113 +188,108 @@ export async function resolveResourceTournament(kind: TournamentResourceKind, id
   return readTournamentId("phases", match.phase_id);
 }
 
+interface TournamentTenantRow {
+  organization_id?: string | null;
+}
+
+interface JoinedTournamentChildRow {
+  tournament_id?: string | null;
+  tournaments?: TournamentTenantRow | TournamentTenantRow[] | null;
+}
+
+interface JoinedMatchRow {
+  phase_id?: string | null;
+  phases?: { tournaments?: TournamentTenantRow | TournamentTenantRow[] | null } | { tournaments?: TournamentTenantRow | TournamentTenantRow[] | null }[] | null;
+}
+
+function unwrapSingle<T>(value: T | T[] | null | undefined): T | undefined {
+  return Array.isArray(value) ? value[0] : (value ?? undefined);
+}
+
 async function matchesTenant(
-  row: { guild_id?: string | null; organization_id?: string | null } | null | undefined,
+  row: TournamentTenantRow | null | undefined,
   expectedTenantId: string,
 ): Promise<boolean> {
-  if (!row) return false;
+  if (!row?.organization_id) return false;
   const org = await resolveOrganization(expectedTenantId);
   if (!org) return false;
   return row.organization_id === org.id;
 }
 
+async function verifyTournamentChildOrganization(
+  table: "phases" | "teams",
+  id: string,
+  expectedTenantId: string,
+): Promise<boolean> {
+  if (!id || !expectedTenantId) return false;
+  const { data, error } = await supabase
+    .from(table)
+    .select("tournament_id, tournaments!inner(organization_id)")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error || !data) return false;
+  const row = data as JoinedTournamentChildRow;
+  const tourney = unwrapSingle(row.tournaments);
+  if (tourney?.organization_id) {
+    return matchesTenant(tourney, expectedTenantId);
+  }
+  if (typeof row.tournament_id === "string") {
+    return verifyTournamentOrganization(row.tournament_id, expectedTenantId);
+  }
+  return false;
+}
+
 /**
- * Verify that a tournament belongs to the authenticated organization or guild.
+ * Verify that a tournament belongs to the authenticated organization.
  * Returns true if valid, false if invalid or not found.
  */
-export async function verifyTournamentGuild(tournamentId: string, expectedGuildId: string): Promise<boolean> {
-  if (!tournamentId || !expectedGuildId) return false;
+export async function verifyTournamentOrganization(tournamentId: string, expectedTenantId: string): Promise<boolean> {
+  if (!tournamentId || !expectedTenantId) return false;
   const { data, error } = await supabase
     .from("tournaments")
-    .select("guild_id, organization_id")
+    .select("organization_id")
     .eq("id", tournamentId)
     .maybeSingle();
 
   if (error || !data) return false;
-  return matchesTenant(data as { guild_id?: string | null; organization_id?: string | null }, expectedGuildId);
-}
-
-export const verifyTournamentOrganization = verifyTournamentGuild;
-
-/**
- * Verify that a phase belongs to the authenticated organization or guild.
- */
-export async function verifyPhaseGuild(phaseId: string, expectedGuildId: string): Promise<boolean> {
-  if (!phaseId || !expectedGuildId) return false;
-  const { data, error } = await supabase
-    .from("phases")
-    .select("tournament_id, tournaments!inner(guild_id, organization_id)")
-    .eq("id", phaseId)
-    .maybeSingle();
-
-  if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const tourney = anyData.tournaments as
-    | { guild_id?: string | null; organization_id?: string | null }
-    | { guild_id?: string | null; organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted && (extracted.guild_id || extracted.organization_id)) {
-    return matchesTenant(extracted, expectedGuildId);
-  }
-  if (typeof anyData.tournament_id === "string") {
-    return verifyTournamentGuild(anyData.tournament_id, expectedGuildId);
-  }
-  return false;
+  return matchesTenant(data as TournamentTenantRow, expectedTenantId);
 }
 
 /**
- * Verify that a team belongs to the authenticated organization or guild.
+ * Verify that a phase belongs to the authenticated organization.
  */
-export async function verifyTeamGuild(teamId: string, expectedGuildId: string): Promise<boolean> {
-  if (!teamId || !expectedGuildId) return false;
-  const { data, error } = await supabase
-    .from("teams")
-    .select("tournament_id, tournaments!inner(guild_id, organization_id)")
-    .eq("id", teamId)
-    .maybeSingle();
-
-  if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const tourney = anyData.tournaments as
-    | { guild_id?: string | null; organization_id?: string | null }
-    | { guild_id?: string | null; organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted && (extracted.guild_id || extracted.organization_id)) {
-    return matchesTenant(extracted, expectedGuildId);
-  }
-  if (typeof anyData.tournament_id === "string") {
-    return verifyTournamentGuild(anyData.tournament_id, expectedGuildId);
-  }
-  return false;
+export async function verifyPhaseOrganization(phaseId: string, expectedTenantId: string): Promise<boolean> {
+  return verifyTournamentChildOrganization("phases", phaseId, expectedTenantId);
 }
 
 /**
- * Verify that a match belongs to the authenticated organization or guild.
+ * Verify that a team belongs to the authenticated organization.
  */
-export async function verifyMatchGuild(matchId: string, expectedGuildId: string): Promise<boolean> {
-  if (!matchId || !expectedGuildId) return false;
+export async function verifyTeamOrganization(teamId: string, expectedTenantId: string): Promise<boolean> {
+  return verifyTournamentChildOrganization("teams", teamId, expectedTenantId);
+}
+
+/**
+ * Verify that a match belongs to the authenticated organization.
+ */
+export async function verifyMatchOrganization(matchId: string, expectedTenantId: string): Promise<boolean> {
+  if (!matchId || !expectedTenantId) return false;
   const { data, error } = await supabase
     .from("matches")
-    .select("phase_id, phases!inner(tournaments!inner(guild_id, organization_id))")
+    .select("phase_id, phases!inner(tournaments!inner(organization_id))")
     .eq("id", matchId)
     .maybeSingle();
 
   if (error || !data) return false;
-  const anyData = data as Record<string, unknown>;
-  const phase = anyData.phases as Record<string, unknown> | Record<string, unknown>[] | undefined;
-  const phaseObj = Array.isArray(phase) ? phase[0] : phase;
-  const tourney = phaseObj?.tournaments as
-    | { guild_id?: string | null; organization_id?: string | null }
-    | { guild_id?: string | null; organization_id?: string | null }[]
-    | undefined;
-  const extracted = Array.isArray(tourney) ? tourney[0] : tourney;
-  if (extracted && (extracted.guild_id || extracted.organization_id)) {
-    return matchesTenant(extracted, expectedGuildId);
+  const row = data as JoinedMatchRow;
+  const phase = unwrapSingle(row.phases);
+  const tourney = unwrapSingle(phase?.tournaments);
+  if (tourney?.organization_id) {
+    return matchesTenant(tourney, expectedTenantId);
   }
-  if (typeof anyData.phase_id === "string") {
-    return verifyPhaseGuild(anyData.phase_id, expectedGuildId);
+  if (typeof row.phase_id === "string") {
+    return verifyPhaseOrganization(row.phase_id, expectedTenantId);
   }
   return false;
 }

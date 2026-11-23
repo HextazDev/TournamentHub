@@ -4,7 +4,6 @@
 const SEGMENT = "[A-Za-z0-9_-]+";
 const ALLOWED = [
   /^discord\/(roles|channels|members)$/,
-  /^server-settings$/,
   new RegExp(`^tournaments(/${SEGMENT}(/(settings|visibility|launch|close|registrations|checkin/stop|integrations/sync|invite-link))?)?$`),
   new RegExp(`^(teams|phases|matches)(/${SEGMENT})*$`),
   /^organizations\/invites\/accept$/,

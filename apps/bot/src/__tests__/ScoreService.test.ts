@@ -204,7 +204,7 @@ describe("ScoreService.progressTeams - SWS-06 ronde suisse déjà générée", (
   it("SWS-06: dernier match d'une ronde revalidé alors que la ronde suivante existe ➜ ni insertion ni annonce", async () => {
     const fake = new FakeSupabase({
       phases: [{ id: "phase-s", format: "SWISS", tournament_id: "tour-1", settings: { swiss_rounds_count: 3 } }],
-      tournaments: [{ id: "tour-1", guild_id: "guild-1", language: "fr" }],
+      tournaments: [{ id: "tour-1", organization_id: "org-1", language: "fr" }],
       phase_teams: [
         { phase_id: "phase-s", team_id: "t1", points: 3, wins: 1 },
         { phase_id: "phase-s", team_id: "t2", points: 0, wins: 0 },
@@ -235,7 +235,7 @@ describe("ScoreService.progressTeams - SCR-08 fin de ronde suisse contenant un f
   it("SCR-08 / SWS-06: ronde 1 = COMPLETED + FF ➜ ronde 2 générée une seule fois", async () => {
     const fake = new FakeSupabase({
       phases: [{ id: "phase-s", format: "SWISS", tournament_id: "tour-1", settings: { swiss_rounds_count: 3 } }],
-      tournaments: [{ id: "tour-1", guild_id: "guild-1", language: "fr" }],
+      tournaments: [{ id: "tour-1", organization_id: "org-1", language: "fr" }],
       phase_teams: [
         { phase_id: "phase-s", team_id: "t1", points: 3, wins: 1 },
         { phase_id: "phase-s", team_id: "t2", points: 0, wins: 0 },

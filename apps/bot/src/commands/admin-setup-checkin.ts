@@ -22,11 +22,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   const lang = await getGuildLanguage(interaction.guildId);
 
   // 1. Fetch current organization settings to verify TO rights
-  let toRoleId: string | null = null;
-  if (interaction.guildId) {
-    const org = await resolveOrganization(interaction.guildId);
-    toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
-  }
+  const org = interaction.guildId ? await resolveOrganization(interaction.guildId) : null;
+  const toRoleId =
+    org?.discordEnabled && typeof org.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
 
   // 2. Control permissions (Admins or TOs only)
   const isSetupAdmin = interaction.memberPermissions?.has(
@@ -40,7 +38,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     hasToRole = (interaction.member as any).roles.cache.has(toRoleId);
   }
 
-  if (!isSetupAdmin && !hasToRole) {
+  if (!org?.discordEnabled || (!isSetupAdmin && !hasToRole)) {
     return interaction.reply({
       content: tBot(lang, "checkin.noPermission"),
       ephemeral: true,
@@ -74,7 +72,7 @@ export async function execute(interaction: ChatInputCommandInteraction) {
     const { data: latestTournament } = await supabase
       .from("tournaments")
       .select("id")
-      .eq("guild_id", interaction.guildId)
+      .eq("organization_id", org.id)
       .order("created_at", { ascending: false })
       .limit(1)
       .single();

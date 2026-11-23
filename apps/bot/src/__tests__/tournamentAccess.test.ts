@@ -41,14 +41,23 @@ import {
 import { getAuthenticatedGuildId, getTournamentScope } from "../utils/tenant";
 
 const GUILD = "g1";
+const ORG_1 = "00000000-0000-0000-0000-000000000001";
+const ORG_2 = "00000000-0000-0000-0000-000000000002";
 const T_A = "tournament-a";
 const T_B = "tournament-b";
 
 function seed(tournaments: Record<string, unknown>[]) {
   db.failTournaments = false;
   db.current = new FakeSupabase({
+    organizations: [
+      { id: ORG_1, slug: "org-g1", name: "Org G1", language: "fr" },
+      { id: ORG_2, slug: "org-g2", name: "Org G2", language: "fr" },
+    ],
+    organization_members: [],
+    tournament_staff: [],
     organization_integrations: [
-      { provider: "DISCORD", external_id: GUILD, config: { to_role_id: "server-to" } },
+      { id: "int-1", organization_id: ORG_1, provider: "DISCORD", external_id: GUILD, enabled: true, config: { to_role_id: "server-to" } },
+      { id: "int-2", organization_id: ORG_2, provider: "DISCORD", external_id: "g2", enabled: true, config: {} },
     ],
     tournaments,
     phases: [
@@ -68,9 +77,9 @@ function seed(tournaments: Record<string, unknown>[]) {
 
 const tournament = (id: string, roleId: string | null, status = "ACTIVE", guildId = GUILD) => ({
   id,
-  guild_id: guildId,
+  organization_id: guildId === GUILD ? ORG_1 : ORG_2,
   status,
-  discord_to_role_id: roleId,
+  discord_config: roleId ? { to_role_id: roleId } : {},
 });
 
 interface FakeMember {
@@ -136,12 +145,20 @@ beforeEach(() => {
 describe("resolveMemberAccess : niveau TOURNAMENT (#67)", () => {
   it("SEC-21: le rôle TO d'un tournoi donne un accès limité à ce tournoi", async () => {
     const decision = await resolveMemberAccess(discord({ roles: ["role-a"] }), GUILD, "u1");
-    expect(decision).toEqual({ allowed: true, access: { level: "TOURNAMENT", tournamentIds: [T_A] } });
+    expect(decision).toEqual({
+      allowed: true,
+      access: { level: "TOURNAMENT", tournamentIds: [T_A], tournamentRoles: { [T_A]: "TOURNAMENT_TO" }, source: "DISCORD" },
+    });
   });
 
   it("SEC-21: plusieurs rôles TO de tournoi cumulent leurs tournois", async () => {
     const decision = await resolveMemberAccess(discord({ roles: ["role-a", "role-b"] }), GUILD, "u1");
-    expect(decision.allowed && decision.access).toEqual({ level: "TOURNAMENT", tournamentIds: [T_A, T_B] });
+    expect(decision.allowed && decision.access).toEqual({
+      level: "TOURNAMENT",
+      tournamentIds: [T_A, T_B],
+      tournamentRoles: { [T_A]: "TOURNAMENT_TO", [T_B]: "TOURNAMENT_TO" },
+      source: "DISCORD",
+    });
   });
 
   it("SEC-23: un tournoi archivé ne donne aucun accès ; un tournoi terminé (COMPLETED) en donne", async () => {
@@ -150,7 +167,7 @@ describe("resolveMemberAccess : niveau TOURNAMENT (#67)", () => {
     clearMemberAccessCache();
     expect(await resolveMemberAccess(discord({ roles: ["role-b"] }), GUILD, "u1")).toEqual({
       allowed: true,
-      access: { level: "TOURNAMENT", tournamentIds: [T_B] },
+      access: { level: "TOURNAMENT", tournamentIds: [T_B], tournamentRoles: { [T_B]: "TOURNAMENT_TO" }, source: "DISCORD" },
     });
   });
 
@@ -182,11 +199,11 @@ describe("resolveMemberAccess : niveau TOURNAMENT (#67)", () => {
     expect(await resolveMemberAccess(discord(member), GUILD, "u1")).toEqual({ allowed: false, code: "NO_RIGHTS" });
   });
 
-  it("SEC-05: un changement de discord_to_role_id prend effet dès l'invalidation du serveur", async () => {
+  it("SEC-05: un changement de discord_config.to_role_id prend effet dès l'invalidation du serveur", async () => {
     expect((await resolveMemberAccess(discord({ roles: ["role-a"] }), GUILD, "u1")).allowed).toBe(true);
     const row = db.current?.tables.tournaments?.find((t) => t.id === T_A);
     if (!row) throw new Error("tournoi absent du jeu de test");
-    row.discord_to_role_id = "role-new";
+    row.discord_config = { to_role_id: "role-new" };
     // Sans invalidation, le cache garde l'ancienne décision (TTL 30 s)…
     expect((await resolveMemberAccess(discord({ roles: ["role-a"] }), GUILD, "u1")).allowed).toBe(true);
     invalidateGuildAccess(GUILD);
@@ -206,7 +223,12 @@ describe("requireGuildAdmin : niveau SERVER exigé par défaut (SEC-21)", () => 
     const q = req();
     const out = await run(requireGuildAdmin(discord({ roles: ["role-a"] }), { tournamentLevel: true }), q);
     expect(out.next).toHaveBeenCalled();
-    expect(q.adminCheck?.access).toEqual({ level: "TOURNAMENT", tournamentIds: [T_A] });
+    expect(q.adminCheck?.access).toEqual({
+      level: "TOURNAMENT",
+      tournamentIds: [T_A],
+      tournamentRoles: { [T_A]: "TOURNAMENT_TO" },
+      source: "DISCORD",
+    });
   });
 
   it("le niveau SERVER passe sur les deux montages", async () => {
@@ -338,7 +360,7 @@ describe("RFC 0001 / SEC-26 : accès natifs Web (organization_members / tourname
       organizations: [{ id: ORG_ID, slug: ORG_SLUG, name: "Splatoon FR", language: "fr" }],
       organization_members: [],
       organization_integrations: [],
-      tournaments: [{ id: T_A, organization_id: ORG_ID, status: "ACTIVE", discord_to_role_id: null }],
+      tournaments: [{ id: T_A, organization_id: ORG_ID, status: "ACTIVE", discord_config: {} }],
       tournament_staff: [{ tournament_id: T_A, user_id: "u-staff", role: "TOURNAMENT_TO" }],
     });
 
@@ -373,7 +395,7 @@ describe("RFC 0001 / SEC-26 : accès natifs Web (organization_members / tourname
       organizations: [{ id: ORG_ID, slug: ORG_SLUG, name: "Splatoon FR", language: "fr" }],
       organization_members: [{ organization_id: ORG_ID, user_id: "u-owner", role: "ORG_OWNER" }],
       organization_integrations: integrations,
-      tournaments: [{ id: T_A, organization_id: ORG_ID, guild_id: GUILD, status: "ACTIVE", discord_to_role_id: "role-a" }],
+      tournaments: [{ id: T_A, organization_id: ORG_ID, status: "ACTIVE", discord_config: { to_role_id: "role-a" } }],
       tournament_staff: [],
     });
 
