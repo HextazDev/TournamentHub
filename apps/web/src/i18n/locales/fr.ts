@@ -432,7 +432,7 @@ export const fr = {
     save: "Sauvegarder",
     inviteSection: "Invitation publique",
     inviteLabel: "Lien d'invitation Discord",
-    inviteDesc: "Affiché sur les pages publiques des tournois (bouton « Rejoindre le Discord »). Utilisez une invitation permanente.",
+    inviteDesc: "Affiché sur les pages publiques des tournois (bouton « Rejoindre le Discord » pour une invitation Discord permanente, ou « Contacter l'organisation » pour tout autre lien https://).",
     invitePlaceholder: "https://discord.gg/xxxx",
     contactInvalid: "Lien de contact invalide (URL https:// attendue).",
   },

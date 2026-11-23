@@ -3,11 +3,11 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { getServerSession } from "next-auth";
 import { canPerform, type ServerSettings, type Tournament } from "@hub/shared";
-import { authOptions } from "../app/api/auth/[...nextauth]/route";
-import { supabaseAdmin } from "./supabase-admin";
-import { canViewPrivateTournament, TOURNAMENT_INVITE_COOKIE_PREFIX } from "./accessRules";
-import { checkGuildAdminAccess, type GuildAdminAccess } from "./guildAccess";
-import { resolveServerBotApiUrl } from "./config";
+import { authOptions } from "@/app/api/auth/[...nextauth]/route";
+import { supabaseAdmin } from "@/lib/supabase-admin";
+import { canViewPrivateTournament, TOURNAMENT_INVITE_COOKIE_PREFIX } from "@/lib/accessRules";
+import { checkGuildAdminAccess, type GuildAdminAccess } from "@/lib/guildAccess";
+import { resolveServerBotApiUrl } from "@/lib/config";
 
 // Accès serveur uniquement : ce module lit la session NextAuth et utilise la clé service_role.
 // Toute lecture via supabaseAdmin DOIT passer par une des vérifications ci-dessous (SEC-10 / SEC-11).

@@ -72,7 +72,7 @@ export const fr = {
     matchResultSummaryWithNumber: "**Match #{number}**\n\n🔹 **{team1}** : **{score1}**\n🔹 **{team2}** : **{score2}**",
     matchFinished: "Match terminé !",
     drawMatchNotice: "⚠️ **MATCH NUL** pour le Match #{matchNumber}.\nLe système ne peut pas déterminer de vainqueur pour l'auto-routing.\n{toPing} - Une intervention manuelle est requise via le panel web.",
-    newBracketMatch: "⚔️ **NOUVEAU MATCH DE BRACKET** ⚔️\n👉 L'équipe **{team1}** (<@{cap1}>) affronte l'équipe **{team2}** (<@{cap2}>) !\nPréparez-vous.",
+    newBracketMatch: "⚔️ **NOUVEAU MATCH DE BRACKET** ⚔️\n👉 L'équipe **{team1}**{cap1} affronte l'équipe **{team2}**{cap2} !\nPréparez-vous.",
     swissRoundGenerated: "🇨🇭 Ronde {round} générée !",
     swissRoundDesc: "Le Round {prevRound} est terminé. Voici les nouveaux affrontements pour le Round {round} :",
     swissMatchBye: "🔹 **Match #{number}** : **{name}** est **BYE** (Victoire automatique 1 - 0)",

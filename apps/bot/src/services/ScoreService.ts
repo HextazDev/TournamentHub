@@ -6,22 +6,46 @@ import { LifecycleService } from "./LifecycleService";
 import { IntegrationBus } from "./IntegrationBus";
 import { tBot, getGuildLanguage, getPhaseLanguage, type BotLocale } from "../i18n";
 import { logger } from "../utils/logger";
-import { isFinishedMatchStatus } from "@hub/shared";
+import { isFinishedMatchStatus, isSyntheticDiscordId } from "@hub/shared";
 import { resolveActiveDiscordGuild, resolveOrganization } from "../utils/tenant";
+import { assertChannelInGuild, isChannelInGuild } from "../utils/discordChannel";
 
 type MatchValidationUpdate = { status: "COMPLETED" } | { status: "CONTESTED" };
 
 export type MatchCompletionSource = "DISCORD" | "WEB_CAPTAIN" | "WEB_STAFF" | "TO_FORCE";
 
-interface MatchChannelRef {
+export interface MatchChannelRef {
   id?: string;
   discord_channel_id?: string | null;
   group_id?: string | null;
   phase_id?: string | null;
 }
 
+export interface MatchAnnounceRef extends MatchChannelRef {
+  match_number?: number | null;
+  team1_id?: string | null;
+  team2_id?: string | null;
+  team1_score?: number | null;
+  team2_score?: number | null;
+  status?: string | null;
+}
+
+interface ProgressPhaseRow {
+  id?: string;
+  name?: string | null;
+  format?: string | null;
+  tournament_id?: string | null;
+  discord_channel_id?: string | null;
+  settings?: { swiss_rounds_count?: number } | null;
+}
+
 function isValidScore(val: number): boolean {
   return Number.isInteger(val) && val >= 0 && val <= 99;
+}
+
+function formatBracketCaptainMention(captainId: string | null | undefined): string {
+  if (!captainId || isSyntheticDiscordId(captainId)) return "";
+  return ` (<@${captainId}>)`;
 }
 
 export class ScoreService {
@@ -323,14 +347,14 @@ export class ScoreService {
 
   /**
    * DISC-18 (#102) : résout le salon Discord associé à un match (match -> groupe -> phase).
-   * Vérifie `channel.guildId === expectedGuildId` lorsque fourni pour garantir le cloisonnement multi-tenant.
+   * Contrôle fail-closed (`isChannelInGuild`) sur `expectedGuildId` pour bloquer salons étrangers et DM (AUD-SEC-01/02).
    */
   public static async resolveMatchChannel(
     match: MatchChannelRef,
     discordClient: Pick<Client, "channels"> | undefined,
-    options: { expectedGuildId?: string | null; throwOnCrossGuild?: boolean; phaseChannelId?: string | null } = {},
+    options: { expectedGuildId: string; throwOnCrossGuild?: boolean; phaseChannelId?: string | null },
   ): Promise<TextChannel | undefined> {
-    if (!discordClient) return undefined;
+    if (!discordClient || !options.expectedGuildId) return undefined;
 
     let channelId: string | null = typeof match.discord_channel_id === "string" && match.discord_channel_id ? match.discord_channel_id : null;
 
@@ -365,16 +389,11 @@ export class ScoreService {
     const fetched = await discordClient.channels.fetch(channelId);
     if (!fetched || !fetched.isTextBased()) return undefined;
 
-    if (
-      options.expectedGuildId &&
-      "guildId" in fetched &&
-      typeof fetched.guildId === "string" &&
-      fetched.guildId !== options.expectedGuildId
-    ) {
+    if (!isChannelInGuild(fetched, options.expectedGuildId)) {
       if (options.throwOnCrossGuild) {
-        throw new Error(`Le salon ${channelId} n'appartient pas au serveur lié.`);
+        assertChannelInGuild(fetched, options.expectedGuildId, channelId);
       }
-      logger.warn(`[ScoreService] Salon ${channelId} ignoré : appartient à un autre serveur.`);
+      logger.warn(`[ScoreService] Salon ${channelId} ignoré : n'appartient pas au serveur lié.`);
       return undefined;
     }
 
@@ -389,16 +408,26 @@ export class ScoreService {
     matchId: string,
     guildId: string,
     discordClient: Client,
-    options: { source?: MatchCompletionSource; status?: string; team1Score?: number; team2Score?: number } = {},
+    options: {
+      source?: MatchCompletionSource;
+      status?: string;
+      team1Score?: number;
+      team2Score?: number;
+      match?: MatchAnnounceRef;
+    } = {},
   ): Promise<void> {
     if (options.source === "DISCORD") return;
 
-    const { data: match, error: matchErr } = await supabase
-      .from("matches")
-      .select("id, phase_id, group_id, match_number, team1_id, team2_id, team1_score, team2_score, status, discord_channel_id")
-      .eq("id", matchId)
-      .maybeSingle();
-    if (matchErr) throw matchErr;
+    let match: MatchAnnounceRef | null = options.match ?? null;
+    if (!match) {
+      const { data: fetchedMatch, error: matchErr } = await supabase
+        .from("matches")
+        .select("id, phase_id, group_id, match_number, team1_id, team2_id, team1_score, team2_score, status, discord_channel_id")
+        .eq("id", matchId)
+        .maybeSingle();
+      if (matchErr) throw matchErr;
+      match = fetchedMatch;
+    }
     if (!match) return;
 
     const channel = await this.resolveMatchChannel(match, discordClient, {
@@ -412,23 +441,24 @@ export class ScoreService {
       ? await supabase.from("teams").select("id, name").in("id", teamIds)
       : { data: [] };
 
-    const lang = await getPhaseLanguage(guildId, match.phase_id);
+    const lang = await getPhaseLanguage(guildId, match.phase_id ?? undefined);
     const unknownTeam = tBot(lang, "score.unknownTeam");
     const nameById = new Map(((teams ?? []) as { id: string; name?: string | null }[]).map((t) => [t.id, t.name || unknownTeam]));
     const team1Name = (typeof match.team1_id === "string" ? nameById.get(match.team1_id) : undefined) ?? unknownTeam;
     const team2Name = (typeof match.team2_id === "string" ? nameById.get(match.team2_id) : undefined) ?? unknownTeam;
 
     const status = options.status ?? match.status;
-    const score1 = options.team1Score ?? match.team1_score;
-    const score2 = options.team2Score ?? match.team2_score;
+    const score1 = options.team1Score ?? match.team1_score ?? 0;
+    const score2 = options.team2Score ?? match.team2_score ?? 0;
+    const isStaffArbitrated = options.source === "TO_FORCE" || options.source === "WEB_STAFF";
 
     const title =
       status === "FF"
         ? tBot(lang, "score.forfeitRecordedTitle")
-        : options.source === "TO_FORCE"
+        : isStaffArbitrated
           ? tBot(lang, "score.toScoreForcedTitle")
           : tBot(lang, "score.webScoreValidatedTitle");
-    const color = status === "FF" ? 0xf59e0b : options.source === "TO_FORCE" ? 0x3b82f6 : 0x22c55e;
+    const color = status === "FF" ? 0xf59e0b : isStaffArbitrated ? 0x3b82f6 : 0x22c55e;
     const description =
       typeof match.match_number === "number"
         ? tBot(lang, "score.matchResultSummaryWithNumber", {
@@ -449,9 +479,16 @@ export class ScoreService {
     await channel.send({ embeds: [embed] });
   }
 
-  public static async progressTeams(match: any, channel: TextChannel | undefined, winnerId: string | null, loserId: string | null, discordClient?: any) {
+  public static async progressTeams(
+    match: any,
+    channel: TextChannel | undefined,
+    winnerId: string | null,
+    loserId: string | null,
+    discordClient?: any,
+    options: { expectedGuildId?: string | null } = {},
+  ) {
     const client = discordClient || channel?.client;
-    let phase: Record<string, any> | null = null;
+    let phase: ProgressPhaseRow | null = null;
 
     if (match.phase_id) {
       const { data: phaseData } = await supabase
@@ -459,24 +496,47 @@ export class ScoreService {
         .select("*")
         .eq("id", match.phase_id)
         .single();
-      phase = phaseData;
+      phase = (phaseData as ProgressPhaseRow | null) ?? null;
     }
 
-    // DISC-18 (#102) : sans salon explicite (score Web ou forcé TO), résoudre le salon de groupe ou de phase.
-    let targetChannel: TextChannel | undefined = channel;
-    if (!targetChannel && client) {
-      targetChannel = await this.resolveMatchChannel(match, client, {
+    let resolvedGuildId: string | null | undefined = options.expectedGuildId;
+    const getExpectedGuildId = async (): Promise<string | null> => {
+      if (resolvedGuildId !== undefined) return resolvedGuildId;
+      if (phase?.tournament_id) {
+        const { data: tournament } = await supabase
+          .from("tournaments")
+          .select("organization_id")
+          .eq("id", phase.tournament_id)
+          .single();
+        resolvedGuildId = await resolveActiveDiscordGuild(tournament?.organization_id);
+      } else {
+        resolvedGuildId = null;
+      }
+      return resolvedGuildId;
+    };
+
+    // AUD-SEC-01 & AUD-PRF-01 : résolution paresseuse (uniquement si un message Discord est réellement à envoyer)
+    // et toujours bornée par expectedGuildId (fail-closed, jamais de fuite cross-serveur).
+    let channelResolved = Boolean(channel);
+    let cachedChannel: TextChannel | undefined = channel;
+    const getTargetChannel = async (): Promise<TextChannel | undefined> => {
+      if (channelResolved) return cachedChannel;
+      channelResolved = true;
+      if (!client) return undefined;
+      const expectedGuildId = await getExpectedGuildId();
+      if (!expectedGuildId) return undefined;
+      cachedChannel = await this.resolveMatchChannel(match, client, {
+        expectedGuildId,
         ...(typeof phase?.discord_channel_id === "string" ? { phaseChannelId: phase.discord_channel_id } : {}),
       }).catch((err: unknown) => {
         logger.warn(`[ScoreService] Impossible de résoudre le salon Discord pour le match ${match.id}:`, err);
         return undefined;
       });
-    }
+      return cachedChannel;
+    };
 
     // 0. Handle Swiss format auto-progression
     if (match.phase_id && phase && phase.format === "SWISS") {
-      const lang = await getPhaseLanguage(targetChannel?.guildId, match.phase_id);
-      const unknownTeam = tBot(lang, 'score.unknownTeam');
       // Recalculate Swiss standings to make sure they are up-to-date
       await LeaderboardService.calculateSwissStandings(match.phase_id).catch(console.error);
 
@@ -502,15 +562,17 @@ export class ScoreService {
 
             // Sync phase channel permissions
             if (client && phase.tournament_id) {
-              const { data: tournament } = await supabase.from("tournaments").select("organization_id").eq("id", phase.tournament_id).single();
-              const activeGuildId = await resolveActiveDiscordGuild(tournament?.organization_id);
+              const activeGuildId = await getExpectedGuildId();
               if (activeGuildId) {
                 await LifecycleService.syncPhaseChannels(match.phase_id, activeGuildId, client).catch(console.error);
               }
             }
 
             // Post round announcement and captain pings in the Swiss channel
+            const targetChannel = await getTargetChannel();
             if (targetChannel) {
+              const lang = await getPhaseLanguage(targetChannel.guildId, match.phase_id);
+              const unknownTeam = tBot(lang, 'score.unknownTeam');
               const { data: nextMatches } = await supabase
                 .from("matches")
                 .select(`
@@ -529,30 +591,33 @@ export class ScoreService {
 
                 const pings: string[] = [];
                 const matchesList: string[] = [];
+                const pushCaptainPing = (captainId: unknown) => {
+                  if (typeof captainId === "string" && captainId && !isSyntheticDiscordId(captainId)) {
+                    pings.push(`<@${captainId}>`);
+                  }
+                };
 
                 nextMatches.forEach(m => {
-                  const tA: any = Array.isArray(m.teamA) ? m.teamA[0] : m.teamA;
-                  const tB: any = Array.isArray(m.teamB) ? m.teamB[0] : m.teamB;
+                  const tA = (Array.isArray(m.teamA) ? m.teamA[0] : m.teamA) as { name?: string | null; captain_discord_id?: string | null } | null;
+                  const tB = (Array.isArray(m.teamB) ? m.teamB[0] : m.teamB) as { name?: string | null; captain_discord_id?: string | null } | null;
 
                   if (m.status === "BYE") {
                     const taName = tA?.name || unknownTeam;
                     matchesList.push(tBot(lang, 'score.swissMatchBye', { number: m.match_number, name: taName }));
-                    if (tA?.captain_discord_id) {
-                      pings.push(`<@${tA.captain_discord_id}>`);
-                    }
+                    pushCaptainPing(tA?.captain_discord_id);
                   } else {
                     const taName = tA?.name || unknownTeam;
                     const tbName = tB?.name || unknownTeam;
                     matchesList.push(tBot(lang, 'score.swissMatchVs', { number: m.match_number, name1: taName, name2: tbName }));
-                    if (tA?.captain_discord_id) pings.push(`<@${tA.captain_discord_id}>`);
-                    if (tB?.captain_discord_id) pings.push(`<@${tB.captain_discord_id}>`);
+                    pushCaptainPing(tA?.captain_discord_id);
+                    pushCaptainPing(tB?.captain_discord_id);
                   }
                 });
 
                 embed.addFields({ name: tBot(lang, 'score.swissRoundMatchesField'), value: matchesList.join("\n") });
 
                 await targetChannel.send({
-                  content: tBot(lang, 'score.swissCaptainsPing', { pings: pings.join(" "), round: nextRound }),
+                  ...(pings.length > 0 ? { content: tBot(lang, 'score.swissCaptainsPing', { pings: pings.join(" "), round: nextRound }) } : {}),
                   embeds: [embed]
                 }).catch((err: unknown) => {
                   logger.warn(`[ScoreService] Échec d'annonce de la ronde suisse ${nextRound}:`, err);
@@ -561,7 +626,10 @@ export class ScoreService {
             }
           } else {
             // All rounds finished! Let's end the Swiss phase.
+            const targetChannel = await getTargetChannel();
             if (targetChannel) {
+              const lang = await getPhaseLanguage(targetChannel.guildId, match.phase_id);
+              const unknownTeam = tBot(lang, 'score.unknownTeam');
               const { data: standings } = await supabase
                 .from("phase_teams")
                 .select(`
@@ -575,11 +643,11 @@ export class ScoreService {
               if (standings && standings.length > 0) {
                 const embed = new EmbedBuilder()
                   .setTitle(tBot(lang, 'score.swissFinishedTitle'))
-                  .setDescription(tBot(lang, 'score.swissFinishedDesc', { name: phase.name, rounds: maxRounds }))
+                  .setDescription(tBot(lang, 'score.swissFinishedDesc', { name: phase.name ?? unknownTeam, rounds: maxRounds }))
                   .setColor(0xFFD700);
 
                 const standingsText = standings.map((s, idx) => {
-                  const t: any = Array.isArray(s.team) ? s.team[0] : s.team;
+                  const t = (Array.isArray(s.team) ? s.team[0] : s.team) as { name?: string | null } | null;
                   const tName = t?.name || unknownTeam;
                   return tBot(lang, 'score.swissStandingLine', { rank: idx + 1, name: tName, points: s.points, wins: s.wins, played: s.played });
                 }).join("\n");
@@ -601,6 +669,15 @@ export class ScoreService {
     }
 
     if (!winnerId || !loserId) {
+      // SCR-06 / AUD-BUG-01 : seuls les brackets à élimination (ou matchs avec auto-routing) requièrent un arbitrage sur égalité.
+      // En poules (ROUND_ROBIN), l'égalité est légitime et ne doit jamais déclencher d'alerte @TO.
+      const requiresBracketRouting =
+        Boolean(match.next_match_winner_id || match.next_match_loser_id) ||
+        phase?.format === "SINGLE_ELIM" ||
+        phase?.format === "DOUBLE_ELIM";
+      if (!requiresBracketRouting) return;
+
+      const targetChannel = await getTargetChannel();
       if (targetChannel) {
         const lang = await getPhaseLanguage(targetChannel.guildId, match.phase_id);
         const org = await resolveOrganization(targetChannel.guildId);
@@ -616,14 +693,18 @@ export class ScoreService {
     }
 
     if (match.next_match_winner_id) {
-      await this.assignTeamToNextMatch(match.next_match_winner_id, winnerId, targetChannel);
+      await this.assignTeamToNextMatch(match.next_match_winner_id, winnerId, getTargetChannel);
     }
     if (match.next_match_loser_id) {
-      await this.assignTeamToNextMatch(match.next_match_loser_id, loserId, targetChannel);
+      await this.assignTeamToNextMatch(match.next_match_loser_id, loserId, getTargetChannel);
     }
   }
 
-  private static async assignTeamToNextMatch(targetMatchId: string, teamId: string, channel: TextChannel | undefined) {
+  private static async assignTeamToNextMatch(
+    targetMatchId: string,
+    teamId: string,
+    getChannel: () => Promise<TextChannel | undefined>,
+  ) {
     // Use atomic RPC function to prevent race conditions
     const { data: result, error } = await supabase.rpc('assign_team_to_match', {
       p_target_match_id: targetMatchId,
@@ -636,7 +717,7 @@ export class ScoreService {
       const { data: targetMatch } = await supabase.from("matches").select("*").eq("id", targetMatchId).single();
       if (!targetMatch) return;
 
-      const updateData: any = {};
+      const updateData: { team1_id?: string; team2_id?: string } = {};
       if (!targetMatch.team1_id) {
         updateData.team1_id = teamId;
       } else if (!targetMatch.team2_id && targetMatch.team1_id !== teamId) {
@@ -650,7 +731,7 @@ export class ScoreService {
       const newTeamA = targetMatch.team1_id || updateData.team1_id;
       const newTeamB = targetMatch.team2_id || updateData.team2_id;
       if (newTeamA && newTeamB) {
-        await this.notifyMatchReady(newTeamA, newTeamB, channel);
+        await this.notifyMatchReady(newTeamA, newTeamB, await getChannel());
       }
       return;
     }
@@ -663,20 +744,28 @@ export class ScoreService {
     // Check if the match is now fully assigned after our atomic operation
     const { data: updatedMatch } = await supabase.from("matches").select("team1_id, team2_id").eq("id", targetMatchId).single();
     if (updatedMatch?.team1_id && updatedMatch?.team2_id) {
-      await this.notifyMatchReady(updatedMatch.team1_id, updatedMatch.team2_id, channel);
+      await this.notifyMatchReady(updatedMatch.team1_id, updatedMatch.team2_id, await getChannel());
     }
   }
 
   private static async notifyMatchReady(team1Id: string, team2Id: string, channel: TextChannel | undefined) {
+    if (!channel) return;
     const [{ data: ta }, { data: tb }] = await Promise.all([
       supabase.from("teams").select("captain_discord_id, name, tournament_id").eq("id", team1Id).single(),
       supabase.from("teams").select("captain_discord_id, name").eq("id", team2Id).single()
     ]);
 
-    if (ta && tb && channel) {
+    if (ta && tb) {
       const lang = await getGuildLanguage(channel.guildId, ta.tournament_id);
       await channel
-        .send(tBot(lang, 'score.newBracketMatch', { team1: ta.name, cap1: ta.captain_discord_id, team2: tb.name, cap2: tb.captain_discord_id }))
+        .send(
+          tBot(lang, 'score.newBracketMatch', {
+            team1: ta.name,
+            cap1: formatBracketCaptainMention(ta.captain_discord_id),
+            team2: tb.name,
+            cap2: formatBracketCaptainMention(tb.captain_discord_id),
+          }),
+        )
         .catch((err: unknown) => {
           logger.warn(`[ScoreService] Échec d'annonce du match prêt (${team1Id} vs ${team2Id}):`, err);
         });

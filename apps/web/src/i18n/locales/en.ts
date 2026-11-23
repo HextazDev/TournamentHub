@@ -434,7 +434,7 @@ export const en: typeof fr = {
     save: "Save",
     inviteSection: "Public invite",
     inviteLabel: "Discord invite link",
-    inviteDesc: "Shown on public tournament pages (\"Join the Discord\" button). Use a permanent invite.",
+    inviteDesc: "Shown on public tournament pages (\"Join the Discord\" button for a permanent Discord invite, or \"Contact organization\" for any other https:// link).",
     invitePlaceholder: "https://discord.gg/xxxx",
     contactInvalid: "Invalid contact link (expected https:// URL).",
   },

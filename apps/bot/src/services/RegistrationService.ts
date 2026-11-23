@@ -4,7 +4,9 @@ import { supabase } from '../lib/supabase';
 import { tBot, getGuildLanguage, isBotLocale } from '../i18n';
 import { logger } from '../utils/logger';
 import { resolveOrganization } from '../utils/tenant';
+import { assertChannelInGuild } from '../utils/discordChannel';
 import { applyPresence } from './CaptainPresenceService';
+import { IntegrationBus } from './IntegrationBus';
 
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -125,32 +127,35 @@ export class RegistrationService {
     if (!tournament || !team) return;
 
     const regChannelId = readTournamentDiscordConfig(tournament.discord_config).registration_channel_id;
+    let channelError: unknown = null;
     if (regChannelId) {
-      const channel = (await client.channels.fetch(regChannelId)) as TextChannel | null;
-      if (!channel || !channel.isTextBased()) {
-        throw new Error(`Impossible de trouver le salon Discord ${regChannelId}.`);
-      }
-      if ("guildId" in channel && channel.guildId !== guildId) {
-        throw new Error(`Le salon ${regChannelId} n'appartient pas au serveur lié.`);
-      }
+      try {
+        const channel = (await client.channels.fetch(regChannelId)) as TextChannel | null;
+        if (!channel || !channel.isTextBased()) {
+          throw new Error(`Impossible de trouver le salon Discord ${regChannelId}.`);
+        }
+        assertChannelInGuild(channel, guildId, regChannelId);
 
-      const lang = await getGuildLanguage(guildId, tournamentId);
-      const rosterMembers = (members ?? []) as { ingame_name?: string | null; is_captain?: boolean }[];
-      const rosterStr = rosterMembers
-        .map((m) => `• ${m.ingame_name || tBot(lang, "score.unknownTeam")}`)
-        .join("\n") || `• ${team.name}`;
+        const lang = await getGuildLanguage(guildId, tournamentId);
+        const rosterMembers = (members ?? []) as { ingame_name?: string | null; is_captain?: boolean }[];
+        const rosterStr = rosterMembers
+          .map((m) => `• ${m.ingame_name || tBot(lang, "score.unknownTeam")}`)
+          .join("\n") || `• ${team.name}`;
 
-      const embed = {
-        title: tBot(lang, "registration.newRegistrationAnnouncementTitle", { teamName: team.name }),
-        description: tBot(lang, "registration.newRegistrationAnnouncementDesc", {
-          teamName: team.name,
-          roster: rosterStr,
-          subs: "",
-        }),
-        color: 0x57f287,
-        timestamp: new Date().toISOString(),
-      };
-      await channel.send({ embeds: [embed] });
+        const embed = {
+          title: tBot(lang, "registration.newRegistrationAnnouncementTitle", { teamName: team.name }),
+          description: tBot(lang, "registration.newRegistrationAnnouncementDesc", {
+            teamName: team.name,
+            roster: rosterStr,
+            subs: "",
+          }),
+          color: 0x57f287,
+          timestamp: new Date().toISOString(),
+        };
+        await channel.send({ embeds: [embed] });
+      } catch (err: unknown) {
+        channelError = err;
+      }
     }
 
     if (
@@ -165,6 +170,8 @@ export class RegistrationService {
         captain_discord_id: team.captain_discord_id,
       });
     }
+
+    if (channelError) throw channelError;
   }
 
   static async handleInteraction(interaction: Interaction) {
@@ -527,6 +534,16 @@ export class RegistrationService {
         } catch (presenceErr) {
           logger.warn("Failed to apply presence on registration for disabled checkin tournament:", presenceErr);
         }
+      }
+
+      if (tournament?.organization_id) {
+        await IntegrationBus.emit("onTeamRegistered", {
+          organizationId: tournament.organization_id,
+          tournamentId,
+          teamId: team.id,
+          discordClient: interaction.client,
+          data: { source: "DISCORD" },
+        });
       }
 
       const warningStr = insertErrors.length > 0

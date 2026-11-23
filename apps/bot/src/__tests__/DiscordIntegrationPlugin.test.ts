@@ -298,4 +298,87 @@ describe("INT-04 (#102): handlers DiscordIntegrationPlugin", () => {
     expect(fetch).not.toHaveBeenCalled();
     expect(presence.applyPresence).not.toHaveBeenCalled();
   });
+
+  it("AUD-SEC-02: refuse en fail-closed un salon sans guildId (ex. DMChannel) sur inscription, check-in et score", async () => {
+    const dmChannel = {
+      id: "ch-dm",
+      isTextBased: () => true,
+      send: vi.fn(async () => ({ id: "sent-dm" })),
+      messages: { fetch: vi.fn(async () => ({ id: "msg-dm", edit: vi.fn() })) },
+    };
+    const client = { channels: { fetch: vi.fn(async () => dmChannel) } };
+
+    const regWarnings = await IntegrationBus.emit("onTeamRegistered", {
+      organizationId: ORG_ID,
+      tournamentId: T_ID,
+      teamId: TEAM_1,
+      discordClient: client as never,
+    });
+    expect(regWarnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
+
+    const openWarnings = await IntegrationBus.emit("onCheckinOpened", {
+      organizationId: ORG_ID,
+      tournamentId: T_ID,
+      discordClient: client as never,
+    });
+    expect(openWarnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
+
+    db.current!.tables.tournaments![0]!.checkin_message_id = "msg-dm";
+    const closeWarnings = await IntegrationBus.emit("onCheckinClosed", {
+      organizationId: ORG_ID,
+      tournamentId: T_ID,
+      discordClient: client as never,
+    });
+    expect(closeWarnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
+
+    const matchWarnings = await IntegrationBus.emit("onMatchCompleted", {
+      organizationId: ORG_ID,
+      phaseId: PHASE_ID,
+      matchId: MATCH_1,
+      discordClient: client as never,
+      data: { source: "WEB_CAPTAIN", status: "COMPLETED", team1_score: 2, team2_score: 1 },
+    });
+    expect(matchWarnings).toEqual([{ provider: "DISCORD", code: "INTEGRATION_FAILED" }]);
+
+    expect(dmChannel.send).not.toHaveBeenCalled();
+  });
+
+  it("AUD-ARC-01: onTeamRegistered et onCheckinCompleted n'envoient aucun doublon si source === 'DISCORD' et WEB_STAFF utilise le titre arbitrage TO", async () => {
+    const regChannel = makeTextChannel("ch-reg");
+    const phaseChannel = makeTextChannel("ch-phase");
+    const client = {
+      channels: {
+        fetch: vi.fn(async (id: string) => (id === "ch-reg" ? regChannel : id === "ch-phase" ? phaseChannel : null)),
+      },
+    };
+
+    await IntegrationBus.emit("onTeamRegistered", {
+      organizationId: ORG_ID,
+      tournamentId: T_ID,
+      teamId: TEAM_1,
+      discordClient: client as never,
+      data: { source: "DISCORD" },
+    });
+    await IntegrationBus.emit("onCheckinCompleted", {
+      organizationId: ORG_ID,
+      tournamentId: T_ID,
+      teamId: TEAM_1,
+      discordClient: client as never,
+      data: { source: "DISCORD" },
+    });
+    expect(regChannel.send).not.toHaveBeenCalled();
+    expect(presence.applyPresence).not.toHaveBeenCalled();
+
+    const staffWarnings = await IntegrationBus.emit("onMatchCompleted", {
+      organizationId: ORG_ID,
+      phaseId: PHASE_ID,
+      matchId: MATCH_1,
+      discordClient: client as never,
+      data: { source: "WEB_STAFF", status: "COMPLETED", team1_score: 2, team2_score: 1 },
+    });
+    expect(staffWarnings).toEqual([]);
+    const staffEmbed = (phaseChannel.send.mock.calls[0]?.[0] as { embeds: { data: { title?: string } }[] }).embeds[0]?.data;
+    expect(staffEmbed?.title).toContain("arbitré");
+  });
 });
+

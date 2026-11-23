@@ -11,6 +11,7 @@ import { supabase } from "../lib/supabase";
 import { tBot, getGuildLanguage } from "../i18n";
 import { logger } from "../utils/logger";
 import { resolveActiveDiscordGuild } from "../utils/tenant";
+import { assertChannelInGuild } from "../utils/discordChannel";
 import { IntegrationBus } from "./IntegrationBus";
 import { readTournamentDiscordConfig, type Tournament } from "@hub/shared";
 
@@ -263,10 +264,10 @@ export class SchedulerService {
     }
 
     const channel = (await client.channels.fetch(checkinChannelId)) as TextChannel | null;
-    if (!channel || !("send" in channel)) return;
-    if ("guildId" in channel && channel.guildId && channel.guildId !== guildId) {
-      throw new Error(`Le salon de check-in ${checkinChannelId} n'appartient pas au serveur lié.`);
+    if (!channel || !("send" in channel)) {
+      throw new Error(`Impossible de trouver le salon de check-in Discord ${checkinChannelId}.`);
     }
+    assertChannelInGuild(channel, guildId, checkinChannelId);
 
     const lang = await getGuildLanguage(guildId, tournamentId);
     const mentionsMessage = captainRoleId
@@ -377,10 +378,10 @@ export class SchedulerService {
     if (!checkinChannelId) return;
 
     const channel = (await client.channels.fetch(checkinChannelId)) as TextChannel | null;
-    if (!channel || !("messages" in channel)) return;
-    if ("guildId" in channel && channel.guildId && channel.guildId !== guildId) {
-      throw new Error(`Le salon de check-in ${checkinChannelId} n'appartient pas au serveur lié.`);
+    if (!channel || !("messages" in channel)) {
+      throw new Error(`Impossible de trouver le salon de check-in Discord ${checkinChannelId}.`);
     }
+    assertChannelInGuild(channel, guildId, checkinChannelId);
 
     const msg = await channel.messages.fetch(latestTournament.checkin_message_id).catch(() => null);
     if (msg) {

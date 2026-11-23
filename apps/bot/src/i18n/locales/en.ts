@@ -74,7 +74,7 @@ export const en: typeof fr = {
     matchResultSummaryWithNumber: "**Match #{number}**\n\n🔹 **{team1}** : **{score1}**\n🔹 **{team2}** : **{score2}**",
     matchFinished: "Match completed!",
     drawMatchNotice: "⚠️ **DRAW MATCH** for Match #{matchNumber}.\nThe system cannot determine a winner for auto-routing.\n{toPing} - Manual intervention required via web panel.",
-    newBracketMatch: "⚔️ **NEW BRACKET MATCH** ⚔️\n👉 Team **{team1}** (<@{cap1}>) faces Team **{team2}** (<@{cap2}>)!\nGet ready.",
+    newBracketMatch: "⚔️ **NEW BRACKET MATCH** ⚔️\n👉 Team **{team1}**{cap1} faces Team **{team2}**{cap2}!\nGet ready.",
     swissRoundGenerated: "🇨🇭 Round {round} generated!",
     swissRoundDesc: "Round {prevRound} is completed. Here are the new pairings for Round {round}:",
     swissMatchBye: "🔹 **Match #{number}** : **{name}** has a **BYE** (Automatic 1 - 0 win)",

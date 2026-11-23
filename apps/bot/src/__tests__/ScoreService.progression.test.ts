@@ -81,6 +81,20 @@ function seedDatabase(matchStatus = "PENDING", matchOverrides: Record<string, un
     tournaments: [
       { id: "tourney-1", organization_id: "org-1", language: "fr" },
     ],
+    organizations: [
+      { id: "org-1", slug: "org-1", name: "Org 1", language: "fr" },
+    ],
+    organization_integrations: [
+      {
+        id: "int-1",
+        organization_id: "org-1",
+        provider: "DISCORD",
+        external_id: "guild-1",
+        enabled: true,
+        status: "CONNECTED",
+        config: { to_role_id: "role-to" },
+      },
+    ],
     server_settings: [
       { guild_id: "guild-1", language: "fr", to_role_id: "role-to" },
     ],
@@ -374,6 +388,44 @@ describe("ScoreService — Cas limites de scores & progression (SCR-01 à SCR-04
       ).resolves.toBeUndefined();
       expect(finalMatch.team2_id).toBe("team-a");
     });
+
+    it("AUD-BUG-01: une égalité en ROUND_ROBIN ne poste jamais l'alerte MATCH NUL", async () => {
+      const fake = seedDatabase("COMPLETED", {
+        group_id: "grp-1",
+        next_match_winner_id: null,
+        next_match_loser_id: null,
+      });
+      fake.tables.phases![0]!.format = "ROUND_ROBIN";
+      const groupChannel = {
+        id: "ch-grp-1",
+        guildId: "guild-1",
+        isTextBased: () => true,
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await ScoreService.progressTeams(fake.tables.matches![0]!, groupChannel as never, null, null);
+      expect(groupChannel.send).not.toHaveBeenCalled();
+    });
+
+    it("AUD-TYP-01: notifyMatchReady n'injecte pas de mention <@000000...> pour un capitaine synthétique", async () => {
+      const fake = seedDatabase("COMPLETED", { team1_score: 2, team2_score: 0 });
+      fake.tables.teams![0]!.captain_discord_id = "000000123456789012";
+      fake.tables.teams![1]!.captain_discord_id = "234567890123456789";
+      const finalMatch = fake.tables.matches!.find((m) => m.id === "match-final")!;
+      finalMatch.team1_id = "team-b";
+
+      const channel = {
+        guildId: "guild-1",
+        send: vi.fn().mockResolvedValue(undefined),
+      };
+
+      await ScoreService.progressTeams(fake.tables.matches![0]!, channel as never, "team-a", "team-b");
+      expect(channel.send).toHaveBeenCalledTimes(1);
+      const sent = channel.send.mock.calls[0]?.[0] as string;
+      expect(sent).not.toContain("<@000000123456789012>");
+      expect(sent).toContain("<@234567890123456789>");
+    });
   });
 });
+
 

@@ -4,7 +4,7 @@ import type { IntegrationEventContext, IntegrationPlugin } from "../IntegrationB
 import { RegistrationService } from "../RegistrationService";
 import { LifecycleService } from "../LifecycleService";
 import { SchedulerService } from "../SchedulerService";
-import { ScoreService, type MatchCompletionSource } from "../ScoreService";
+import { ScoreService, type MatchAnnounceRef, type MatchCompletionSource } from "../ScoreService";
 import { applyPresence } from "../CaptainPresenceService";
 import { supabase } from "../../lib/supabase";
 
@@ -23,6 +23,16 @@ function readMatchCompletionSource(data: Record<string, unknown> | undefined): M
   return undefined;
 }
 
+function isDiscordOrigin(data: Record<string, unknown> | undefined): boolean {
+  return data?.source === "DISCORD";
+}
+
+function readMatchAnnounceRef(data: Record<string, unknown> | undefined): MatchAnnounceRef | undefined {
+  const candidate = data?.match;
+  if (!candidate || typeof candidate !== "object") return undefined;
+  return candidate as MatchAnnounceRef;
+}
+
 /**
  * Plugin d'intégration Discord officiel (RFC 0001 Q3 / Q4).
  * N'est exécuté par IntegrationBus qu'après le commit métier, lorsque l'intégration DISCORD est active.
@@ -37,7 +47,7 @@ export const discordIntegrationPlugin: IntegrationPlugin = {
   },
 
   async onTeamRegistered(ctx: IntegrationEventContext): Promise<void> {
-    if (!ctx.tournamentId || !ctx.teamId) return;
+    if (!ctx.tournamentId || !ctx.teamId || isDiscordOrigin(ctx.data)) return;
     const { client, guildId } = requireDiscord(ctx);
     await RegistrationService.announceTeamRegistration(ctx.tournamentId, ctx.teamId, client, guildId);
   },
@@ -49,7 +59,7 @@ export const discordIntegrationPlugin: IntegrationPlugin = {
   },
 
   async onCheckinCompleted(ctx: IntegrationEventContext): Promise<void> {
-    if (!ctx.teamId) return;
+    if (!ctx.teamId || isDiscordOrigin(ctx.data)) return;
     const { client } = requireDiscord(ctx);
     const { data: team, error } = await supabase
       .from("teams")
@@ -92,11 +102,13 @@ export const discordIntegrationPlugin: IntegrationPlugin = {
     const status = typeof ctx.data?.status === "string" ? ctx.data.status : undefined;
     const team1Score = typeof ctx.data?.team1_score === "number" ? ctx.data.team1_score : undefined;
     const team2Score = typeof ctx.data?.team2_score === "number" ? ctx.data.team2_score : undefined;
+    const match = readMatchAnnounceRef(ctx.data);
     await ScoreService.announceMatchCompleted(ctx.matchId, guildId, client, {
       ...(source ? { source } : {}),
       ...(status ? { status } : {}),
       ...(team1Score !== undefined ? { team1Score } : {}),
       ...(team2Score !== undefined ? { team2Score } : {}),
+      ...(match ? { match } : {}),
     });
   },
 

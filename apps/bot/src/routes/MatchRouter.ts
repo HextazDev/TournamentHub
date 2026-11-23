@@ -7,7 +7,6 @@ import { getAuthenticatedGuildId, resolveOrganization, verifyMatchOrganization }
 import { ForceScoreSchema } from "@hub/shared";
 import { sendServerError } from "../utils/serverError";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
-import { logger } from "../utils/logger";
 
 export const matchRouter = Router();
 
@@ -56,7 +55,8 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
 
     // SEC-26 : aucun effet Discord (salon, annonce) quand l'intégration de l'organisation est coupée.
     const org = await resolveOrganization(authGuildId);
-    const discordClient = org?.discordEnabled ? req.app.locals.discordClient : undefined;
+    const activeGuildId = org?.discordEnabled ? org.discordGuildId : null;
+    const discordClient = activeGuildId ? req.app.locals.discordClient : undefined;
 
     let winnerId: string | null = null;
     let loserId: string | null = null;
@@ -75,34 +75,28 @@ matchRouter.put("/:id/force-score", requireTournamentScope(tournamentFrom.match(
     }
 
     // DISC-18 (#102) : annoncer d'abord le score arbitré dans le salon de phase/groupe via IntegrationBus (fail-safe).
-    if (org) {
-      await IntegrationBus.emit("onMatchCompleted", {
-        organizationId: org.id,
-        ...(typeof updatedMatch.phase_id === "string" ? { phaseId: updatedMatch.phase_id } : {}),
-        matchId,
-        ...(org.discordGuildId ? { guildId: org.discordGuildId } : {}),
-        ...(discordClient ? { discordClient } : {}),
-        data: {
-          source: "TO_FORCE" satisfies MatchCompletionSource,
-          status,
-          team1_score,
-          team2_score,
-        },
-      });
-    }
-
-    const channel = discordClient
-      ? await ScoreService.resolveMatchChannel(updatedMatch, discordClient, {
-          ...(org?.discordGuildId ? { expectedGuildId: org.discordGuildId } : {}),
-        }).catch((err: unknown) => {
-          logger.warn(`[MatchRouter] Impossible de résoudre le salon Discord pour le match ${matchId}:`, err);
-          return undefined;
+    const integrationWarnings = org
+      ? await IntegrationBus.emit("onMatchCompleted", {
+          organizationId: org.id,
+          ...(typeof updatedMatch.phase_id === "string" ? { phaseId: updatedMatch.phase_id } : {}),
+          matchId,
+          ...(activeGuildId ? { guildId: activeGuildId } : {}),
+          ...(discordClient ? { discordClient } : {}),
+          data: {
+            source: "TO_FORCE" satisfies MatchCompletionSource,
+            status,
+            team1_score,
+            team2_score,
+            match: updatedMatch,
+          },
         })
-      : undefined;
+      : [];
 
-    await ScoreService.progressTeams(updatedMatch, channel, winnerId, loserId, discordClient);
+    await ScoreService.progressTeams(updatedMatch, undefined, winnerId, loserId, discordClient, {
+      expectedGuildId: activeGuildId,
+    });
 
-    res.status(200).json({ message: "Score forced and bracket updated", match: updatedMatch });
+    res.status(200).json({ message: "Score forced and bracket updated", match: updatedMatch, integrationWarnings });
   } catch (error: unknown) {
     sendServerError(res, error, "MatchRouter.forceScore");
   }
