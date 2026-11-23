@@ -57,6 +57,7 @@ jobs:
             echo "Unsupported target: ${TARGET}"
             exit 1
           fi
+          export DB_REF DB_PASSWORD
           test -n "${DB_REF}" || { echo "Missing Supabase project ref secret for ${TARGET}"; exit 1; }
           test -n "${DB_PASSWORD}" || { echo "Missing Supabase DB password secret for ${TARGET}"; exit 1; }
           ENC_PW=$(python3 -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["DB_PASSWORD"], safe=""))')
