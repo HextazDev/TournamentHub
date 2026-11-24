@@ -6,6 +6,7 @@ import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getManagedTournament, getServerProfile } from "@/lib/viewer";
+import { formatGameType } from "@/lib/gameType";
 import { isServerSetupComplete, tournamentNextStep } from "@/lib/accessRules";
 import { NextStepCard } from "@/components/admin/NextStepCard";
 import { VisibilityToggle } from "./VisibilityToggle";
@@ -14,9 +15,10 @@ import { TournamentLifecycleManager } from "./TournamentLifecycleManager";
 
 export default async function TournamentDashboard({ params }: { params: Promise<{ orgSlug: string; id: string }> }) {
   const { orgSlug: guildId, id: tournamentId } = await params;
-  const locale = await getServerLocale();
-
-  const tournament = await getManagedTournament(guildId, tournamentId);
+  const [locale, tournament] = await Promise.all([
+    getServerLocale(),
+    getManagedTournament(guildId, tournamentId),
+  ]);
   if (!tournament) notFound();
 
   const [phasesRes, teamsRes, profile] = await Promise.all([
@@ -99,7 +101,7 @@ export default async function TournamentDashboard({ params }: { params: Promise<
               <div className="flex items-center gap-3 mb-1">
                  <h2 className="text-xl font-bold text-white leading-tight">{tournament.name}</h2>
               </div>
-              <p className="text-slate-400 text-sm font-medium">Splatoon 3</p>
+              <p className="text-slate-400 text-sm font-medium">{formatGameType(tournament.game_type, locale)}</p>
             </div>
             {/* Composant Client */}
             <VisibilityToggle tournamentId={tournamentId} guildId={guildId} initialIsPublic={!!tournament.is_public} />
