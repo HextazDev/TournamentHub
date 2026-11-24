@@ -2,6 +2,16 @@ version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/"
+    target-branch: "staging"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      # Garder @types/node aligné sur le runtime Docker (Node 22) jusqu'à la migration Node 26 LTS.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
