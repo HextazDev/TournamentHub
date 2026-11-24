@@ -7,7 +7,7 @@ describe("Internationalization (i18n) Module", () => {
   it("should retrieve translation values by dot notation path", () => {
     expect(getTranslationValue(fr, "common.loading")).toBe("Chargement...");
     expect(getTranslationValue(en, "common.loading")).toBe("Loading...");
-    expect(getTranslationValue(fr, "home.heroTitleHighlight")).toBe("Splatoon");
+    expect(getTranslationValue(fr, "home.heroTitleHighlight")).toBe("e-sport");
   });
 
   it("should fallback to key if translation key does not exist", () => {

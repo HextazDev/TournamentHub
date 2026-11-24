@@ -1,11 +1,9 @@
 import { canPerform, isDiscordSnowflake } from "@hub/shared";
-import { getGuildAdminAccess, getManagedTournament, getServerProfile } from "@/lib/viewer";
+import { getGuildAdminAccess, getManagedTournament, getServerProfile, getViewerSession } from "@/lib/viewer";
 import { discordListQuery } from "@/lib/accessRules";
 import { notFound } from "next/navigation";
 import { SettingsClient } from "./SettingsClient";
 import { TournamentAccessPanel } from "@/components/admin/TournamentAccessPanel";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { resolveServerBotApiUrl } from "@/lib/config";
 
 export default async function TournamentSettingsPage({
@@ -14,10 +12,11 @@ export default async function TournamentSettingsPage({
   params: Promise<{ orgSlug: string; id: string }>;
 }) {
   const { orgSlug: guildId, id: tournamentId } = await params;
-  const [tournament, access, profile] = await Promise.all([
+  const [tournament, access, profile, viewerSession] = await Promise.all([
     getManagedTournament(guildId, tournamentId),
     getGuildAdminAccess(guildId),
     getServerProfile(guildId),
+    getViewerSession(),
   ]);
   if (!tournament) notFound();
   // SEC-22 : les rôles du tournoi (TO, Capitaine) restent réservés au niveau SERVER.
@@ -34,8 +33,7 @@ export default async function TournamentSettingsPage({
 
   if (discordEnabled && targetDiscordId && botApiSecret) {
     try {
-      const session = await getServerSession(authOptions);
-      const discordId = (session?.user as { id?: string } | undefined)?.id ?? "";
+      const discordId = viewerSession.discordId ?? "";
 
       const headers: HeadersInit = {
         'Authorization': `Bearer ${botApiSecret}`,

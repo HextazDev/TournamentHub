@@ -13,9 +13,11 @@ import { getServerLocale } from "@/i18n/server";
 export default async function AdminDashboard({ params }: { params: Promise<{ orgSlug: string }> }) {
   const { orgSlug: guildId } = await params;
   // Le layout bloque déjà l'accès ; la page ne lit des données service_role qu'après la même vérification.
-  const access = await getGuildAdminAccess(guildId);
+  const [access, locale] = await Promise.all([
+    getGuildAdminAccess(guildId),
+    getServerLocale(),
+  ]);
   if (!access.allowed) notFound();
-  const locale = await getServerLocale();
 
   const { canCreate, canConfigureServer } = panelCapabilities(access.access);
 
