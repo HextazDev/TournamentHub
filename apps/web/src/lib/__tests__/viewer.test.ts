@@ -100,6 +100,10 @@ function makeQueryChain(
       recorded.push(q);
       return resolver(q);
     },
+    limit: async () => {
+      recorded.push(q);
+      return resolver(q);
+    },
   };
   return chain;
 }
@@ -291,13 +295,160 @@ describe("viewer (#135) : réduction des waterfalls navigation & résolution 1 r
     });
     expect(await getManagedTournament("arena-esports", "t-1")).toBeNull();
 
-    // 3. Accès refusé par le bot ➜ null même si le tournoi est dans org-1
+    // 3. Accès refusé par le bot ➜ null sans aucune lecture service_role (AUD-SEC-01)
     tournamentOrgId = "org-1";
+    const queriesBeforeDenied = queries.length;
     fetchMock.mockResolvedValueOnce({
       ok: true,
       status: 200,
       json: async () => ({ hasPermission: false, reason: "NO_RIGHTS" }),
     });
     expect(await getManagedTournament("arena-esports", "t-1")).toBeNull();
+    expect(queries.length).toBe(queriesBeforeDenied);
+  });
+
+  it("getServerProfile(uuid) résout en 1 requête, retourne null sans fallback si absent et propage les erreurs SQL", async () => {
+    const orgUuid = "6bad37e9-b4d1-4451-b6bf-ef13dff9cc31";
+    const missingUuid = "00000000-0000-4000-8000-000000000000";
+    const queries: RecordedQuery[] = [];
+    let simulateError = false;
+
+    supabaseFromMock.mockImplementation((table: string) =>
+      makeQueryChain(table, queries, (q) => {
+        if (simulateError) {
+          return { data: null, error: { message: "connection lost" } };
+        }
+        const idFilter = q.filters.find((f) => f.col === "id")?.val;
+        if (q.table === "organizations" && idFilter === orgUuid) {
+          return {
+            data: {
+              id: orgUuid,
+              slug: "arena-uuid",
+              name: "Arena UUID",
+              language: "fr",
+              organization_integrations: [
+                { provider: "TWITCH", external_id: "tw-1", enabled: true },
+                { provider: "DISCORD", external_id: "999999999999999999", enabled: false, config: {} },
+              ],
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    const { getServerProfile } = await import("../viewer");
+
+    const found = await getServerProfile(orgUuid);
+    expect(found).toMatchObject({
+      organization_id: orgUuid,
+      slug: "arena-uuid",
+      discord_enabled: false,
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.table).toBe("organizations");
+
+    // UUID introuvable ➜ 1 seule requête (pas de fallback integration ni slug)
+    const missing = await getServerProfile(missingUuid);
+    expect(missing).toBeNull();
+    expect(queries).toHaveLength(2);
+
+    // Erreur Supabase ➜ propagée
+    simulateError = true;
+    await expect(getServerProfile(orgUuid)).rejects.toThrow("organization read failed: connection lost");
+  });
+
+  it("getReadableTournament sur un tournoi privé d'org Web autonome ne fait aucun appel Discord /users/@me/guilds", async () => {
+    sessionState.current = { accessToken: "tok-web", user: { id: "u-member" } };
+    let isOrgMember = true;
+    const queries: RecordedQuery[] = [];
+
+    supabaseFromMock.mockImplementation((table: string) =>
+      makeQueryChain(table, queries, (q) => {
+        if (q.table === "tournaments") {
+          return { data: { id: "t-priv", name: "Private Cup", organization_id: "org-web", is_public: false }, error: null };
+        }
+        if (q.table === "organizations") {
+          return {
+            data: {
+              id: "org-web",
+              slug: "web-only-org",
+              name: "Web Only Org",
+              language: "fr",
+              organization_integrations: [],
+            },
+            error: null,
+          };
+        }
+        if (q.table === "organization_members") {
+          return { data: isOrgMember ? { role: "MEMBER" } : null, error: null };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    const { getReadableTournament } = await import("../viewer");
+
+    // 1. Membre de l'org autonome ➜ accès autorisé, 0 appel Discord
+    expect(await getReadableTournament("web-only-org", "t-priv")).toMatchObject({ id: "t-priv" });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // 2. Non-membre de l'org autonome ➜ null (SEC-10), toujours 0 appel Discord
+    isOrgMember = false;
+    expect(await getReadableTournament("web-only-org", "t-priv")).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("getReadableTournament sur un tournoi privé avec Discord actif vérifie l'appartenance guilde (SEC-10) et coupe si désactivé (SEC-26)", async () => {
+    sessionState.current = { accessToken: "tok-disc", user: { id: "u-disc" } };
+    let discordEnabled = true;
+    const queries: RecordedQuery[] = [];
+
+    supabaseFromMock.mockImplementation((table: string) =>
+      makeQueryChain(table, queries, (q) => {
+        if (q.table === "tournaments") {
+          return { data: { id: "t-disc", name: "Discord Cup", organization_id: "org-disc", is_public: false }, error: null };
+        }
+        if (q.table === "organizations") {
+          return {
+            data: {
+              id: "org-disc",
+              slug: "discord-org",
+              name: "Discord Org",
+              language: "fr",
+              organization_integrations: [
+                {
+                  provider: "DISCORD",
+                  external_id: "555555555555555555",
+                  enabled: discordEnabled,
+                  status: discordEnabled ? "CONNECTED" : "DISCONNECTED",
+                  config: { bot_present: true },
+                },
+              ],
+            },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    const { getReadableTournament } = await import("../viewer");
+
+    // 1. Intégration Discord active et utilisateur membre du serveur ➜ autorisé
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => [{ id: "555555555555555555", name: "Discord Org", icon: null, owner: false, permissions: "0" }],
+    });
+    expect(await getReadableTournament("discord-org", "t-disc")).toMatchObject({ id: "t-disc" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("discord.com/api/users/@me/guilds");
+
+    // 2. SEC-26 : intégration Discord désactivée ➜ l'appartenance serveur ne compte plus et 0 nouvel appel Discord
+    discordEnabled = false;
+    expect(await getReadableTournament("discord-org", "t-disc")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

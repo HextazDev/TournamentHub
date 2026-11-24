@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Settings, Trophy } from "lucide-react";
 import type { Tournament } from "@hub/shared";
-import { getGuildAdminAccess, getServerProfile, getViewer, memberGuildIds } from "@/lib/viewer";
+import { getGuildAdminAccess, getServerProfile, getViewer, getViewerSession, memberGuildIds } from "@/lib/viewer";
 import { canAccessAdminPanel } from "@/lib/accessRules";
 import { loadOrganizationHubTournaments } from "@/lib/tournamentDiscovery";
 import { OrganizerCard } from "@/components/OrganizerCard";
@@ -11,10 +11,17 @@ import { getServerLocale } from "@/i18n/server";
 
 export default async function GuildHubPage({ params }: { params: Promise<{ orgSlug: string }> }) {
   const { orgSlug: guildId } = await params;
-  const locale = await getServerLocale();
 
-  const [viewer, profile, access] = await Promise.all([getViewer(), getServerProfile(guildId), getGuildAdminAccess(guildId)]);
-  const isActiveDiscordMember = Boolean(profile?.discord_enabled && memberGuildIds(viewer).has(profile.guild_id));
+  const [locale, profile, access] = await Promise.all([
+    getServerLocale(),
+    getServerProfile(guildId),
+    getGuildAdminAccess(guildId),
+  ]);
+  // Évite tout appel Discord /users/@me/guilds sur les organisations Web autonomes.
+  const viewer = profile?.discord_enabled ? await getViewer() : await getViewerSession();
+  const isActiveDiscordMember = Boolean(
+    profile?.discord_enabled && "guilds" in viewer && memberGuildIds(viewer).has(profile.guild_id),
+  );
 
   // SEC-10 / SEC-21 / SEC-40 : les tournois privés sont restreints aux membres de l'org ou à la portée exacte du staff de tournoi.
   let tournaments: Tournament[] = [];

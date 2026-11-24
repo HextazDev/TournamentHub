@@ -6,10 +6,9 @@ import { formatGameType } from "@/lib/gameType";
 import { WebPlayerActions } from "@/components/WebPlayerActions";
 import { notFound } from "next/navigation";
 import { Calendar, Gamepad2, Monitor, Users } from "lucide-react";
-import { cookies } from "next/headers";
 import { formatRoundName } from "@hub/shared";
 import { t } from "@/i18n";
-import { Locale } from "@/i18n/types";
+import { getServerLocale } from "@/i18n/server";
 
 export default async function PublicTournamentOverview({
   params,
@@ -17,13 +16,12 @@ export default async function PublicTournamentOverview({
   params: Promise<{ orgSlug: string; id: string }>;
 }) {
   const { orgSlug: guildId, id } = await params;
-  const [tournament, viewer, cookieStore] = await Promise.all([
+  const [tournament, viewer, locale] = await Promise.all([
     getReadableTournament(guildId, id),
     getViewerSession(),
-    cookies(),
+    getServerLocale(),
   ]);
   if (!tournament) notFound();
-  const locale = (cookieStore.get("NEXT_LOCALE")?.value as Locale) || "fr";
 
   // Parallel fetching
   const [

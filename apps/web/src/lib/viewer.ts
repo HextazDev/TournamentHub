@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { cache } from "react";
 import { cookies } from "next/headers";
 import { getServerSession } from "next-auth";
-import { canPerform, type ServerSettings, type Tournament } from "@hub/shared";
+import { canPerform, isDiscordSnowflake, type ServerSettings, type Tournament } from "@hub/shared";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { canViewPrivateTournament, TOURNAMENT_INVITE_COOKIE_PREFIX } from "@/lib/accessRules";
@@ -116,7 +116,6 @@ export type ServerProfile = ServerSettings & {
 };
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DISCORD_SNOWFLAKE_REGEX = /^\d{17,20}$/;
 
 function extractDiscordIntegration(orgRow: Record<string, unknown>): Record<string, unknown> | null {
   const embedded = orgRow.organization_integrations;
@@ -187,7 +186,7 @@ export const getServerProfile = cache(async (guildIdOrSlug: string): Promise<Ser
   }
 
   // SEC-01 : résoudre l'external_id Discord AVANT le slug pour empêcher le squat de snowflakes.
-  if (DISCORD_SNOWFLAKE_REGEX.test(guildIdOrSlug)) {
+  if (isDiscordSnowflake(guildIdOrSlug)) {
     const { data: intData, error: intError } = await supabaseAdmin
       .from("organization_integrations")
       .select("*, organizations(*)")
@@ -298,12 +297,13 @@ export async function getTournamentInviteToken(tournamentId: string): Promise<st
 
 /** Tournoi géré : l'utilisateur peut gérer ce tournoi ET il appartient au serveur / à l'organisation (SEC-01 côté lecture). */
 export const getManagedTournament = cache(async (guildId: string, tournamentId: string): Promise<Tournament | null> => {
-  const [access, tournamentRes, profile] = await Promise.all([
-    getGuildAdminAccess(guildId),
+  const access = await getGuildAdminAccess(guildId);
+  if (!access.allowed || !canPerform(access.access, "MANAGE_TOURNAMENT", tournamentId)) return null;
+
+  const [tournamentRes, profile] = await Promise.all([
     supabaseAdmin.from("tournaments").select("*").eq("id", tournamentId).maybeSingle(),
     getServerProfile(guildId),
   ]);
-  if (!access.allowed || !canPerform(access.access, "MANAGE_TOURNAMENT", tournamentId)) return null;
   const { data, error } = tournamentRes;
   if (error) {
     if (error.code === "22P02") return null;

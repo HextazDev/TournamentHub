@@ -13,10 +13,9 @@ import { getServerLocale } from "@/i18n/server";
 export default async function AdminDashboard({ params }: { params: Promise<{ orgSlug: string }> }) {
   const { orgSlug: guildId } = await params;
   // Le layout bloque déjà l'accès ; la page ne lit des données service_role qu'après la même vérification.
-  const [access, locale, settings] = await Promise.all([
+  const [access, locale] = await Promise.all([
     getGuildAdminAccess(guildId),
     getServerLocale(),
-    getServerProfile(guildId),
   ]);
   if (!access.allowed) notFound();
 
@@ -24,6 +23,8 @@ export default async function AdminDashboard({ params }: { params: Promise<{ org
 
   // SEC-21 : un TO de tournoi ne compte que ses tournois et ne voit pas la configuration du serveur.
   const scope = managedTournamentIds(access.access);
+
+  const settings = await getServerProfile(guildId);
 
   // 1. Requête des tournois de l'organisation (filtrés par scope si portée restreinte, SEC-40)
   let allTournaments: DashboardTournament[] = [];
