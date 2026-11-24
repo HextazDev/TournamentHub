@@ -9,14 +9,34 @@ import { authMiddleware } from "../middleware/auth";
 import { createWebhookRouter } from "../routes/WebhookRouter";
 import { callRoute } from "./helpers/route";
 
+const ORG_ID = "00000000-0000-0000-0000-000000000011";
 const record = { id: "team-1", name: "Team", tournament_id: "t", captain_discord_id: "u", is_checked_in: true };
-const tournament = { guild_id: "g", discord_captain_role_id: "r" };
+const tournament = { organization_id: ORG_ID, discord_config: { captain_role_id: "r" } };
 const originalBotSecret = process.env.BOT_API_SECRET;
 const originalWebhookSecret = process.env.WEBHOOK_SECRET;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  db.from.mockReturnValue({ select: () => ({ eq: () => ({ single: async () => ({ data: tournament, error: null }) }) }) });
+  db.from.mockImplementation((table: string) => {
+    if (table === "tournaments") {
+      return { select: () => ({ eq: () => ({ single: async () => ({ data: tournament, error: null }) }) }) };
+    }
+    if (table === "organizations") {
+      return { select: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { id: ORG_ID, slug: "org-1", name: "Org", language: "fr" }, error: null }) }) }) };
+    }
+    if (table === "organization_integrations") {
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({ data: { organization_id: ORG_ID, external_id: "g", enabled: true, config: {} }, error: null }),
+            }),
+          }),
+        }),
+      };
+    }
+    return { select: () => ({ eq: () => ({ single: async () => ({ data: null, error: null }), maybeSingle: async () => ({ data: null, error: null }) }) }) };
+  });
 });
 afterEach(() => {
   if (originalBotSecret === undefined) delete process.env.BOT_API_SECRET;

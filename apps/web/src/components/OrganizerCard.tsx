@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
-import type { ServerSettings } from "@hub/shared";
+import { DiscordInviteUrlSchema, type ServerSettings } from "@hub/shared";
 import { t } from "@/i18n";
 import type { Locale } from "@/i18n/types";
 
@@ -8,7 +8,7 @@ export function guildIconUrl(guildId: string, icon: string | null): string | nul
   return icon ? `https://cdn.discordapp.com/icons/${guildId}/${icon}.png?size=96` : null;
 }
 
-/** Identité du serveur organisateur + invitation configurée par les TO (affichée seulement si renseignée). */
+/** Identité du serveur organisateur + lien de contact / invitation configuré par les TO (affiché seulement si renseigné). */
 export function OrganizerCard({
   guildId,
   profile,
@@ -22,6 +22,8 @@ export function OrganizerCard({
 }) {
   const name = profile?.guild_name || t(locale, "discover.unknownServer");
   const icon = guildIconUrl(guildId, profile?.guild_icon ?? null);
+  const contactUrl = profile?.invite_url ?? null;
+  const isDiscordInvite = Boolean(contactUrl && DiscordInviteUrlSchema.safeParse(contactUrl).success);
 
   return (
     <div className="flex flex-wrap items-center gap-3">
@@ -38,14 +40,14 @@ export function OrganizerCard({
           {t(locale, "discover.organizedBy", { name })}
         </span>
       </Link>
-      {!compact && profile?.invite_url && (
+      {!compact && contactUrl && (
         <a
-          href={profile.invite_url}
+          href={contactUrl}
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-sm font-semibold text-white transition-colors"
         >
-          {t(locale, "discover.joinDiscord")}
+          {t(locale, isDiscordInvite ? "discover.joinDiscord" : "discover.contactOrg")}
           <ExternalLink className="w-4 h-4" />
         </a>
       )}

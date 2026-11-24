@@ -209,8 +209,8 @@ export interface TournamentScopeOptions {
 
 /**
  * SEC-21 : seule porte d'entrée d'un TO de tournoi. Le tournoi est résolu côté serveur puis soumis à
- * canPerform(access, "MANAGE_TOURNAMENT", tournamentId). Les tournamentIds de l'accès étant lus pour ce seul
- * serveur, l'appartenance au serveur est garantie ; les handlers gardent leurs verify*Guild (SEC-01).
+ * canPerform(access, "MANAGE_TOURNAMENT", tournamentId). Les tournamentIds de l'accès étant lus pour cette seule
+ * organisation, l'appartenance à l'organisation est garantie ; les handlers gardent leurs verify*Organization (SEC-01).
  * Le niveau SERVER passe sans lecture supplémentaire.
  */
 export function requireTournamentScope<P extends ParamsDictionary>(

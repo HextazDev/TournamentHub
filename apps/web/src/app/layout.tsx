@@ -4,6 +4,7 @@ import "./globals.css";
 import AuthProvider from "@/components/AuthProvider";
 import { ToastProvider } from "@/context/ToastContext";
 import Navbar from "@/components/Navbar";
+import Footer from "@/components/Footer";
 import { LanguageProvider } from "@/i18n/LanguageContext";
 import { cookies, headers } from "next/headers";
 import { Locale } from "@/i18n/types";
@@ -65,6 +66,7 @@ export default async function RootLayout({
               <main className="flex-1 w-full flex flex-col">
                 {children}
               </main>
+              <Footer />
             </ToastProvider>
           </LanguageProvider>
         </AuthProvider>

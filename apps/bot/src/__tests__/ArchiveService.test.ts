@@ -49,7 +49,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
 
     mockOrg({ captain_role_id: CAPTAIN_ROLE_ID, checkin_channel_id: null });
     // Supabase simulation:
-    // non-archived tournaments: [ { id: "t-active", discord_captain_role_id: CAPTAIN_ROLE_ID } ]
+    // non-archived tournaments: [ { id: "t-active", discord_config: { captain_role_id: CAPTAIN_ROLE_ID } } ]
     // active teams: [ { captain_discord_id: "user-active-captain" } ]
     db.from.mockImplementation((table: string) => {
       if (table === "tournaments") {
@@ -57,7 +57,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
           select: () => ({
             eq: () => ({
               neq: () => Promise.resolve({
-                data: [{ id: "t-active", discord_captain_role_id: CAPTAIN_ROLE_ID, discord_checkin_channel_id: null }],
+                data: [{ id: "t-active", discord_config: { captain_role_id: CAPTAIN_ROLE_ID } }],
                 error: null,
               }),
             }),
@@ -112,7 +112,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     } as unknown as Client;
 
     await ArchiveService.backgroundDiscordCleanup(client, GUILD, [
-      { id: "t-archived", discord_captain_role_id: CAPTAIN_ROLE_ID, discord_checkin_channel_id: null },
+      { id: "t-archived", discord_config: { captain_role_id: CAPTAIN_ROLE_ID } },
     ]);
 
     // memberArchived should lose the role
@@ -133,7 +133,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
           select: () => ({
             eq: () => ({
               neq: () => Promise.resolve({
-                data: [{ id: "t-active", discord_captain_role_id: null, discord_checkin_channel_id: SHARED_CHANNEL_ID }],
+                data: [{ id: "t-active", discord_config: { checkin_channel_id: SHARED_CHANNEL_ID } }],
                 error: null,
               }),
             }),
@@ -173,7 +173,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     } as unknown as Client;
 
     await ArchiveService.backgroundDiscordCleanup(client, GUILD, [
-      { id: "t-archived", discord_captain_role_id: null, discord_checkin_channel_id: SHARED_CHANNEL_ID },
+      { id: "t-archived", discord_config: { checkin_channel_id: SHARED_CHANNEL_ID } },
     ]);
 
     // Channel is shared with active tournament, so it MUST NOT be edited/locked
@@ -192,7 +192,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
           select: () => ({
             eq: () => ({
               neq: () => Promise.resolve({
-                data: [{ id: "t-active", discord_captain_role_id: null, discord_checkin_channel_id: ACTIVE_CHANNEL_ID }],
+                data: [{ id: "t-active", discord_config: { checkin_channel_id: ACTIVE_CHANNEL_ID } }],
                 error: null,
               }),
             }),
@@ -238,7 +238,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     } as unknown as Client;
 
     await ArchiveService.backgroundDiscordCleanup(client, GUILD, [
-      { id: "t-archived", discord_captain_role_id: null, discord_checkin_channel_id: ARCHIVED_CHANNEL_ID },
+      { id: "t-archived", discord_config: { checkin_channel_id: ARCHIVED_CHANNEL_ID } },
     ]);
 
     expect(editPermissionsMock).toHaveBeenCalledWith(guild.roles.everyone, {
@@ -247,6 +247,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
   });
 
   it("fail-closed : interrompt le nettoyage si la requête des tournois non archivés échoue", async () => {
+    mockOrg();
     db.from.mockImplementation((table: string) => {
       if (table === "tournaments") {
         return {
@@ -272,7 +273,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     } as unknown as Client;
 
     await ArchiveService.backgroundDiscordCleanup(client, "guild-1", [
-      { id: "t-archived", discord_captain_role_id: "role-1", discord_checkin_channel_id: null },
+      { id: "t-archived", discord_config: { captain_role_id: "role-1" } },
     ]);
 
     expect(fetchRoleMock).not.toHaveBeenCalled();
@@ -286,7 +287,7 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
           select: () => ({
             eq: () => ({
               neq: () => Promise.resolve({
-                data: [{ id: "t-active", discord_captain_role_id: null, discord_checkin_channel_id: null }],
+                data: [{ id: "t-active", discord_config: {} }],
                 error: null,
               }),
             }),
@@ -315,9 +316,30 @@ describe("ArchiveService.backgroundDiscordCleanup (DISC-05 / LIFE-01)", () => {
     } as unknown as Client;
 
     await ArchiveService.backgroundDiscordCleanup(client, "guild-1", [
-      { id: "t-archived", discord_captain_role_id: "role-1", discord_checkin_channel_id: null },
+      { id: "t-archived", discord_config: { captain_role_id: "role-1" } },
     ]);
 
     expect(fetchRoleMock).not.toHaveBeenCalled();
+  });
+
+  it("SEC-26: n'effectue aucun appel Discord si l'intégration est coupée", async () => {
+    vi.mocked(resolveOrganization).mockResolvedValue({
+      id: "org-1",
+      slug: "org-1",
+      name: "Org 1",
+      language: "fr",
+      discordGuildId: "guild-123",
+      discordEnabled: false,
+      discordConfig: {},
+    });
+    const fetchGuild = vi.fn();
+    const client = { guilds: { fetch: fetchGuild } } as unknown as Client;
+
+    await ArchiveService.backgroundDiscordCleanup(client, "guild-123", [
+      { id: "t-archived", discord_config: { captain_role_id: "role-1" } },
+    ]);
+
+    expect(fetchGuild).not.toHaveBeenCalled();
+    expect(db.from).not.toHaveBeenCalled();
   });
 });

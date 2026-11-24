@@ -31,7 +31,7 @@ vi.mock("../utils/logger", () => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: (req: { adminCheck?: AdminCheck }) => req.adminCheck?.guildId ?? null,
-  verifyMatchGuild: vi.fn(async () => tenant.allowed),
+  verifyMatchOrganization: vi.fn(async () => tenant.allowed),
   resolveOrganization: vi.fn(async () => ({ id: "org-1", slug: "org", discordEnabled: true, discordGuildId: "guild-1" })),
 }));
 
@@ -165,4 +165,145 @@ describe("PUT /:id/force-score — forfait déclaré par un TO (#77)", () => {
     ]);
     expect(fake.tables.matches?.find((m) => m.id === "match-2")).toMatchObject({ team1_id: "A", team2_id: "C" });
   });
+
+  it("DISC-18 (#102): score forcé en élimination annonce le résultat ET le match suivant dans phases.discord_channel_id", async () => {
+    const fake = seedEliminationPhase();
+    fake.tables.phases![0]!.discord_channel_id = "ch-phase-e";
+    fake.tables.phases![0]!.tournament_id = "tour-1";
+    fake.tables.tournaments = [{ id: "tour-1", organization_id: "org-1", language: "fr" }];
+    fake.tables.organization_integrations = [
+      { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true, status: "CONNECTED", config: {} },
+    ];
+    fake.tables.teams = [
+      { id: "A", name: "Alpha", captain_discord_id: "111111111111111111", tournament_id: "tour-1" },
+      { id: "B", name: "Bravo", captain_discord_id: "222222222222222222", tournament_id: "tour-1" },
+      { id: "C", name: "Charlie", captain_discord_id: "333333333333333333", tournament_id: "tour-1" },
+    ];
+
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    const { discordIntegrationPlugin } = await import("../services/integrations/DiscordIntegrationPlugin");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
+    const phaseChannel = {
+      id: "ch-phase-e",
+      guildId: "guild-1",
+      isTextBased: () => true,
+      send: vi.fn().mockResolvedValue({ id: "msg-1" }),
+    };
+    const discordClient = { channels: { fetch: vi.fn(async (id: string) => (id === "ch-phase-e" ? phaseChannel : null)) } };
+
+    const res = await callRoute(matchRouter, {
+      method: "PUT",
+      path: "/match-1/force-score",
+      body: { team1_score: 2, team2_score: 1, status: "COMPLETED", guildId: "guild-1" },
+      adminCheck,
+      locals: { discordClient },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ integrationWarnings: [] });
+    expect(phaseChannel.send).toHaveBeenCalledTimes(2);
+    // 1er message : embed du score arbitré
+    const firstArg = phaseChannel.send.mock.calls[0]?.[0] as { embeds?: { data?: { description?: string } }[] };
+    expect(firstArg?.embeds?.[0]?.data?.description).toContain("Alpha");
+    expect(firstArg?.embeds?.[0]?.data?.description).toContain("Bravo");
+    // 2e message : annonce du match suivant (Alpha vs Charlie)
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("NOUVEAU MATCH DE BRACKET");
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("Alpha");
+    expect(phaseChannel.send.mock.calls[1]?.[0]).toContain("Charlie");
+    IntegrationBus.clearPlugins();
+  });
+
+  it("AUD-SEC-01: un salon cross-guild rejeté ne doit jamais être réutilisé par progressTeams", async () => {
+    const fake = seedEliminationPhase();
+    fake.tables.phases![0]!.discord_channel_id = "ch-foreign";
+    fake.tables.phases![0]!.tournament_id = "tour-1";
+    fake.tables.tournaments = [{ id: "tour-1", organization_id: "org-1", language: "fr" }];
+    fake.tables.organization_integrations = [
+      { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true, status: "CONNECTED", config: {} },
+    ];
+    fake.tables.teams = [
+      { id: "A", name: "Alpha", captain_discord_id: "111111111111111111", tournament_id: "tour-1" },
+      { id: "B", name: "Bravo", captain_discord_id: "222222222222222222", tournament_id: "tour-1" },
+      { id: "C", name: "Charlie", captain_discord_id: "333333333333333333", tournament_id: "tour-1" },
+    ];
+
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    const { discordIntegrationPlugin } = await import("../services/integrations/DiscordIntegrationPlugin");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
+    const foreignChannel = {
+      id: "ch-foreign",
+      guildId: "guild-other",
+      isTextBased: () => true,
+      send: vi.fn().mockResolvedValue({ id: "msg-foreign" }),
+    };
+    const discordClient = { channels: { fetch: vi.fn(async () => foreignChannel) } };
+
+    try {
+      const res = await callRoute(matchRouter, {
+        method: "PUT",
+        path: "/match-1/force-score",
+        body: { team1_score: 2, team2_score: 1, status: "COMPLETED", guildId: "guild-1" },
+        adminCheck,
+        locals: { discordClient },
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ integrationWarnings: [{ provider: "DISCORD", code: "INTEGRATION_FAILED" }] });
+      // Ni l'annonce de score ni le match suivant ne doivent fuiter dans le serveur tiers
+      expect(foreignChannel.send).not.toHaveBeenCalled();
+      expect(fake.tables.matches?.find((m) => m.id === "match-2")).toMatchObject({ team1_id: "A", team2_id: "C" });
+    } finally {
+      IntegrationBus.clearPlugins();
+    }
+  });
+
+  it("AUD-BUG-01: une égalité légitime en poules (ROUND_ROBIN) ne déclenche pas d'alerte MATCH NUL / @TO", async () => {
+    const fake = seedGroupPhase();
+    fake.tables.phases![0]!.tournament_id = "tour-1";
+    fake.tables.groups![0]!.discord_channel_id = "ch-group-1";
+    fake.tables.tournaments = [{ id: "tour-1", organization_id: "org-1", language: "fr" }];
+    fake.tables.organization_integrations = [
+      { id: "int-1", organization_id: "org-1", provider: "DISCORD", external_id: "guild-1", enabled: true, status: "CONNECTED", config: {} },
+    ];
+    fake.tables.teams = [
+      { id: "A", name: "Alpha", captain_discord_id: "111111111111111111", tournament_id: "tour-1" },
+      { id: "B", name: "Bravo", captain_discord_id: "222222222222222222", tournament_id: "tour-1" },
+    ];
+
+    const { IntegrationBus } = await import("../services/IntegrationBus");
+    const { discordIntegrationPlugin } = await import("../services/integrations/DiscordIntegrationPlugin");
+    IntegrationBus.clearPlugins();
+    IntegrationBus.registerPlugin(discordIntegrationPlugin);
+
+    const groupChannel = {
+      id: "ch-group-1",
+      guildId: "guild-1",
+      isTextBased: () => true,
+      send: vi.fn().mockResolvedValue({ id: "msg-grp" }),
+    };
+    const discordClient = { channels: { fetch: vi.fn(async () => groupChannel) } };
+
+    try {
+      const res = await callRoute(matchRouter, {
+        method: "PUT",
+        path: "/match-1/force-score",
+        body: { team1_score: 1, team2_score: 1, status: "COMPLETED", guildId: "guild-1" },
+        adminCheck,
+        locals: { discordClient },
+      });
+
+      expect(res.status).toBe(200);
+      // Uniquement l'embed du score 1-1 ; jamais l'alerte d'auto-routing MATCH NUL
+      expect(groupChannel.send).toHaveBeenCalledTimes(1);
+      expect(groupChannel.send).not.toHaveBeenCalledWith(expect.stringContaining("MATCH NUL"));
+    } finally {
+      IntegrationBus.clearPlugins();
+    }
+  });
 });
+
+

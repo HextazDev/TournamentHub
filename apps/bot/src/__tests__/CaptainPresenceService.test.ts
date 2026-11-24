@@ -12,6 +12,7 @@ const team = { id: "team-1", tournament_id: "t-1", name: "Les Invincibles", capt
 
 interface FakeOptions {
   roleId?: string | null;
+  discordEnabled?: boolean;
   manageable?: boolean;
   nickname?: string | null;
   hasRole?: boolean;
@@ -27,14 +28,53 @@ function discordError(code: number, message: string): Error {
   return Object.assign(new Error(message), { code });
 }
 
+const ORG_ID = "00000000-0000-0000-0000-000000000011";
+
 function setup(o: FakeOptions = {}) {
   const roleId = o.roleId === undefined ? "role-cap" : o.roleId;
-  db.from.mockReturnValue({
-    select: () => ({
-      eq: () => ({
-        single: async () => ({ data: { guild_id: "g-1", discord_captain_role_id: roleId }, error: null }),
-      }),
-    }),
+  const discordEnabled = o.discordEnabled ?? true;
+  db.from.mockImplementation((table: string) => {
+    if (table === "tournaments") {
+      return {
+        select: () => ({
+          eq: () => ({
+            single: async () => ({
+              data: { organization_id: ORG_ID, discord_config: roleId ? { captain_role_id: roleId } : {} },
+              error: null,
+            }),
+          }),
+        }),
+      };
+    }
+    if (table === "organizations") {
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: { id: ORG_ID, slug: "org-1", name: "Org 1", language: "fr" },
+              error: null,
+            }),
+          }),
+        }),
+      };
+    }
+    if (table === "organization_integrations") {
+      return {
+        select: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: async () => ({
+                data: { organization_id: ORG_ID, external_id: "g-1", enabled: discordEnabled, config: {} },
+                error: null,
+              }),
+            }),
+          }),
+        }),
+      };
+    }
+    return {
+      select: () => ({ eq: () => ({ single: async () => ({ data: null, error: null }), maybeSingle: async () => ({ data: null, error: null }) }) }),
+    };
   });
   const role = { id: "role-cap", name: "Capitaine", editable: o.roleEditable ?? true };
   const member = {
@@ -156,6 +196,13 @@ describe("CaptainPresenceService.applyPresence", () => {
     expect(report).toEqual({ status: "skipped", reason: "member_unavailable" });
     expect(hasPresenceFailure(report)).toBe(true);
     expect(log.warn).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ reason: "member_unavailable", code: 10007 }));
+  });
+
+  it("SEC-26: skips without calling Discord when the organization Discord integration is disabled", async () => {
+    const { client } = setup({ discordEnabled: false });
+    const report = await applyPresence(client, team);
+    expect(report).toEqual({ status: "skipped", reason: "guild_unavailable" });
+    expect(client.guilds.fetch).not.toHaveBeenCalled();
   });
 });
 

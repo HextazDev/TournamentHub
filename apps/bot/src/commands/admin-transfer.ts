@@ -35,17 +35,20 @@ export async function autocomplete(interaction: AutocompleteInteraction) {
 
   if (!guildId) return interaction.respond([]);
 
-  // 1. Trouver d'abord les tournois de ce serveur
+  const org = await resolveOrganization(guildId);
+  if (!org?.discordEnabled) return interaction.respond([]);
+
+  // 1. Trouver d'abord les tournois de cette organisation
   const { data: tournaments } = await supabase
     .from("tournaments")
     .select("id")
-    .eq("guild_id", guildId);
+    .eq("organization_id", org.id);
 
   if (!tournaments || tournaments.length === 0) {
     return interaction.respond([]);
   }
 
-  // Extraire la liste des IDs de tournois sur ce Discord
+  // Extraire la liste des IDs de tournois sur cette organisation
   const tournamentIds = tournaments.map((t) => t.id);
 
   // 2. Chercher les équipes appartenant à ces tournois et au nom cherché
@@ -69,10 +72,11 @@ export async function execute(interaction: ChatInputCommandInteraction) {
 
   // 1. Autorisation (Sécurité)
   const org = await resolveOrganization(interaction.guildId);
-  const toRoleId = typeof org?.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
+  const toRoleId =
+    org?.discordEnabled && typeof org.discordConfig?.to_role_id === "string" ? org.discordConfig.to_role_id : null;
   const member = interaction.member as GuildMember;
 
-  if (!toRoleId || !member.roles.cache.has(toRoleId)) {
+  if (!org?.discordEnabled || !toRoleId || !member.roles.cache.has(toRoleId)) {
     return interaction.reply({
       content: tBot(lang, "transfer.accessDenied"),
       ephemeral: true,
@@ -84,9 +88,9 @@ export async function execute(interaction: ChatInputCommandInteraction) {
   // 2. Trouver l'équipe
   const { data: team, error: teamErr } = await supabase
     .from("teams")
-    .select("*, tournaments!inner(guild_id)")
+    .select("*, tournaments!inner(organization_id)")
     .eq("name", teamName)
-    .eq("tournaments.guild_id", interaction.guildId)
+    .eq("tournaments.organization_id", org.id)
     .single();
 
   if (teamErr || !team) {

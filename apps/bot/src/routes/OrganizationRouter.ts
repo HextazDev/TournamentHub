@@ -18,14 +18,16 @@ import {
 import { supabase } from "../lib/supabase";
 import { encryptSecretPayload, getActiveEncryptionKeyVersion } from "../utils/crypto";
 import { DomainError, sendServerError } from "../utils/serverError";
-import { clearOrganizationCache, resolveOrganization, verifyTournamentGuild, type ResolvedOrganization } from "../utils/tenant";
+import { clearOrganizationCache, resolveOrganization, verifyTournamentOrganization, type ResolvedOrganization } from "../utils/tenant";
 import {
   checkGuildManageRights,
   invalidateGuildAccess,
   resolveMemberAccess,
   type DiscordClientLike,
 } from "../services/MemberAccessService";
-import { refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
+import { cancelGuildAccessRefresh, refreshGuildAccess, type GuildFetcher } from "../services/AccessRefreshService";
+import { GuildRegistryService } from "../services/GuildRegistryService";
+import { ChannelAccessService } from "../services/ChannelAccessService";
 import { discordIntegrationPlugin } from "../services/integrations/DiscordIntegrationPlugin";
 import { logger } from "../utils/logger";
 
@@ -37,7 +39,7 @@ const LAST_OWNER = "HT002";
 const INVALID_INVITE = "HT003";
 const INVALID_TRANSFER = "HT004";
 
-const NATIVE_MANAGER_ROLES: ReadonlySet<string> = new Set(["ORG_OWNER", "OWNER", "ORG_ADMIN", "ADMIN"]);
+const NATIVE_MANAGER_ROLES: ReadonlySet<string> = new Set(["ORG_OWNER", "ORG_ADMIN"]);
 
 /**
  * Identité de l'appelant. CLN-05 : la confiance en `x-discord-user-id` ne tient QUE parce que
@@ -110,6 +112,19 @@ function invalidateOrganizationCaches(org: ResolvedOrganization, extraGuildId?: 
   if (org.discordGuildId) invalidateGuildAccess(org.discordGuildId);
   if (extraGuildId) invalidateGuildAccess(extraGuildId);
   clearOrganizationCache();
+}
+
+/**
+ * DISC-16 (#105) : quand un serveur Discord perd son intégration (suppression d'organisation, changement ou
+ * retrait du serveur lié) alors que le bot y est toujours présent, le réenregistrer immédiatement pour éviter
+ * qu'il n'apparaisse « Bot non installé » sur `/admin`, puis resynchroniser son annuaire en arrière-plan.
+ */
+async function reRegisterOrphanedGuild(client: GuildFetcher, guildId: string): Promise<void> {
+  const registered = await GuildRegistryService.reRegisterGuildById(client, guildId);
+  if (registered) {
+    clearOrganizationCache();
+    refreshGuildAccess(client, guildId);
+  }
 }
 
 const hashToken = (token: string): string => createHash("sha256").update(token).digest("hex");
@@ -277,9 +292,13 @@ organizationRouter.delete("/:orgId", async (req, res) => {
       return res.status(400).json({ error: "Confirmation incorrecte.", code: "CONFIRMATION_MISMATCH" });
     }
 
+    const formerGuildId = auth.org.discordGuildId;
     const { error } = await supabase.from("organizations").delete().eq("id", auth.org.id);
     if (error) throw error;
     invalidateOrganizationCaches(auth.org);
+    if (formerGuildId && req.app?.locals?.discordClient) {
+      await reRegisterOrphanedGuild(req.app.locals.discordClient as GuildFetcher, formerGuildId);
+    }
     return res.status(200).json({ success: true });
   } catch (error: unknown) {
     return sendServerError(res, error, "OrganizationRouter.delete");
@@ -338,7 +357,7 @@ organizationRouter.put("/:orgId/members", async (req, res) => {
 
     const list = (currentMembers ?? []) as { organization_id: string; user_id: string; role: string }[];
     const targetCurrent = list.find((m) => m.user_id === user_id);
-    const isTargetOwner = targetCurrent?.role === "ORG_OWNER" || targetCurrent?.role === "OWNER";
+    const isTargetOwner = targetCurrent?.role === "ORG_OWNER";
 
     // Seul ORG_OWNER peut nommer ou modifier un ORG_OWNER
     if ((role === "ORG_OWNER" || isTargetOwner) && !canPerform(auth.access, "TRANSFER_OWNERSHIP")) {
@@ -347,9 +366,7 @@ organizationRouter.put("/:orgId/members", async (req, res) => {
 
     // SEC-27 : interdiction de rétrograder le dernier ORG_OWNER
     if (isTargetOwner && role !== "ORG_OWNER") {
-      const otherOwners = list.filter(
-        (m) => m.user_id !== user_id && (m.role === "ORG_OWNER" || m.role === "OWNER"),
-      );
+      const otherOwners = list.filter((m) => m.user_id !== user_id && m.role === "ORG_OWNER");
       if (otherOwners.length === 0) {
         return res.status(400).json({ error: "Impossible de rétrograder le dernier propriétaire (ORG_OWNER) de l'organisation.", code: "LAST_OWNER" });
       }
@@ -401,15 +418,13 @@ organizationRouter.delete("/:orgId/members/:userId", async (req, res) => {
       return res.status(404).json({ error: "Member not found" });
     }
 
-    const isTargetOwner = targetCurrent.role === "ORG_OWNER" || targetCurrent.role === "OWNER";
+    const isTargetOwner = targetCurrent.role === "ORG_OWNER";
     if (isTargetOwner && !canPerform(auth.access, "TRANSFER_OWNERSHIP")) {
       return res.status(403).json({ error: "Seul un propriétaire peut retirer un propriétaire.", code: "NO_RIGHTS" });
     }
 
     if (isTargetOwner) {
-      const otherOwners = list.filter(
-        (m) => m.user_id !== targetUserId && (m.role === "ORG_OWNER" || m.role === "OWNER"),
-      );
+      const otherOwners = list.filter((m) => m.user_id !== targetUserId && m.role === "ORG_OWNER");
       if (otherOwners.length === 0) {
         return res.status(400).json({ error: "Impossible de supprimer le dernier propriétaire (ORG_OWNER) de l'organisation.", code: "LAST_OWNER" });
       }
@@ -440,7 +455,7 @@ organizationRouter.post("/:orgId/invites", async (req, res) => {
       return res.status(400).json({ error: parsed.error.issues[0]?.message ?? "Invalid payload" });
     }
     const { role, tournament_id, expires_in_hours } = parsed.data;
-    if (tournament_id && !(await verifyTournamentGuild(tournament_id, auth.org.id))) {
+    if (tournament_id && !(await verifyTournamentOrganization(tournament_id, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
 
@@ -507,7 +522,7 @@ organizationRouter.get("/:orgId/tournaments/:tournamentId/staff", async (req, re
     const { tournamentId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
     const { data, error } = await supabase.from("tournament_staff").select("*").eq("tournament_id", tournamentId);
@@ -524,7 +539,7 @@ organizationRouter.put("/:orgId/tournaments/:tournamentId/staff", async (req, re
     const { tournamentId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
 
@@ -569,7 +584,7 @@ organizationRouter.delete("/:orgId/tournaments/:tournamentId/staff/:userId", asy
     const { tournamentId, userId } = req.params;
     const auth = await authorize(req, res, req.params.orgId, "MANAGE_TOURNAMENT_ROLES", tournamentId);
     if (!auth) return undefined;
-    if (!(await verifyTournamentGuild(tournamentId, auth.org.id))) {
+    if (!(await verifyTournamentOrganization(tournamentId, auth.org.id))) {
       return res.status(403).json({ error: "Ce tournoi n'appartient pas à cette organisation." });
     }
     const { error } = await supabase
@@ -711,6 +726,7 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     // Sans serveur, une intégration Discord ne peut pas rester active : délier revient à la couper.
     const enabled = parsed.data.enabled ?? (parsed.data.external_id === null ? false : (existingRow?.enabled ?? true));
     const wasActive = Boolean(existingRow?.enabled);
+    const serverChanged = provider === "DISCORD" && previousExternalId !== null && externalId !== previousExternalId;
 
     let shellOrgIdToReclaim: string | null = null;
     if (provider === "DISCORD") {
@@ -720,6 +736,41 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       if (wasActive && !enabled) await assertHasNativeManager(auth.org.id);
       if (enabled && externalId && (!wasActive || externalId !== previousExternalId)) {
         shellOrgIdToReclaim = await resolveLinkableDiscordGuild(req, auth.org, externalId, auth.callerId);
+      }
+
+      // SEC-21 (#88) : tout salon configuré/modifié (ou porté sur un nouveau serveur) doit être accessible au TO et au bot.
+      if (parsed.data.provider === "DISCORD" && parsed.data.config) {
+        const currentCfg = serverChanged ? {} : (existingRow?.config ?? {});
+        const channelKeys = ["registration_channel_id", "announcement_channel_id", "checkin_channel_id"] as const;
+        const modifiedChannels: string[] = [];
+        for (const key of channelKeys) {
+          const requested = parsed.data.config[key];
+          const current = typeof currentCfg[key] === "string" ? currentCfg[key] : null;
+          if (typeof requested === "string" && requested !== current) {
+            modifiedChannels.push(requested);
+          }
+        }
+
+        if (modifiedChannels.length > 0) {
+          if (!externalId || !req.app?.locals?.discordClient) {
+            return res.status(403).json({
+              error: "Access denied: missing Discord client or guild",
+              code: "CHANNEL_NOT_ACCESSIBLE",
+            });
+          }
+          const channelCheck = await ChannelAccessService.validateChannelAccess({
+            client: req.app.locals.discordClient,
+            guildId: externalId,
+            discordId: auth.callerId,
+            channelIds: modifiedChannels,
+          });
+          if (!channelCheck.ok) {
+            return res.status(403).json({
+              error: channelCheck.error,
+              code: channelCheck.code ?? "CHANNEL_NOT_ACCESSIBLE",
+            });
+          }
+        }
       }
     } else if (externalId && externalId !== previousExternalId) {
       const { data: conflict, error: conflictError } = await supabase
@@ -747,7 +798,21 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
       if (deleteError) throw deleteError;
     }
 
-    const config = { ...(existingRow?.config ?? {}), ...(parsed.data.config ?? {}) };
+    // SEC-45 / DAT-04 : en cas de changement ou déliaison de serveur Discord, purger les rôles/salons de l'ancien serveur.
+    const DISCORD_GUILD_CONFIG_KEYS = new Set([
+      "to_role_id",
+      "captain_role_id",
+      "registration_channel_id",
+      "announcement_channel_id",
+      "checkin_channel_id",
+      "guild_name",
+      "guild_icon",
+      "bot_present",
+    ]);
+    const baseConfig = serverChanged
+      ? Object.fromEntries(Object.entries(existingRow?.config ?? {}).filter(([key]) => !DISCORD_GUILD_CONFIG_KEYS.has(key)))
+      : (existingRow?.config ?? {});
+    const config = { ...baseConfig, ...(parsed.data.config ?? {}) };
     const integrationId = existingRow?.id ?? randomUUID();
     const status = enabled ? "CONNECTED" : "DISCONNECTED";
 
@@ -773,23 +838,12 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     }
     if (writeError) throw writeError;
 
-    // Les tournois suivent le serveur lié ; en cas de changement/retrait d'un serveur déjà lié, purger ses anciens IDs Discord (DAT-04).
-    if (provider === "DISCORD" && externalId !== previousExternalId) {
-      const tournamentPatch =
-        previousExternalId !== null
-          ? {
-              guild_id: externalId,
-              discord_category_id: null,
-              discord_registration_channel_id: null,
-              discord_announcement_channel_id: null,
-              discord_checkin_channel_id: null,
-              discord_captain_role_id: null,
-              discord_to_role_id: null,
-            }
-          : { guild_id: externalId };
+    // SEC-45 : en cas de changement ou déliaison d'un serveur déjà lié, purger les identifiants Discord des tournois.
+    // Une simple désactivation (même external_id) préserve `discord_config` pour retrouver salons et rôles à la réactivation (#101).
+    if (serverChanged) {
       const { error: tournamentsError } = await supabase
         .from("tournaments")
-        .update(tournamentPatch)
+        .update({ discord_config: {} })
         .eq("organization_id", auth.org.id);
       if (tournamentsError) throw tournamentsError;
     }
@@ -859,8 +913,21 @@ organizationRouter.put("/:orgId/integrations/:provider", async (req, res) => {
     }
 
     invalidateOrganizationCaches(auth.org, externalId);
-    if (provider === "DISCORD" && enabled && req.app?.locals?.discordClient) {
-      refreshGuildAccess(req.app.locals.discordClient as GuildFetcher, auth.org.id);
+    const discordClient = req.app?.locals?.discordClient as GuildFetcher | undefined;
+    if (provider === "DISCORD") {
+      if (!enabled) {
+        if (previousExternalId) cancelGuildAccessRefresh(previousExternalId);
+        if (externalId && externalId !== previousExternalId) cancelGuildAccessRefresh(externalId);
+      }
+      if (discordClient) {
+        if (enabled) {
+          refreshGuildAccess(discordClient, auth.org.id);
+        }
+        const isSelfShell = previousExternalId !== null && auth.org.slug === `discord-${previousExternalId}`;
+        if (serverChanged && previousExternalId && !isSelfShell) {
+          await reRegisterOrphanedGuild(discordClient, previousExternalId);
+        }
+      }
     }
 
     return res.status(200).json({

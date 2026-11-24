@@ -20,7 +20,7 @@ vi.mock("../services/ScoreService", () => ({ ScoreService: { progressTeams: vi.f
 vi.mock("../services/LeaderboardService", () => ({ LeaderboardService: { calculateGroupStandings: vi.fn(async () => undefined) } }));
 vi.mock("../utils/tenant", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../utils/tenant")>()),
-  verifyMatchGuild: async () => true,
+  verifyMatchOrganization: async () => true,
 }));
 vi.mock("../i18n", () => ({
   tBot: (_lang: string, key: string) => key,
@@ -50,8 +50,8 @@ beforeEach(() => {
       { id: "i1", organization_id: ORG, provider: "DISCORD", external_id: GUILD, enabled: true, status: "CONNECTED", config: {} },
     ],
     tournaments: [
-      { id: T1, organization_id: ORG, guild_id: GUILD, status: "ACTIVE", name: "Cup", discord_registration_channel_id: "c1", discord_config: {} },
-      { id: T_ARCHIVED, organization_id: ORG, guild_id: GUILD, status: "ARCHIVED", name: "Old" },
+      { id: T1, organization_id: ORG, status: "ACTIVE", name: "Cup", discord_config: { registration_channel_id: "c1" } },
+      { id: T_ARCHIVED, organization_id: ORG, status: "ARCHIVED", name: "Old", discord_config: {} },
     ],
     tournament_staff: [],
     phases: [{ id: "p1", tournament_id: T1, format: "SINGLE_ELIM" }],
@@ -110,7 +110,7 @@ describe("INT-02 : effets Discord idempotents et bornés au serveur lié", () =>
   });
 
   it("REG-08 : sans salon configuré, rien à publier et aucune erreur", async () => {
-    db.current!.tables.tournaments![0]!.discord_registration_channel_id = null;
+    db.current!.tables.tournaments![0]!.discord_config = {};
     await expect(RegistrationService.publishRegistrationEmbed(T1, channelClient(null), GUILD)).resolves.toBe(false);
   });
 
@@ -122,14 +122,17 @@ describe("INT-02 : effets Discord idempotents et bornés au serveur lié", () =>
   it("publie une fois, puis le rejeu ne renvoie pas l'embed", async () => {
     await expect(RegistrationService.publishRegistrationEmbed(T1, channelClient(textChannel(GUILD)), GUILD)).resolves.toBe(true);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(db.current?.tables.tournaments?.[0]?.discord_config).toEqual({ registration_message_id: "msg-1" });
+    expect(db.current?.tables.tournaments?.[0]?.discord_config).toEqual({
+      registration_channel_id: "c1",
+      registration_message_id: "msg-1",
+    });
 
     await expect(RegistrationService.publishRegistrationEmbed(T1, channelClient(textChannel(GUILD, { id: "msg-1" })), GUILD)).resolves.toBe(false);
     expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("le rejeu du lancement ne recrée pas une catégorie existante", async () => {
-    db.current!.tables.tournaments![0]!.discord_category_id = "cat-1";
+    db.current!.tables.tournaments![0]!.discord_config = { category_id: "cat-1" };
     db.current!.tables.phases = [];
     const create = vi.fn();
     const guild = { channels: { fetch: async () => ({ id: "cat-1" }), create }, roles: { everyone: { id: "e" } } };
@@ -160,7 +163,7 @@ describe("DISC-09 : capitaine inscrit sur le Web mais absent du serveur Discord"
   beforeEach(() => {
     db.current!.tables.phases = [{
       id: "p1", tournament_id: T1, format: "SINGLE_ELIM", name: "Arbre", discord_channel_id: null,
-      tournaments: { id: T1, name: "Cup", discord_category_id: "cat", discord_to_role_id: null }, groups: [],
+      tournaments: { id: T1, name: "Cup", discord_config: { category_id: "cat" } }, groups: [],
     }];
     db.current!.tables.phase_teams = [
       { phase_id: "p1", group_id: null, teams: { id: "a", captain_discord_id: "member-1" } },
@@ -199,7 +202,7 @@ describe("CHK-01 : le planificateur respecte l'état de l'intégration", () => {
   it("SEC-26 : intégration coupée ➜ aucun appel Discord à la fermeture du check-in", async () => {
     db.current!.tables.organization_integrations![0]!.enabled = false;
     db.current!.tables.tournaments![0]!.checkin_message_id = "msg";
-    db.current!.tables.tournaments![0]!.discord_checkin_channel_id = "c2";
+    db.current!.tables.tournaments![0]!.discord_config = { checkin_channel_id: "c2" };
     const fetchChannel = vi.fn();
     Reflect.set(SchedulerService, "client", { channels: { fetch: fetchChannel } });
     await SchedulerService.handleCloseCheckin(T1);
@@ -209,7 +212,7 @@ describe("CHK-01 : le planificateur respecte l'état de l'intégration", () => {
 
 describe("DISC-10 : panne Discord vs catégorie absente (10003) dans LifecycleService", () => {
   it("syncDiscordLaunch relance une panne réseau/503 au lieu de recréer une catégorie en doublon", async () => {
-    db.current!.tables.tournaments![0]!.discord_category_id = "cat-1";
+    db.current!.tables.tournaments![0]!.discord_config = { category_id: "cat-1" };
     const create = vi.fn();
     const guild = {
       id: GUILD,
@@ -226,7 +229,7 @@ describe("DISC-10 : panne Discord vs catégorie absente (10003) dans LifecycleSe
   });
 
   it("deleteDiscordCategory relance une panne Discord mais tolère 10003 Unknown Channel (rejeu idempotent)", async () => {
-    db.current!.tables.tournaments![0]!.discord_category_id = "cat-1";
+    db.current!.tables.tournaments![0]!.discord_config = { category_id: "cat-1" };
     const fetchFail = vi.fn().mockRejectedValue(Object.assign(new Error("Gateway error"), { status: 502 }));
     const guildFail = { id: GUILD, channels: { fetch: fetchFail } };
     const clientFail = { guilds: { cache: new Map([[GUILD, guildFail]]), fetch: vi.fn().mockResolvedValue(guildFail) } } as never;

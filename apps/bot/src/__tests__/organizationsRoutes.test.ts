@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FakeSupabase } from "./helpers/fakeSupabase";
 
 const db = vi.hoisted(() => ({ current: null as FakeSupabase | null }));
@@ -21,6 +21,7 @@ vi.mock("../utils/logger", () => ({ logger: log }));
 
 import { organizationRouter } from "../routes/OrganizationRouter";
 import { clearMemberAccessCache, resolveMemberAccess } from "../services/MemberAccessService";
+import { resetAccessRefreshState } from "../services/AccessRefreshService";
 import { callRoute } from "./helpers/route";
 
 const ORG_1 = "00000000-0000-0000-0000-000000000011";
@@ -28,12 +29,12 @@ const ORG_2 = "00000000-0000-0000-0000-000000000022";
 const GUILD_1 = "111111111111111111";
 const GUILD_NEW = "222222222222222222";
 
-/** Faux client Discord : `caller` possède les droits demandés sur GUILD_NEW, le bot n'est présent que là. */
-function discordClient(caller: { id: string; manage: boolean } | null) {
+/** Faux client Discord : `caller` possède les droits demandés sur le serveur attendu (GUILD_NEW par défaut). */
+function discordClient(caller: { id: string; manage: boolean } | null, allowedGuildId = GUILD_NEW) {
   return {
     guilds: {
       fetch: (guildId: string) =>
-        guildId !== GUILD_NEW || !caller
+        guildId !== allowedGuildId || !caller
           ? Promise.reject(new Error("Unknown Guild"))
           : Promise.resolve({
               id: guildId,
@@ -51,9 +52,14 @@ function discordClient(caller: { id: string; manage: boolean } | null) {
   };
 }
 
+afterEach(() => {
+  resetAccessRefreshState();
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearMemberAccessCache();
+  resetAccessRefreshState();
   orgRpc.error = null;
   db.current = new FakeSupabase({
     organizations: [
@@ -320,12 +326,11 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     expect(db.current?.writesTo("organization_integrations")).toEqual([]);
   });
 
-  it("accepte un administrateur vérifié et rattache les tournois existants", async () => {
-    db.current!.tables.tournaments!.push({ id: "t-2", organization_id: ORG_2, guild_id: null });
+  it("accepte un administrateur vérifié et rattache le serveur Discord à l'organisation", async () => {
+    db.current!.tables.tournaments!.push({ id: "t-2", organization_id: ORG_2, discord_config: {} });
     const out = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
     expect(out.status).toBe(200);
     expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_2)).toMatchObject({ external_id: GUILD_NEW, enabled: true });
-    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-2")?.guild_id).toBe(GUILD_NEW);
   });
 
   it("LIFE-02: refuse d'activer Discord sans serveur lié", async () => {
@@ -360,7 +365,7 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     db.current!.tables.organization_integrations!.push({
       id: "int-shell", organization_id: shellId, provider: "DISCORD", external_id: GUILD_NEW, enabled: true, status: "CONNECTED", config: {},
     });
-    db.current!.tables.tournaments!.push({ id: "t-x", organization_id: shellId, guild_id: GUILD_NEW });
+    db.current!.tables.tournaments!.push({ id: "t-x", organization_id: shellId, discord_config: {} });
     const out = await link("u-owner-2", discordClient({ id: "u-owner-2", manage: true }), { enabled: true, external_id: GUILD_NEW });
     expect(out.status).toBe(409);
     expect(db.current?.tables.organizations?.some((o) => o.id === shellId)).toBe(true);
@@ -407,30 +412,61 @@ describe("SEC-18: rattachement d'un serveur Discord réservé à ses administrat
     }
   });
 
-  it("DAT-04: changer de serveur Discord lié réinitialise les anciens salons/rôles Discord des tournois", async () => {
+  it("DAT-04 / SEC-45: changer de serveur Discord lié réinitialise discord_config des tournois et purge config de l'intégration", async () => {
+    const existingInt = db.current!.tables.organization_integrations!.find((i) => i.organization_id === ORG_1);
+    if (existingInt) {
+      existingInt.config = {
+        to_role_id: "666666666666666666",
+        captain_role_id: "555555555555555555",
+        registration_channel_id: "222222222222222222",
+        announcement_channel_id: "333333333333333333",
+        checkin_channel_id: "444444444444444444",
+        guild_name: "Ancien Serveur",
+      };
+    }
     db.current!.tables.tournaments!.push({
       id: "t-switch",
       organization_id: ORG_1,
-      guild_id: GUILD_1,
-      discord_category_id: "111",
-      discord_registration_channel_id: "222",
-      discord_announcement_channel_id: "333",
-      discord_checkin_channel_id: "444",
-      discord_captain_role_id: "555",
-      discord_to_role_id: "666",
+      discord_config: {
+        category_id: "111",
+        registration_channel_id: "222",
+        announcement_channel_id: "333",
+        checkin_channel_id: "444",
+        captain_role_id: "555",
+        to_role_id: "666",
+      },
     });
 
     const out = await link("u-owner", discordClient({ id: "u-owner", manage: true }), { enabled: true, external_id: GUILD_NEW }, ORG_1);
     expect(out.status).toBe(200);
     expect(db.current?.tables.tournaments?.find((t) => t.id === "t-switch")).toMatchObject({
-      guild_id: GUILD_NEW,
-      discord_category_id: null,
-      discord_registration_channel_id: null,
-      discord_announcement_channel_id: null,
-      discord_checkin_channel_id: null,
-      discord_captain_role_id: null,
-      discord_to_role_id: null,
+      discord_config: {},
     });
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_1)?.config).toEqual({});
+  });
+
+  it("#101: couper puis réactiver Discord sur le même serveur préserve discord_config (salons et rôles des tournois)", async () => {
+    const originalConfig = {
+      category_id: "111",
+      registration_channel_id: "222",
+      announcement_channel_id: "333",
+      checkin_channel_id: "444",
+      captain_role_id: "555",
+      to_role_id: "666",
+    };
+    db.current!.tables.tournaments!.push({
+      id: "t-toggle",
+      organization_id: ORG_1,
+      discord_config: { ...originalConfig },
+    });
+
+    const disabled = await link("u-owner", discordClient({ id: "u-owner", manage: true }, GUILD_1), { enabled: false }, ORG_1);
+    expect(disabled.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-toggle")?.discord_config).toEqual(originalConfig);
+
+    const reenabled = await link("u-owner", discordClient({ id: "u-owner", manage: true }, GUILD_1), { enabled: true }, ORG_1);
+    expect(reenabled.status).toBe(200);
+    expect(db.current?.tables.tournaments?.find((t) => t.id === "t-toggle")?.discord_config).toEqual(originalConfig);
   });
 
   it("CLN-08 / ARC-04: met à jour key_version selon INTEGRATION_ENCRYPTION_KEY_VERSION et conserve has_secret:true sans renvoyer de secret", async () => {
@@ -521,7 +557,7 @@ describe("SEC-08 / SEC-07 / ACC-01: intégrations", () => {
 
 describe("SEC-04: lecture de l'organisation", () => {
   it("un staff de tournoi ne lit ni les membres ni les intégrations", async () => {
-    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_to_role_id: null });
+    db.current!.tables.tournaments!.push({ id: "t-1", organization_id: ORG_1, status: "ACTIVE", discord_config: {} });
     db.current!.tables.tournament_staff!.push({ tournament_id: "t-1", user_id: "u-caster", role: "CASTER" });
     const out = await callRoute(organizationRouter, {
       method: "GET",
@@ -691,3 +727,288 @@ describe("RFC Q2.4: transfert de propriété, suppression et invitations", () =>
     expect(db.current?.tables.tournament_staff).toEqual([]);
   });
 });
+
+describe("DISC-16 (#105): réenregistrement du serveur Discord lorsqu'il perd son intégration", () => {
+  const as = (user: string) => ({ "x-discord-user-id": user });
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  /** Faux client Discord qui connaît plusieurs serveurs et renvoie des objets GuildLike complets. */
+  function multiGuildDiscordClient(presentGuilds: Record<string, { name: string; ownerId: string; manageUsers?: string[] }>) {
+    const fetch = vi.fn((guildId: string) => {
+      const entry = presentGuilds[guildId];
+      if (!entry) return Promise.reject(Object.assign(new Error("Unknown Guild"), { code: 10004 }));
+      const ownerMember = {
+        id: entry.ownerId,
+        user: { bot: false },
+        permissions: { has: () => true },
+        roles: { cache: { has: () => false } },
+      };
+      return Promise.resolve({
+        id: guildId,
+        name: entry.name,
+        icon: null,
+        ownerId: entry.ownerId,
+        preferredLocale: "fr",
+        members: {
+          fetch: (userId?: string) => {
+            if (typeof userId === "string") {
+              const canManage = entry.ownerId === userId || (entry.manageUsers ?? []).includes(userId);
+              return Promise.resolve({
+                id: userId,
+                user: { bot: false },
+                permissions: { has: () => canManage },
+                roles: { cache: { has: () => false } },
+              });
+            }
+            return Promise.resolve(new Map([[entry.ownerId, ownerMember]]));
+          },
+        },
+      });
+    });
+    return { guilds: { fetch } };
+  }
+
+  it("DISC-16: supprimer une organisation liée à un serveur où le bot est encore présent recrée l'organisation discord-<id>, son intégration et resynchronise ses grants", async () => {
+    const client = multiGuildDiscordClient({ [GUILD_1]: { name: "Serveur Splatoon", ownerId: "u-owner" } });
+    const out = await callRoute(organizationRouter, {
+      method: "DELETE",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { confirm_slug: "splatoon-fr" },
+      locals: { discordClient: client },
+    });
+
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.organizations?.some((o) => o.id === ORG_1)).toBe(false);
+    const recreatedOrg = db.current?.tables.organizations?.find((o) => o.slug === `discord-${GUILD_1}`);
+    expect(recreatedOrg).toBeDefined();
+    const recreatedInt = db.current?.tables.organization_integrations?.find(
+      (i) => i.provider === "DISCORD" && i.external_id === GUILD_1,
+    );
+    expect(recreatedInt).toMatchObject({
+      organization_id: recreatedOrg?.id,
+      enabled: true,
+      status: "CONNECTED",
+      config: expect.objectContaining({ bot_present: true, guild_name: "Serveur Splatoon" }),
+    });
+
+    // Vérifie que refreshGuildAccess a bien resynchronisé l'annuaire en arrière-plan pour la nouvelle org
+    await flush();
+    await flush();
+    expect(db.current?.tables.integration_access_grants).toContainEqual(
+      expect.objectContaining({
+        organization_id: recreatedOrg?.id,
+        provider: "DISCORD",
+        user_id: "u-owner",
+        reason: "SERVER_OWNER",
+      }),
+    );
+  });
+
+  it("DISC-16: supprimer une organisation reste 200 si le bot n'est plus sur le serveur (Unknown Guild)", async () => {
+    const client = multiGuildDiscordClient({});
+    const out = await callRoute(organizationRouter, {
+      method: "DELETE",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { confirm_slug: "splatoon-fr" },
+      locals: { discordClient: client },
+    });
+
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.organizations?.some((o) => o.id === ORG_1)).toBe(false);
+    expect(db.current?.tables.organization_integrations?.some((i) => i.external_id === GUILD_1)).toBe(false);
+  });
+
+  it("DISC-16: un refus 403 ou 400 sur DELETE ne déclenche aucun réenregistrement", async () => {
+    const fetchSpy = vi.fn(() => Promise.reject(new Error("should not be called")));
+    const wrongSlug = await callRoute(organizationRouter, {
+      method: "DELETE",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { confirm_slug: "wrong" },
+      locals: { discordClient: { guilds: { fetch: fetchSpy } } },
+    });
+    expect(wrongSlug.status).toBe(400);
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Un ORG_ADMIN natif (sans droit DELETE_ORGANIZATION) reçoit 403 sans réenregistrement
+    const forbidden = await callRoute(organizationRouter, {
+      method: "DELETE",
+      path: `/${ORG_1}`,
+      headers: as("u-admin"),
+      body: { confirm_slug: "splatoon-fr" },
+      locals: { discordClient: { guilds: { fetch: fetchSpy } } },
+    });
+    expect(forbidden.status).toBe(403);
+    expect(db.current?.tables.organizations?.some((o) => o.id === ORG_1)).toBe(true);
+    expect(db.current?.tables.organizations?.some((o) => o.slug === `discord-${GUILD_1}`)).toBe(false);
+  });
+
+  it("DISC-16: changer de serveur Discord lié (G1 -> G2) réenregistre l'ancien serveur G1 si le bot y est encore", async () => {
+    const client = multiGuildDiscordClient({
+      [GUILD_1]: { name: "Ancien Serveur", ownerId: "u-owner", manageUsers: ["u-owner"] },
+      [GUILD_NEW]: { name: "Nouveau Serveur", ownerId: "u-owner", manageUsers: ["u-owner"] },
+    });
+
+    const out = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}/integrations/DISCORD`,
+      headers: as("u-owner"),
+      body: { enabled: true, external_id: GUILD_NEW },
+      locals: { discordClient: client },
+    });
+
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_1)?.external_id).toBe(GUILD_NEW);
+
+    const restoredOrg = db.current?.tables.organizations?.find((o) => o.slug === `discord-${GUILD_1}`);
+    expect(restoredOrg).toBeDefined();
+    expect(
+      db.current?.tables.organization_integrations?.find((i) => i.external_id === GUILD_1),
+    ).toMatchObject({
+      organization_id: restoredOrg?.id,
+      enabled: true,
+      status: "CONNECTED",
+    });
+  });
+
+  it("DISC-16: délier le serveur Discord (external_id: null) depuis une organisation Web réenregistre ce serveur", async () => {
+    const client = multiGuildDiscordClient({
+      [GUILD_1]: { name: "Serveur Délié", ownerId: "u-owner", manageUsers: ["u-owner"] },
+    });
+
+    const out = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}/integrations/DISCORD`,
+      headers: as("u-owner"),
+      body: { external_id: null },
+      locals: { discordClient: client },
+    });
+
+    expect(out.status).toBe(200);
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === ORG_1)).toMatchObject({
+      external_id: null,
+      enabled: false,
+    });
+
+    const restoredOrg = db.current?.tables.organizations?.find((o) => o.slug === `discord-${GUILD_1}`);
+    expect(restoredOrg).toBeDefined();
+    expect(
+      db.current?.tables.organization_integrations?.find((i) => i.external_id === GUILD_1),
+    ).toMatchObject({
+      organization_id: restoredOrg?.id,
+      enabled: true,
+      status: "CONNECTED",
+    });
+  });
+
+  it("DISC-16: délier ou changer de serveur depuis l'organisation shell discord-<id> elle-même ne tente pas de recréer son propre slug", async () => {
+    const shellId = "00000000-0000-0000-0000-000000000099";
+    const shellGuild = "333333333333333333";
+    db.current!.tables.organizations!.push({ id: shellId, slug: `discord-${shellGuild}`, name: "Shell Guild", language: "fr" });
+    db.current!.tables.organization_members!.push({ organization_id: shellId, user_id: "u-shell-owner", role: "ORG_OWNER" });
+    db.current!.tables.organization_integrations!.push({
+      id: "int-shell-99",
+      organization_id: shellId,
+      provider: "DISCORD",
+      external_id: shellGuild,
+      enabled: true,
+      status: "CONNECTED",
+      config: {},
+    });
+
+    const client = multiGuildDiscordClient({
+      [shellGuild]: { name: "Shell Guild", ownerId: "u-shell-owner", manageUsers: ["u-shell-owner"] },
+      [GUILD_NEW]: { name: "Nouveau Serveur", ownerId: "u-shell-owner", manageUsers: ["u-shell-owner"] },
+    });
+
+    // 1) Bascule vers un autre serveur G2 : aucun fetch de réenregistrement sur shellGuild
+    const switched = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${shellId}/integrations/DISCORD`,
+      headers: as("u-shell-owner"),
+      body: { enabled: true, external_id: GUILD_NEW },
+      locals: { discordClient: client },
+    });
+    expect(switched.status).toBe(200);
+    expect(db.current?.tables.organization_integrations?.some((i) => i.external_id === shellGuild)).toBe(false);
+
+    // 2) Rétablissement puis déliaison (external_id: null) : ne réattache pas de force
+    db.current!.tables.organization_integrations!.find((i) => i.organization_id === shellId)!.external_id = shellGuild;
+    const unlinked = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${shellId}/integrations/DISCORD`,
+      headers: as("u-shell-owner"),
+      body: { external_id: null },
+      locals: { discordClient: client },
+    });
+
+    expect(unlinked.status).toBe(200);
+    expect(db.current?.tables.organization_integrations?.find((i) => i.organization_id === shellId)).toMatchObject({
+      external_id: null,
+      enabled: false,
+    });
+    expect(db.current?.tables.organization_integrations?.some((i) => i.external_id === shellGuild)).toBe(false);
+  });
+});
+
+describe("SEC-08 (#102): lien de contact public https sur une organisation", () => {
+  const as = (userId: string) => ({ "x-discord-user-id": userId });
+
+  it("accepte un lien de contact https générique et une invitation Discord (création et mise à jour)", async () => {
+    const created = await callRoute(organizationRouter, {
+      method: "POST",
+      path: "/",
+      headers: as("u-owner"),
+      body: {
+        name: "Web Only Org",
+        slug: "web-only-org",
+        invite_url: "https://example.org/contact?ref=hub",
+      },
+    });
+    expect(created.status).toBe(201);
+
+    const updatedGeneric = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: "https://community.example.org/tournaments" },
+    });
+    expect(updatedGeneric.status).toBe(200);
+    expect(db.current?.tables.organizations?.find((o) => o.id === ORG_1)?.invite_url).toBe(
+      "https://community.example.org/tournaments",
+    );
+
+    const updatedDiscord = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: "https://discord.gg/splatoon-fr" },
+    });
+    expect(updatedDiscord.status).toBe(200);
+    expect(db.current?.tables.organizations?.find((o) => o.id === ORG_1)?.invite_url).toBe(
+      "https://discord.gg/splatoon-fr",
+    );
+  });
+
+  it.each([
+    ["HTTP non chiffré", "http://example.org/contact"],
+    ["schéma javascript", "javascript:alert(1)"],
+    ["schéma data", "data:text/html,<script>alert(1)</script>"],
+    ["credentials dans l'URL", "https://user:pass@example.org/contact"],
+    ["hôte sans TLD", "https://localhost/contact"],
+    ["espaces dans l'URL", "https://example.org/mon lien"],
+    ["URL trop longue", `https://example.org/${"a".repeat(520)}`],
+  ])("rejette un lien invalide (%s) en 400 sans écriture", async (_label, invalidUrl) => {
+    const res = await callRoute(organizationRouter, {
+      method: "PUT",
+      path: `/${ORG_1}`,
+      headers: as("u-owner"),
+      body: { invite_url: invalidUrl },
+    });
+    expect(res.status).toBe(400);
+    expect(db.current?.writesTo("organizations", "update")).toEqual([]);
+  });
+});
+

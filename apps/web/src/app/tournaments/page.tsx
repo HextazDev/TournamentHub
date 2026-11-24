@@ -2,77 +2,24 @@ import { Trophy } from "lucide-react";
 import type { ServerSettings, Tournament } from "@hub/shared";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getViewer, memberGuildIds } from "@/lib/viewer";
+import { loadDiscoverableTournaments } from "@/lib/tournamentDiscovery";
 import { TournamentCard } from "@/components/TournamentCard";
 import { t } from "@/i18n";
 import { getServerLocale } from "@/i18n/server";
 import type { Locale } from "@/i18n/types";
 
-async function loadTournaments(guildIds: string[]) {
-  const visible = supabaseAdmin
-    .from("tournaments")
-    .select("*")
-    .neq("status", "ARCHIVED")
-    .order("created_at", { ascending: false })
-    .limit(60);
-
-  const [publicRes, privateRes] = await Promise.all([
-    visible.eq("is_public", true),
-    guildIds.length > 0
-      ? supabaseAdmin
-          .from("tournaments")
-          .select("*")
-          .in("guild_id", guildIds)
-          .eq("is_public", false)
-          .neq("status", "ARCHIVED")
-          .order("created_at", { ascending: false })
-      : Promise.resolve({ data: [], error: null }),
-  ]);
-  if (publicRes.error) throw new Error(`public tournaments read failed: ${publicRes.error.message}`);
-  if (privateRes.error) throw new Error(`private tournaments read failed: ${privateRes.error.message}`);
-  return { publicList: (publicRes.data ?? []) as Tournament[], privateList: (privateRes.data ?? []) as Tournament[] };
-}
-
 async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, ServerSettings>> {
-  const guildIds = [...new Set(tournaments.map((t) => t.guild_id).filter((id): id is string => Boolean(id)))];
   const orgIds = [...new Set(tournaments.map((t) => t.organization_id).filter((id): id is string => Boolean(id)))];
   const map = new Map<string, ServerSettings>();
 
-  if (guildIds.length === 0 && orgIds.length === 0) return map;
+  if (orgIds.length === 0) return map;
 
-  const [orgsByIdRes, discordIntsByExtRes] = await Promise.all([
-    orgIds.length > 0
-      ? supabaseAdmin.from("organizations").select("*").in("id", orgIds)
-      : Promise.resolve({ data: [], error: null }),
-    guildIds.length > 0
-      ? supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("external_id", guildIds)
-      : Promise.resolve({ data: [], error: null }),
+  const [orgsRes, allOrgIntegrationsRes] = await Promise.all([
+    supabaseAdmin.from("organizations").select("*").in("id", orgIds),
+    supabaseAdmin.from("organization_integrations").select("*").eq("provider", "DISCORD").in("organization_id", orgIds),
   ]);
-
-  const allOrgIds = new Set<string>(orgIds);
-  for (const intRow of (discordIntsByExtRes.data ?? []) as Record<string, unknown>[]) {
-    if (typeof intRow.organization_id === "string") {
-      allOrgIds.add(intRow.organization_id);
-    }
-  }
-
-  const missingOrgIds = [...allOrgIds].filter((id) => !(orgsByIdRes.data ?? []).some((o: Record<string, unknown>) => o.id === id));
-  const extraOrgsRes =
-    missingOrgIds.length > 0
-      ? await supabaseAdmin.from("organizations").select("*").in("id", missingOrgIds)
-      : { data: [], error: null };
-
-  const allOrgs = [...((orgsByIdRes.data ?? []) as Record<string, unknown>[]), ...((extraOrgsRes.data ?? []) as Record<string, unknown>[])];
-  const allOrgIntegrationsRes =
-    allOrgs.length > 0
-      ? await supabaseAdmin
-          .from("organization_integrations")
-          .select("*")
-          .eq("provider", "DISCORD")
-          .in(
-            "organization_id",
-            allOrgs.map((o) => String(o.id)),
-          )
-      : { data: [], error: null };
+  if (orgsRes.error) throw new Error(`organizations read failed: ${orgsRes.error.message}`);
+  if (allOrgIntegrationsRes.error) throw new Error(`organization_integrations read failed: ${allOrgIntegrationsRes.error.message}`);
 
   const discordByOrgId = new Map<string, Record<string, unknown>>();
   for (const intRow of (allOrgIntegrationsRes.data ?? []) as Record<string, unknown>[]) {
@@ -81,7 +28,7 @@ async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, Serv
     }
   }
 
-  for (const orgRow of allOrgs) {
+  for (const orgRow of (orgsRes.data ?? []) as Record<string, unknown>[]) {
     if (typeof orgRow.id !== "string" || typeof orgRow.slug !== "string") continue;
     const discordInt = discordByOrgId.get(orgRow.id);
     const cfg = (discordInt?.config ?? {}) as Record<string, unknown>;
@@ -89,6 +36,8 @@ async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, Serv
     const externalGuildId = typeof discordInt?.external_id === "string" ? discordInt.external_id : orgRow.slug;
 
     const profile: ServerSettings = {
+      organization_id: orgRow.id,
+      slug: orgRow.slug,
       guild_id: externalGuildId,
       guild_name: typeof orgRow.name === "string" ? orgRow.name : orgRow.slug,
       guild_icon: typeof orgRow.icon_url === "string" ? orgRow.icon_url : null,
@@ -110,9 +59,6 @@ async function loadProfiles(tournaments: Tournament[]): Promise<Map<string, Serv
 
     map.set(orgRow.id, profile);
     map.set(orgRow.slug, profile);
-    if (typeof discordInt?.external_id === "string") {
-      map.set(discordInt.external_id, profile);
-    }
   }
 
   return map;
@@ -122,10 +68,7 @@ function Grid({ list, profiles, locale }: { list: Tournament[]; profiles: Map<st
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {list.map((tourn) => {
-        const profile =
-          (tourn.guild_id ? profiles.get(tourn.guild_id) : undefined) ??
-          (tourn.organization_id ? profiles.get(tourn.organization_id) : undefined) ??
-          null;
+        const profile = profiles.get(tourn.organization_id) ?? null;
         return <TournamentCard key={tourn.id} tournament={tourn} profile={profile} locale={locale} showOrganizer />;
       })}
     </div>
@@ -135,7 +78,7 @@ function Grid({ list, profiles, locale }: { list: Tournament[]; profiles: Map<st
 export default async function DiscoverTournamentsPage() {
   const locale = await getServerLocale();
   const viewer = await getViewer();
-  const { publicList, privateList } = await loadTournaments([...memberGuildIds(viewer)]);
+  const { publicList, privateList } = await loadDiscoverableTournaments(viewer.discordId, [...memberGuildIds(viewer)]);
   const profiles = await loadProfiles([...publicList, ...privateList]);
 
   return (

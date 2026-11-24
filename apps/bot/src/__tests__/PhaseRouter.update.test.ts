@@ -7,8 +7,8 @@ vi.mock("../lib/supabase", () => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: vi.fn(() => "guild-1"),
-  verifyPhaseGuild: vi.fn(async () => true),
-  verifyTournamentGuild: vi.fn(async () => true),
+  verifyPhaseOrganization: vi.fn(async () => true),
+  verifyTournamentOrganization: vi.fn(async () => true),
 }));
 vi.mock("../services/BracketGeneratorService", () => ({ BracketGeneratorService: {} }));
 vi.mock("../services/RoundRobinGeneratorService", () => ({ RoundRobinGeneratorService: {} }));
@@ -16,7 +16,7 @@ vi.mock("../services/LifecycleService", () => ({ LifecycleService: {} }));
 
 import express from "express";
 import { supabase } from "../lib/supabase";
-import { verifyPhaseGuild } from "../utils/tenant";
+import { verifyPhaseOrganization } from "../utils/tenant";
 import { phaseRouter } from "../routes/PhaseRouter";
 
 let server: Server;
@@ -101,7 +101,7 @@ describe("PUT /api/phases/:id — PH-01 validation du barème", () => {
   });
 
   it("SEC: phase d'un autre serveur ➜ 403 avant toute validation ou écriture", async () => {
-    vi.mocked(verifyPhaseGuild).mockResolvedValueOnce(false);
+    vi.mocked(verifyPhaseOrganization).mockResolvedValueOnce(false);
     const res = await put({ settings: { points_win: "" } });
     expect(res.status).toBe(403);
     expect(updatePayloads).toEqual([]);

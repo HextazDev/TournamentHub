@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { supabase } from "../lib/supabase";
-import { getAuthenticatedGuildId, getTournamentScope, verifyTeamGuild, verifyTournamentGuild } from "../utils/tenant";
+import { getAuthenticatedGuildId, getTournamentScope, verifyTeamOrganization, verifyTournamentOrganization } from "../utils/tenant";
 import { requireTournamentScope, tournamentFrom } from "../middleware/auth";
 import { CreateTeamSchema, GenerateFakeTeamsSchema, generateSyntheticDiscordId, isSyntheticDiscordId, MAX_FAKE_TEAMS, UpdateTeamSchema } from "@hub/shared";
 import type { Client } from "discord.js";
@@ -29,7 +29,7 @@ teamRouter.post("/", bodyTournamentScope, async (req, res) => {
     const tournament_id = getTournamentScope(req);
 
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentOrganization(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -100,7 +100,7 @@ teamRouter.post("/generate-fake", bodyTournamentScope, async (req, res) => {
     const tournament_id = getTournamentScope(req);
 
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !tournament_id || !(await verifyTournamentGuild(tournament_id, authGuildId))) {
+    if (!authGuildId || !tournament_id || !(await verifyTournamentOrganization(tournament_id, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : ce tournoi n'appartient pas à votre serveur." });
     }
 
@@ -167,7 +167,7 @@ teamRouter.put("/:id", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTeamGuild(teamId, authGuildId))) {
+    if (!authGuildId || !(await verifyTeamOrganization(teamId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette équipe n'appartient pas à votre serveur." });
     }
 
@@ -214,7 +214,7 @@ teamRouter.patch("/:id/checkin", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTeamGuild(teamId, authGuildId))) {
+    if (!authGuildId || !(await verifyTeamOrganization(teamId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette équipe n'appartient pas à votre serveur." });
     }
 
@@ -259,7 +259,7 @@ teamRouter.delete("/:id", teamScope, async (req, res) => {
   try {
     const teamId = req.params.id;
     const authGuildId = getAuthenticatedGuildId(req);
-    if (!authGuildId || !(await verifyTeamGuild(teamId, authGuildId))) {
+    if (!authGuildId || !(await verifyTeamOrganization(teamId, authGuildId))) {
       return res.status(403).json({ error: "Accès refusé : cette équipe n'appartient pas à votre serveur." });
     }
 

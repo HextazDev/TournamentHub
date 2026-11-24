@@ -11,8 +11,10 @@ vi.mock("../services/IntegrationBus", () => ({
 }));
 vi.mock("../utils/tenant", () => ({
   getAuthenticatedGuildId: () => "111",
-  verifyTournamentGuild: () => Promise.resolve(true),
+  verifyTournamentOrganization: () => Promise.resolve(true),
   resolveOrganization: () => Promise.resolve({ id: "org-1" }),
+  runWithoutRequestTenantCache: <T,>(fn: () => T) => fn(),
+  runWithRequestTenantCache: <T,>(fn: () => T) => fn(),
 }));
 
 import { supabase } from "../lib/supabase";
