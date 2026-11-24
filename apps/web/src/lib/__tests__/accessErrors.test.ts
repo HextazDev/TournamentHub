@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { botAccessError, botInternalError, BOT_UNREACHABLE, relayedBotError } from "../accessErrors";
+import { botAccessError, botInternalError, BOT_UNREACHABLE, relayedBotError, translateBotProxyError } from "../accessErrors";
 import { t } from "../../i18n";
 
 describe("botAccessError (SEC-18) : erreurs d'accès traduites, jamais le texte brut du bot", () => {
@@ -68,5 +68,47 @@ describe("botInternalError (SEC-19) : un échec serveur du bot devient un messag
 
   it("SEC-19: relayedBotError remplace le texte générique anglais par le message traduit", () => {
     expect(relayedBotError(JSON.stringify(body), "fr")).toEqual({ error: t("fr", "common.internalError") });
+  });
+});
+
+describe("translateBotProxyError : ne jamais exposer de HTML brut (ex. Cloudflare 530 / 502) au navigateur", () => {
+  it.each([502, 503, 504, 530])("une réponse HTML non-JSON avec statut %i renvoie access.CHECK_FAILED traduit", (status) => {
+    const res = translateBotProxyError({
+      status,
+      isJson: false,
+      payload: "<!doctype html><html><title>Cloudflare Tunnel error</title></html>",
+      locale: "fr",
+    });
+    expect(res).toEqual({ error: t("fr", "access.CHECK_FAILED"), code: "CHECK_FAILED" });
+  });
+
+  it("une réponse HTML non-JSON 500 renvoie common.internalError sans HTML", () => {
+    const res = translateBotProxyError({
+      status: 500,
+      isJson: false,
+      payload: "<html>Bad Gateway</html>",
+      locale: "en",
+    });
+    expect(res).toEqual({ error: t("en", "common.internalError") });
+  });
+
+  it("traduit une erreur métier JSON (ex. SLUG_TAKEN) et préserve les autres erreurs métier JSON", () => {
+    expect(
+      translateBotProxyError({
+        status: 409,
+        isJson: true,
+        payload: { error: "Ce slug est pris", code: "SLUG_TAKEN" },
+        locale: "en",
+      }),
+    ).toEqual({ error: t("en", "botErrors.SLUG_TAKEN"), code: "SLUG_TAKEN" });
+
+    expect(
+      translateBotProxyError({
+        status: 400,
+        isJson: true,
+        payload: { error: "Slug d'organisation invalide" },
+        locale: "fr",
+      }),
+    ).toEqual({ error: "Slug d'organisation invalide" });
   });
 });

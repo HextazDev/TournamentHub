@@ -67,3 +67,31 @@ export function relayedBotError(rawBody: string, locale: Locale): { error: strin
   }
   return { error: t(locale, "common.unknown") };
 }
+
+const UPSTREAM_UNREACHABLE_STATUSES: ReadonlySet<number> = new Set([502, 503, 504, 530]);
+
+/**
+ * Traduit toute réponse d'erreur du proxy `/api/bot/[...path]` sans jamais exposer de HTML brut
+ * (page d'erreur Cloudflare 530, Bad Gateway 502, etc.) au navigateur.
+ */
+export function translateBotProxyError(input: {
+  status: number;
+  isJson: boolean;
+  payload: unknown;
+  locale: Locale;
+}): unknown {
+  const { status, isJson, payload, locale } = input;
+  if (!isJson) {
+    if (UPSTREAM_UNREACHABLE_STATUSES.has(status)) {
+      return botAccessError(BOT_UNREACHABLE, locale) ?? { error: t(locale, "access.CHECK_FAILED"), code: "CHECK_FAILED" };
+    }
+    return { error: status >= 500 ? t(locale, "common.internalError") : t(locale, "common.unknown") };
+  }
+
+  return (
+    botAccessError(payload, locale) ??
+    botInternalError(payload, locale) ??
+    botDomainError(payload, locale) ??
+    payload
+  );
+}
