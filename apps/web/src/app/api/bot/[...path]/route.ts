@@ -8,7 +8,7 @@ import {
   isBotProxyPathAllowed,
 } from "@/lib/botProxyAllowlist";
 import { TOURNAMENT_INVITE_COOKIE_PREFIX } from "@/lib/accessRules";
-import { BOT_UNREACHABLE, botAccessError, botDomainError, botInternalError } from "@/lib/accessErrors";
+import { BOT_UNREACHABLE, botAccessError, translateBotProxyError } from "@/lib/accessErrors";
 import { getServerLocale } from "@/i18n/server";
 import { resolveServerBotApiUrl } from "@/lib/config";
 
@@ -91,15 +91,19 @@ async function handleProxy(request: Request, { params }: { params: Promise<{ pat
     });
 
     const contentType = res.headers.get("content-type");
-    const payload: unknown = contentType?.includes("application/json") ? await res.json() : { error: await res.text() };
+    const isJson = Boolean(contentType?.includes("application/json"));
+    const payload: unknown = isJson ? await res.json().catch(() => null) : await res.text();
 
-    // SEC-18 / SEC-19 : un refus d'accès ou un échec serveur du bot devient un message traduit ;
-    // les erreurs métier sont relayées telles quelles.
-    const locale = res.ok ? null : await getServerLocale();
-    const translatedError = locale
-      ? (botAccessError(payload, locale) ?? botInternalError(payload, locale) ?? botDomainError(payload, locale))
-      : null;
-    return NextResponse.json(translatedError ?? payload, { status: res.status });
+    if (res.ok) {
+      return NextResponse.json(isJson ? payload : { ok: true }, { status: res.status });
+    }
+
+    // SEC-18 / SEC-19 : un refus d'accès, une panne bot ou une page HTML Cloudflare devient un message traduit propre.
+    const locale = await getServerLocale();
+    return NextResponse.json(
+      translateBotProxyError({ status: res.status, isJson, payload, locale }),
+      { status: res.status },
+    );
   } catch (error: unknown) {
     console.error(`Proxy Error to ${targetUrl}:`, error);
     return NextResponse.json(botAccessError(BOT_UNREACHABLE, await getServerLocale()), { status: 502 });

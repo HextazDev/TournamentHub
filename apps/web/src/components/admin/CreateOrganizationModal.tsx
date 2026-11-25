@@ -7,6 +7,7 @@ import { botApiFetch } from "@/utils/api";
 import { useTranslation } from "@/i18n/LanguageContext";
 import { useToast } from "@/context/ToastContext";
 import { getErrorMessage, readApiError } from "@/utils/errors";
+import { slugifyOrganizationName } from "@/lib/orgSlug";
 
 export function CreateOrganizationModal() {
   const { t, locale } = useTranslation();
@@ -16,19 +17,31 @@ export function CreateOrganizationModal() {
   const [isOpen, setIsOpen] = useState(false);
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [slugManuallyEdited, setSlugManuallyEdited] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const resetForm = () => {
+    setName("");
+    setSlug("");
+    setSlugManuallyEdited(false);
+  };
+
+  const closeModal = () => {
+    setIsOpen(false);
+    resetForm();
+  };
 
   const handleNameChange = (value: string) => {
     setName(value);
-    if (!slug) {
-      setSlug(
-        value
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/^-|-$/g, "")
-          .slice(0, 60),
-      );
+    if (!slugManuallyEdited) {
+      setSlug(slugifyOrganizationName(value));
     }
+  };
+
+  const handleSlugChange = (value: string) => {
+    const normalized = value.toLowerCase();
+    setSlug(normalized);
+    setSlugManuallyEdited(normalized.trim().length > 0);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -50,8 +63,9 @@ export function CreateOrganizationModal() {
       }
       const created = (await res.json()) as { slug?: string };
       toast.success(t("organizations.createdSuccess"));
-      setIsOpen(false);
-      router.push(`/admin/${created.slug ?? slug.trim().toLowerCase()}`);
+      const targetSlug = created.slug ?? slug.trim().toLowerCase();
+      closeModal();
+      router.push(`/admin/${targetSlug}`);
       router.refresh();
     } catch (err: unknown) {
       toast.error(t("feedback.genericError", { message: getErrorMessage(err) ?? t("common.unknown") }));
@@ -99,11 +113,11 @@ export function CreateOrganizationModal() {
                 <input
                   type="text"
                   required
-                  minLength={2}
-                  maxLength={60}
-                  pattern="^[a-z0-9]+(?:-[a-z0-9]+)*$"
+                  minLength={3}
+                  maxLength={48}
+                  pattern="^[a-z0-9][a-z0-9-]{1,46}[a-z0-9]$"
                   value={slug}
-                  onChange={(e) => setSlug(e.target.value.toLowerCase())}
+                  onChange={(e) => handleSlugChange(e.target.value)}
                   placeholder={t("organizations.slugPlaceholder")}
                   className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2.5 text-white font-mono text-sm focus:border-blue-500 focus:outline-none"
                 />
@@ -112,7 +126,7 @@ export function CreateOrganizationModal() {
               <div className="flex justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  onClick={() => setIsOpen(false)}
+                  onClick={closeModal}
                   className="rounded-lg bg-slate-800 hover:bg-slate-700 px-4 py-2 text-sm font-semibold text-slate-300 transition-colors"
                 >
                   {t("organizations.cancel")}
