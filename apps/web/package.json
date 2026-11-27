@@ -12,17 +12,17 @@
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",
-    "@hookform/resolvers": "^7.0.5",
+    "@hookform/resolvers": "^7.0.9",
     "@hub/shared": "*",
     "@supabase/supabase-js": "^2.119.0",
     "dayjs": "^1.11.20",
     "jsonwebtoken": "^9.0.3",
-    "lucide-react": "^1.7.0",
+    "lucide-react": "^1.79.0",
     "next": "^16.4.6",
     "next-auth": "^4.24.13",
     "react": "19.3.1",
     "react-dom": "19.3.1",
-    "react-hook-form": "^7.72.1",
+    "react-hook-form": "^7.92.0",
     "zod": "^4.6.6"
   },
   "devDependencies": {
